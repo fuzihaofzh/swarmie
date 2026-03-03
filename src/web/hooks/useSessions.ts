@@ -35,7 +35,7 @@ interface SessionState {
   updateSessionStatus: (sessionId: string, status: string) => void;
 }
 
-const MAX_EVENTS_PER_SESSION = 5000;
+const MAX_EVENTS_PER_SESSION = 2000;
 const EMPTY_EVENTS: NormalizedEvent[] = [];
 
 /** Stable selector for session events — returns same ref when empty */

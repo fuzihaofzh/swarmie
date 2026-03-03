@@ -2,9 +2,9 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { useSessionEvents, type NormalizedEvent } from '../hooks/useSessions';
 import { useUIStore } from '../hooks/useUI';
 import { themes } from '../themes';
+import { registerTerminalWriter, unregisterTerminalWriter } from '../terminalBus';
 
 interface TerminalViewProps {
   sessionId: string;
@@ -16,10 +16,8 @@ interface TerminalViewProps {
 export function TerminalView({ sessionId, isActive, onInput, onResize }: TerminalViewProps) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const writtenCountRef = useRef(0);
   const observerRef = useRef<ResizeObserver | null>(null);
   const [termReady, setTermReady] = useState(0);
-  const events = useSessionEvents(sessionId);
 
   const themeName = useUIStore((s) => s.theme);
   const fontSize = useUIStore((s) => s.fontSize);
@@ -48,7 +46,6 @@ export function TerminalView({ sessionId, isActive, onInput, onResize }: Termina
       termRef.current = null;
       fitRef.current = null;
     }
-    writtenCountRef.current = 0;
 
     if (!el) return;
 
@@ -132,28 +129,25 @@ export function TerminalView({ sessionId, isActive, onInput, onResize }: Termina
     });
   }, [currentTheme, fontSize, fontFamily]);
 
-  // Write new events to terminal — also re-runs when termReady changes
+  // Register this terminal as a writer on the terminalBus so raw:output
+  // data is written directly from useWebSocket without going through Zustand.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
 
-    const rawEvents = events.filter(
-      (e: NormalizedEvent) => e.type === 'raw:output',
-    );
-
-    const newEvents = rawEvents.slice(writtenCountRef.current);
-    for (const event of newEvents) {
-      const b64 = (event.data as { data: string }).data;
-      // Decode base64 -> binary -> Uint8Array for proper UTF-8 handling
-      const binary = atob(b64);
+    registerTerminalWriter(sessionId, (b64Data: string) => {
+      const binary = atob(b64Data);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);
       }
       term.write(bytes);
-    }
-    writtenCountRef.current = rawEvents.length;
-  }, [events, termReady]);
+    });
+
+    return () => {
+      unregisterTerminalWriter(sessionId);
+    };
+  }, [sessionId, termReady]);
 
   return (
     <div

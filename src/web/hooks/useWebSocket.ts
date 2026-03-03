@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useSessionStore } from './useSessions';
+import { writeToTerminal, clearTerminalBuffer } from '../terminalBus';
 
 type WSMessage = {
   type: string;
@@ -51,14 +52,38 @@ export function useWebSocket() {
         addSession(msg.session as SessionSummary);
         break;
       case 'session:removed':
+        clearTerminalBuffer(msg.sessionId as string);
         removeSession(msg.sessionId as string);
         break;
-      case 'event':
-        addEvent(msg.event as NormalizedEvent);
+      case 'event': {
+        const evt = msg.event as NormalizedEvent;
+        // Route raw terminal output directly to xterm, bypass Zustand
+        if (evt.type === 'raw:output') {
+          const b64 = (evt.data as { data: string }).data;
+          writeToTerminal(evt.sessionId, b64);
+        } else {
+          addEvent(evt);
+        }
         break;
-      case 'event:batch':
-        addEventBatch(msg.sessionId as string, msg.events as NormalizedEvent[]);
+      }
+      case 'event:batch': {
+        const sid = msg.sessionId as string;
+        const all = msg.events as NormalizedEvent[];
+        // Split: raw:output goes direct, rest goes to Zustand
+        const structured: NormalizedEvent[] = [];
+        for (const evt of all) {
+          if (evt.type === 'raw:output') {
+            const b64 = (evt.data as { data: string }).data;
+            writeToTerminal(sid, b64);
+          } else {
+            structured.push(evt);
+          }
+        }
+        if (structured.length > 0) {
+          addEventBatch(sid, structured);
+        }
         break;
+      }
     }
   }, [setSessions, addSession, removeSession, addEvent, addEventBatch]);
 
