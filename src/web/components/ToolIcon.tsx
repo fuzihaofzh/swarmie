@@ -27,6 +27,15 @@ function GeminiIcon({ s = defaultSize }: { s?: number } = {}) {
   );
 }
 
+// Bell icon for waiting_input
+function BellIcon({ s = defaultSize }: { s?: number } = {}) {
+  return (
+    <svg width={s} height={s} viewBox="0 0 16 16" fill="currentColor">
+      <path d="M8 16a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2M8 1.918l-.797.161A4 4 0 0 0 4 6c0 .628-.134 2.197-.459 3.742-.16.767-.376 1.566-.663 2.258h10.244c-.287-.692-.502-1.49-.663-2.258C12.134 8.197 12 6.628 12 6a4 4 0 0 0-3.203-3.92zM14.22 12c.223.447.481.801.78 1H1c.299-.199.557-.553.78-1C2.68 10.2 3 6.88 3 6c0-2.42 1.72-4.44 4.005-4.901a1 1 0 1 1 1.99 0A5 5 0 0 1 13 6c0 .88.32 4.2 1.22 6" />
+    </svg>
+  );
+}
+
 // Generic terminal icon
 function TerminalIcon({ s = defaultSize }: { s?: number } = {}) {
   return (
@@ -66,7 +75,8 @@ export function ToolIcon({ tool, status, brandColor, iconSize }: {
   brandColor?: boolean;
   iconSize?: number;
 }) {
-  const Icon = TOOL_ICONS[tool] ?? TerminalIcon;
+  const isBell = status === 'waiting_input';
+  const Icon = isBell ? BellIcon : (TOOL_ICONS[tool] ?? TerminalIcon);
   let color: string | undefined;
   if (brandColor) {
     color = BRAND_COLORS[tool];
@@ -74,12 +84,13 @@ export function ToolIcon({ tool, status, brandColor, iconSize }: {
     color = STATUS_COLORS[status];
   }
   const animated = status === 'running' || status === 'thinking' || status === 'tool_executing';
+  const bellShake = isBell && !brandColor;
   return (
-    <span className={`tool-icon ${animated ? 'tool-icon-pulse' : ''}`} style={{
+    <span className={`tool-icon ${animated ? 'tool-icon-pulse' : ''} ${bellShake ? 'tool-icon-bell' : ''}`} style={{
       ...(color ? { color } : {}),
       ...(iconSize ? { fontSize: `${iconSize}px` } : {}),
     }}>
-      {iconSize ? <IconSized tool={tool} size={iconSize} /> : <Icon />}
+      {isBell && !iconSize ? <BellIcon /> : iconSize ? <IconSized tool={tool} size={iconSize} /> : <Icon />}
     </span>
   );
 }
