@@ -71,6 +71,7 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
       return reply.status(404).send({ error: 'Session not found' });
     }
     session.kill();
+    manager.removeSession(request.params.id);
     return { ok: true };
   });
 
