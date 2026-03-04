@@ -64,14 +64,74 @@ class ServerManager {
         self.root = root
     }
 
+    func findNode() -> String? {
+        // Try nvm: find latest version
+        let nvmBase = "\(NSHomeDirectory())/.nvm/versions/node"
+        if FileManager.default.fileExists(atPath: nvmBase) {
+            if let versions = try? FileManager.default.contentsOfDirectory(atPath: nvmBase)
+                .sorted(by: >) {
+                for v in versions {
+                    let nodePath = "\(nvmBase)/\(v)/bin/node"
+                    if FileManager.default.isExecutableFile(atPath: nodePath) {
+                        return nodePath
+                    }
+                }
+            }
+        }
+
+        // Try fixed paths
+        for path in ["/opt/homebrew/bin/node", "/usr/local/bin/node"] {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+
+        // Fallback: try shell -l -c "which node"
+        let whichProc = Process()
+        whichProc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        whichProc.arguments = ["-l", "-c", "which node"]
+        let whichPipe = Pipe()
+        whichProc.standardOutput = whichPipe
+        whichProc.standardError = FileHandle.nullDevice
+        do {
+            try whichProc.run()
+            whichProc.waitUntilExit()
+            let data = whichPipe.fileHandleForReading.readDataToEndOfFile()
+            if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        } catch {}
+
+        return nil
+    }
+
     func start() {
+        guard let nodePath = findNode() else {
+            NSLog("[swarmie-server] Cannot find node binary")
+            return
+        }
+        NSLog("[swarmie-server] Using node at: %@", nodePath)
+
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["node", "dist/bin/swarmie.js"]
+        proc.executableURL = URL(fileURLWithPath: nodePath)
+        proc.arguments = ["dist/bin/swarmie.js"]
         proc.currentDirectoryURL = URL(fileURLWithPath: root)
-        proc.environment = ProcessInfo.processInfo.environment
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
+
+        // Ensure PATH includes the node binary's directory
+        var env = ProcessInfo.processInfo.environment
+        let nodeBinDir = (nodePath as NSString).deletingLastPathComponent
+        let existingPath = env["PATH"] ?? "/usr/bin:/bin"
+        env["PATH"] = "\(nodeBinDir):\(existingPath)"
+        proc.environment = env
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            if let str = String(data: handle.availableData, encoding: .utf8), !str.isEmpty {
+                NSLog("[swarmie-server] %@", str)
+            }
+        }
 
         do {
             try proc.run()
