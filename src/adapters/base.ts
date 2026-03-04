@@ -1,6 +1,15 @@
 import { EventEmitter } from 'node:events';
 import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, SessionStatus } from './types.js';
 
+// Plain substrings that indicate the tool is waiting for user input.
+const WAITING_INPUT_SUBSTRINGS = [
+  'Do you want to',
+  'Esc to cancel',
+  '(y/n)',
+  '(Y/n)',
+  '(yes/no)',
+];
+
 export interface AdapterOptions {
   sessionId: string;
   toolArgs: string[];
@@ -17,6 +26,7 @@ export abstract class BaseAdapter extends EventEmitter {
   protected rows: number;
   protected _status: SessionStatus = 'starting';
   protected _startTime: number = Date.now();
+  private _idleTimer: ReturnType<typeof setTimeout> | null = null;
 
   abstract get info(): AdapterInfo;
 
@@ -67,5 +77,64 @@ export abstract class BaseAdapter extends EventEmitter {
       data,
     };
     this.emit('event', event);
+  }
+
+  /**
+   * Call from subclass onData handler to auto-detect idle / waiting_input.
+   * Analyses each raw PTY data chunk.
+   */
+  protected handleActivityDetection(chunk: string): void {
+    // Check for waiting-for-input prompts (from any active state).
+    // Ink renders text with cursor positioning between words, so we must
+    // strip ANSI codes (replacing with space) and normalize whitespace
+    // before matching.
+    if (this._status === 'running' || this._status === 'tool_executing' || this._status === 'idle') {
+      const stripped = chunk
+        .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, ' ')       // OSC
+        .replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, ' ')         // CSI
+        .replace(/\x1b[^\[].?/g, ' ')                      // other ESC
+        .replace(/[\x00-\x1f]/g, ' ')                      // control chars
+        .replace(/\s+/g, ' ');                              // normalize whitespace
+      for (const needle of WAITING_INPUT_SUBSTRINGS) {
+        if (stripped.includes(needle)) {
+          this.setStatus('waiting_input');
+          this.clearIdleTimer();
+          return;
+        }
+      }
+    }
+
+    // Only substantial output (>20 bytes) counts as "active work".
+    // Small chunks are cursor blinks, timer ticks, status bar refreshes.
+    if (this._status !== 'waiting_input' && chunk.length > 20) {
+      if (this._status === 'idle') {
+        this.setStatus('running');
+      }
+      this.resetIdleTimer();
+    }
+  }
+
+  /** Call from subclass write() to clear waiting state when user sends input */
+  protected handleUserInput(): void {
+    if (this._status === 'waiting_input') {
+      this.setStatus('running');
+    }
+  }
+
+  /** Call from subclass onExit to clean up timer */
+  protected clearIdleTimer(): void {
+    if (this._idleTimer) {
+      clearTimeout(this._idleTimer);
+      this._idleTimer = null;
+    }
+  }
+
+  private resetIdleTimer(): void {
+    if (this._idleTimer) clearTimeout(this._idleTimer);
+    this._idleTimer = setTimeout(() => {
+      if (this._status === 'running' || this._status === 'tool_executing') {
+        this.setStatus('idle');
+      }
+    }, 2000);
   }
 }

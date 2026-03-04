@@ -71,6 +71,9 @@ export class ClaudeAdapter extends BaseAdapter {
       if (this.structuredMode) {
         this.handleStructuredOutput(data);
       }
+
+      this.handleActivityDetection(data);
+
       // Always emit raw output for terminal rendering
       this.emitEvent('raw:output', {
         data: Buffer.from(data).toString('base64'),
@@ -78,6 +81,7 @@ export class ClaudeAdapter extends BaseAdapter {
     });
 
     this.ptyProcess.onExit(({ exitCode, signal }) => {
+      this.clearIdleTimer();
       // Flush any remaining structured buffer
       if (this.structuredMode && this.jsonBuffer.trim()) {
         this.processJsonLine(this.jsonBuffer.trim());
@@ -95,6 +99,7 @@ export class ClaudeAdapter extends BaseAdapter {
 
   write(data: string): void {
     this.ptyProcess?.write(data);
+    this.handleUserInput();
   }
 
   resize(cols: number, rows: number): void {

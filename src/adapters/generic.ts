@@ -55,12 +55,14 @@ export class GenericAdapter extends BaseAdapter {
     });
 
     this.ptyProcess.onData((data: string) => {
+      this.handleActivityDetection(data);
       this.emitEvent('raw:output', {
         data: Buffer.from(data).toString('base64'),
       } satisfies RawOutputData);
     });
 
     this.ptyProcess.onExit(({ exitCode, signal }) => {
+      this.clearIdleTimer();
       this.setStatus(exitCode === 0 ? 'completed' : 'error');
       this.emitEvent('session:end', {
         exitCode,
@@ -72,6 +74,7 @@ export class GenericAdapter extends BaseAdapter {
 
   write(data: string): void {
     this.ptyProcess?.write(data);
+    this.handleUserInput();
   }
 
   resize(cols: number, rows: number): void {

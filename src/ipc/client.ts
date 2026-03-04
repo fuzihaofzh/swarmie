@@ -59,6 +59,7 @@ export class IPCClient extends EventEmitter {
     tool: string;
     adapterInfo: AdapterInfo;
     cwd: string;
+    hostname: string;
     command: string[];
   }): void {
     this.send({

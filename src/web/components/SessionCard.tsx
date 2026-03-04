@@ -1,9 +1,31 @@
+import { useEffect, useState } from 'react';
 import type { SessionSummary } from '../hooks/useSessions';
 
 interface SessionCardProps {
   session: SessionSummary;
   isActive: boolean;
   onClick: () => void;
+}
+
+const SPINNER_CHARS = ['✻', '✳', '✺', '✹', '✷', '✶'];
+
+function Spinner() {
+  const [idx, setIdx] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setIdx((i) => (i + 1) % SPINNER_CHARS.length), 150);
+    return () => clearInterval(id);
+  }, []);
+  return <span className="status-spinner">{SPINNER_CHARS[idx]}</span>;
+}
+
+function StatusIndicator({ status }: { status: string }) {
+  if (status === 'waiting_input') {
+    return <span className="status-bell">&#x1F514;</span>;
+  }
+  if (status === 'running' || status === 'thinking' || status === 'tool_executing') {
+    return <Spinner />;
+  }
+  return <span className={`status-dot ${status}`} />;
 }
 
 export function SessionCard({ session, isActive, onClick }: SessionCardProps) {
@@ -18,7 +40,7 @@ export function SessionCard({ session, isActive, onClick }: SessionCardProps) {
     >
       <div className="session-main">
         <div className="session-item-name">
-          <span className={`status-dot ${session.status}`} />
+          <StatusIndicator status={session.status} />
           <span className="name-text">{session.displayName}@{session.hostname}</span>
         </div>
         <div className="session-item-info">

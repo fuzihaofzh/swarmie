@@ -20,13 +20,15 @@ export class Session extends EventEmitter {
   private _metadata: SessionInfo['metadata'] = {};
   private _command: string[] = [];
   private _cwd: string;
+  private _hostname: string;
 
-  constructor(id: string, name: string, adapter: BaseAdapter) {
+  constructor(id: string, name: string, adapter: BaseAdapter, opts?: { cwd?: string; hostname?: string }) {
     super();
     this.id = id;
     this.name = name;
     this.adapter = adapter;
-    this._cwd = process.cwd();
+    this._cwd = opts?.cwd ?? process.cwd();
+    this._hostname = opts?.hostname ?? _hostname;
 
     this.adapter.on('event', (event: NormalizedEvent) => {
       this.handleEvent(event);
@@ -60,7 +62,7 @@ export class Session extends EventEmitter {
       displayName: this.adapter.info.displayName,
       icon: this.adapter.info.icon,
       cwd: this._cwd,
-      hostname: _hostname,
+      hostname: this._hostname,
     };
   }
 

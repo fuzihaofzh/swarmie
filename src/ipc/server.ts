@@ -132,6 +132,7 @@ export class IPCServer extends EventEmitter {
           tool: msg.tool,
           adapterInfo: msg.adapterInfo,
           cwd: msg.cwd,
+          hostname: msg.hostname,
           command: msg.command,
         });
         break;

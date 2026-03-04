@@ -65,6 +65,7 @@ async function startAsCoordinator(
     tool: string;
     adapterInfo: BaseAdapter['info'];
     cwd: string;
+    hostname: string;
     command: string[];
   }) => {
     const remoteAdapter = new RemoteAdapter(
@@ -82,7 +83,10 @@ async function startAsCoordinator(
       ipcServer.sendToSession(info.id, { type: 'kill', sessionId: info.id, signal });
     };
 
-    const session = manager.addSession(info.id, info.name, remoteAdapter);
+    const session = manager.addSession(info.id, info.name, remoteAdapter, {
+      cwd: info.cwd,
+      hostname: info.hostname,
+    });
     session.start();
   });
 
@@ -123,13 +127,13 @@ async function startAsCoordinator(
   if (options.record) {
     const config = loadConfig();
     recorder = new SessionRecorder(config.recordDir, session);
-    console.log(`[polycode] Recording to ${recorder.filePath}`);
+    console.error(`[polycode] Recording to ${recorder.filePath}`);
   }
 
   // Start web server
   const server = await createServer(manager, { port: options.port });
-  console.log(`[polycode] Web server listening at ${server.address}`);
-  console.log(`[polycode] IPC server listening at ${socketPath}`);
+  console.error(`[polycode] Web server listening at ${server.address}`);
+  console.error(`[polycode] IPC server listening at ${socketPath}`);
 
   return async () => {
     recorder?.close();
@@ -154,6 +158,7 @@ async function startAsClient(
     tool: adapter.info.name,
     adapterInfo: adapter.info,
     cwd: process.cwd(),
+    hostname: (await import('node:os')).hostname(),
     command: [],
   });
 
@@ -176,7 +181,7 @@ async function startAsClient(
   // Start the adapter
   adapter.start();
 
-  console.log(`[polycode] Connected to coordinator via IPC`);
+  console.error(`[polycode] Connected to coordinator via IPC`);
 
   return async () => {
     client.close();

@@ -11,7 +11,7 @@ export type NormalizedEventType =
   | 'status:change'
   | 'metadata';
 
-export type SessionStatus = 'starting' | 'running' | 'thinking' | 'tool_executing' | 'idle' | 'completed' | 'error';
+export type SessionStatus = 'starting' | 'running' | 'thinking' | 'tool_executing' | 'waiting_input' | 'idle' | 'completed' | 'error';
 
 export interface NormalizedEvent {
   type: NormalizedEventType;

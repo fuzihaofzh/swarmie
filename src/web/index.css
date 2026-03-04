@@ -286,6 +286,34 @@ body,
 .status-dot.error {
   background: #ef4444;
 }
+.status-spinner {
+  display: inline-block;
+  width: 14px;
+  font-size: 12px;
+  line-height: 1;
+  margin-right: 4px;
+  flex-shrink: 0;
+  text-align: center;
+  color: #22c55e;
+}
+
+.status-bell {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1;
+  margin-right: 4px;
+  flex-shrink: 0;
+  animation: bell-ring 1s ease-in-out infinite;
+}
+
+@keyframes bell-ring {
+  0%, 100% { transform: rotate(0deg); }
+  15% { transform: rotate(14deg); }
+  30% { transform: rotate(-12deg); }
+  45% { transform: rotate(8deg); }
+  60% { transform: rotate(-4deg); }
+  75% { transform: rotate(0deg); }
+}
 
 .close-session-btn {
   background: none;

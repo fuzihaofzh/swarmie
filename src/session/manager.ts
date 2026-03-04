@@ -7,8 +7,8 @@ import type { SessionSummary } from './types.js';
 export class SessionManager extends EventEmitter {
   private sessions = new Map<string, Session>();
 
-  addSession(id: string, name: string, adapter: BaseAdapter): Session {
-    const session = new Session(id, name, adapter);
+  addSession(id: string, name: string, adapter: BaseAdapter, opts?: { cwd?: string; hostname?: string }): Session {
+    const session = new Session(id, name, adapter, opts);
 
     session.on('event', (event: NormalizedEvent) => {
       this.emit('event', event);

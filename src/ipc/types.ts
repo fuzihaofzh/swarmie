@@ -2,7 +2,7 @@ import type { NormalizedEvent, AdapterInfo, SessionStatus } from '../adapters/ty
 
 /** Messages from IPC client -> IPC server */
 export type IPCClientMessage =
-  | { type: 'register'; sessionId: string; name: string; tool: string; adapterInfo: AdapterInfo; cwd: string; command: string[] }
+  | { type: 'register'; sessionId: string; name: string; tool: string; adapterInfo: AdapterInfo; cwd: string; hostname: string; command: string[] }
   | { type: 'event'; event: NormalizedEvent }
   | { type: 'unregister'; sessionId: string }
   | { type: 'ping' };

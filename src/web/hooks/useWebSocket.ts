@@ -10,9 +10,12 @@ type WSMessage = {
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
+  const shutdownRef = useRef(false);
   const { setSessions, addSession, removeSession, addEvent, addEventBatch } = useSessionStore();
 
   const connect = useCallback(() => {
+    if (shutdownRef.current) return;
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
     wsRef.current = ws;
@@ -33,8 +36,9 @@ export function useWebSocket() {
 
     ws.onclose = () => {
       wsRef.current = null;
-      // Reconnect after a delay
-      reconnectTimer.current = setTimeout(connect, 2000);
+      if (!shutdownRef.current) {
+        reconnectTimer.current = setTimeout(connect, 2000);
+      }
     };
 
     ws.onerror = () => {
@@ -55,6 +59,17 @@ export function useWebSocket() {
         clearTerminalBuffer(msg.sessionId as string);
         removeSession(msg.sessionId as string);
         break;
+      case 'server:shutdown':
+        shutdownRef.current = true;
+        clearTimeout(reconnectTimer.current);
+        wsRef.current?.close();
+        wsRef.current = null;
+        // Try to close the tab
+        window.close();
+        // Fallback if window.close() is blocked by browser
+        document.title = '[Closed] polycode';
+        document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:monospace;color:#8b949e;font-size:14px;">polycode server has stopped.</div>';
+        return;
       case 'event': {
         const evt = msg.event as NormalizedEvent;
         // Route raw terminal output directly to xterm, bypass Zustand

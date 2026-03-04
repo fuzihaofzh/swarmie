@@ -11,11 +11,11 @@ async function main(): Promise<void> {
   const sessionId = nanoid(12);
   const sessionName = polycodeOptions.sessionName ?? `${tool}-${sessionId.slice(0, 6)}`;
 
-  console.log(`[polycode] Starting ${tool} session: ${sessionName}`);
-  console.log(`[polycode] Session ID: ${sessionId}`);
+  console.error(`[polycode] Starting ${tool} session: ${sessionName}`);
+  console.error(`[polycode] Session ID: ${sessionId}`);
 
   if (polycodeOptions.web) {
-    console.log(`[polycode] Dashboard: http://localhost:${polycodeOptions.port}`);
+    console.error(`[polycode] Dashboard: http://localhost:${polycodeOptions.port}`);
   }
 
   // Create the adapter

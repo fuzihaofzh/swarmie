@@ -9,7 +9,7 @@ interface WSMessage {
   [key: string]: unknown;
 }
 
-export function setupWebSocket(app: FastifyInstance, manager: SessionManager): void {
+export function setupWebSocket(app: FastifyInstance, manager: SessionManager): { broadcastShutdown: () => void } {
   const clients = new Set<WebSocket>();
   const subscriptions = new Map<WebSocket, Set<string>>(); // ws -> set of sessionIds
 
@@ -54,6 +54,12 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): v
       }
     }
   });
+
+  return {
+    broadcastShutdown: () => {
+      broadcast(clients, { type: 'server:shutdown' });
+    },
+  };
 }
 
 function handleMessage(
