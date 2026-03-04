@@ -8,34 +8,38 @@ let serverURL = "http://localhost:\(serverPort)"
 
 // Resolve project root (where package.json lives)
 func projectRoot() -> String {
-    let execPath = ProcessInfo.processInfo.arguments[0]
-    let execURL = URL(fileURLWithPath: execPath)
-
-    if execURL.pathComponents.contains("Contents") {
-        var url = execURL
-        while url.lastPathComponent != "Contents" { url.deleteLastPathComponent() }
-        url.deleteLastPathComponent()
-
-        let resourcesProject = url.appendingPathComponent("Contents/Resources/project")
-        if FileManager.default.fileExists(atPath: resourcesProject.appendingPathComponent("package.json").path) {
-            return resourcesProject.path
-        }
-
-        let appDir = url.deletingLastPathComponent()
-        if FileManager.default.fileExists(atPath: appDir.appendingPathComponent("package.json").path) {
-            return appDir.path
+    // 1. Check for bundled project inside app Resources (self-contained mode)
+    if let resourcesPath = Bundle.main.resourcePath {
+        let bundledProject = resourcesPath + "/project"
+        if FileManager.default.fileExists(atPath: bundledProject + "/package.json") {
+            NSLog("[swarmie] Using bundled project at: %@", bundledProject)
+            return bundledProject
         }
     }
 
-    var dir = execURL.deletingLastPathComponent()
+    // 2. Check the directory containing the .app bundle
+    if let bundlePath = Bundle.main.bundlePath as NSString? {
+        let appDir = bundlePath.deletingLastPathComponent
+        if FileManager.default.fileExists(atPath: appDir + "/package.json") {
+            NSLog("[swarmie] Using project next to app: %@", appDir)
+            return appDir
+        }
+    }
+
+    // 3. Walk up from executable
+    let execPath = ProcessInfo.processInfo.arguments[0]
+    var dir = URL(fileURLWithPath: execPath).deletingLastPathComponent()
     for _ in 0..<5 {
         if FileManager.default.fileExists(atPath: dir.appendingPathComponent("package.json").path) {
+            NSLog("[swarmie] Using project at: %@", dir.path)
             return dir.path
         }
         dir.deleteLastPathComponent()
     }
 
-    return FileManager.default.currentDirectoryPath
+    let cwd = FileManager.default.currentDirectoryPath
+    NSLog("[swarmie] Fallback to cwd: %@", cwd)
+    return cwd
 }
 
 // MARK: - Color Helpers
@@ -65,7 +69,13 @@ class ServerManager {
     }
 
     func findNode() -> String? {
-        // Try nvm: find latest version
+        // 1. Check for bundled node inside the app
+        let bundledNode = root + "/node/bin/node"
+        if FileManager.default.isExecutableFile(atPath: bundledNode) {
+            return bundledNode
+        }
+
+        // 2. Try nvm: find latest version
         let nvmBase = "\(NSHomeDirectory())/.nvm/versions/node"
         if FileManager.default.fileExists(atPath: nvmBase) {
             if let versions = try? FileManager.default.contentsOfDirectory(atPath: nvmBase)
@@ -86,23 +96,61 @@ class ServerManager {
             }
         }
 
-        // Fallback: try shell -l -c "which node"
-        let whichProc = Process()
-        whichProc.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        whichProc.arguments = ["-l", "-c", "which node"]
-        let whichPipe = Pipe()
-        whichProc.standardOutput = whichPipe
-        whichProc.standardError = FileHandle.nullDevice
-        do {
-            try whichProc.run()
-            whichProc.waitUntilExit()
-            let data = whichPipe.fileHandleForReading.readDataToEndOfFile()
-            if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
-        } catch {}
+        // Fallback: try login shell "which node"
+        let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        for sh in [userShell, "/bin/zsh"] {
+            guard FileManager.default.isExecutableFile(atPath: sh) else { continue }
+            let whichProc = Process()
+            whichProc.executableURL = URL(fileURLWithPath: sh)
+            whichProc.arguments = ["-lic", "which node"]
+            let whichPipe = Pipe()
+            whichProc.standardOutput = whichPipe
+            whichProc.standardError = FileHandle.nullDevice
+            do {
+                try whichProc.run()
+                whichProc.waitUntilExit()
+                let data = whichPipe.fileHandleForReading.readDataToEndOfFile()
+                if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) {
+                    return path
+                }
+            } catch { continue }
+        }
 
+        return nil
+    }
+
+    // Get the full PATH from a login shell (Finder launches with minimal PATH)
+    func loginShellPath() -> String? {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let isFish = shell.hasSuffix("/fish")
+
+        // Try user's shell first, then fallback to /bin/zsh
+        let shellsToTry = isFish ? ["/bin/zsh", shell] : [shell, "/bin/zsh"]
+        for sh in shellsToTry {
+            guard FileManager.default.isExecutableFile(atPath: sh) else { continue }
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: sh)
+            if sh.hasSuffix("/fish") {
+                // fish uses spaces in PATH and different syntax
+                proc.arguments = ["-lic", "string join : $PATH"]
+            } else {
+                // bash, zsh, etc. — interactive login shell to load .bashrc/.zshrc
+                proc.arguments = ["-lic", "echo $PATH"]
+            }
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = FileHandle.nullDevice
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !path.isEmpty, path.contains("/") {
+                    return path
+                }
+            } catch { continue }
+        }
         return nil
     }
 
@@ -118,12 +166,13 @@ class ServerManager {
         proc.arguments = ["dist/bin/swarmie.js"]
         proc.currentDirectoryURL = URL(fileURLWithPath: root)
 
-        // Ensure PATH includes the node binary's directory
+        // Use login shell PATH so spawned tools (claude, codex, etc.) are found
         var env = ProcessInfo.processInfo.environment
         let nodeBinDir = (nodePath as NSString).deletingLastPathComponent
-        let existingPath = env["PATH"] ?? "/usr/bin:/bin"
-        env["PATH"] = "\(nodeBinDir):\(existingPath)"
+        let shellPath = loginShellPath() ?? env["PATH"] ?? "/usr/bin:/bin"
+        env["PATH"] = "\(nodeBinDir):\(shellPath)"
         proc.environment = env
+        NSLog("[swarmie-server] PATH: %@", env["PATH"] ?? "")
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = pipe

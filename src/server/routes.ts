@@ -135,6 +135,8 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
 
       return { id: sessionId, name, tool, status: session.status };
     } catch (err) {
+      console.error(`[swarmie] Failed to create session: tool=${tool}, cwd=${cwd}, PATH=${process.env.PATH}`);
+      console.error(err);
       return reply.status(500).send({ error: String(err) });
     }
   });
@@ -223,6 +225,24 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
       status: 'ok',
       sessions: manager.size,
       uptime: process.uptime(),
+    };
+  });
+
+  // Debug endpoint - shows server environment for troubleshooting
+  app.get('/api/debug', async () => {
+    const { execSync } = await import('node:child_process');
+    let whichClaude = '';
+    try {
+      whichClaude = execSync('which claude', { env: process.env, timeout: 3000 }).toString().trim();
+    } catch { whichClaude = 'not found'; }
+    return {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      cwd: process.cwd(),
+      whichClaude,
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
     };
   });
 }
