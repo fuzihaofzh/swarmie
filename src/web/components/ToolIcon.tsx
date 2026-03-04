@@ -73,8 +73,9 @@ export function ToolIcon({ tool, status, brandColor, iconSize }: {
   } else if (status) {
     color = STATUS_COLORS[status];
   }
+  const animated = status === 'running' || status === 'thinking' || status === 'tool_executing';
   return (
-    <span className="tool-icon" style={{
+    <span className={`tool-icon ${animated ? 'tool-icon-pulse' : ''}`} style={{
       ...(color ? { color } : {}),
       ...(iconSize ? { fontSize: `${iconSize}px` } : {}),
     }}>

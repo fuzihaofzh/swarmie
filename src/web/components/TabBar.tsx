@@ -51,7 +51,6 @@ export function TabBar() {
                 setShowNewSession(false);
               }}
             >
-              <StatusIndicator status={s.status} />
               <ToolIcon tool={s.tool} status={s.status} />
               <span className="tab-name">{s.displayName}</span>
               <span className="tab-cwd">{shortPath(s.cwd)}</span>

@@ -118,9 +118,11 @@ export abstract class BaseAdapter extends EventEmitter {
       }
     }
 
-    // Only substantial output (>20 bytes) counts as "active work".
-    // Small chunks are cursor blinks, timer ticks, status bar refreshes.
-    if (this._status !== 'waiting_input' && chunk.length > 20) {
+    // Only substantial *visible* output counts as "active work".
+    // Cursor blinks, timer ticks, status bar refreshes are just escape sequences
+    // with little or no printable text — ignore them.
+    const printable = stripped.replace(/\s+/g, '');
+    if (this._status !== 'waiting_input' && printable.length > 5) {
       if (this._status === 'idle') {
         this.setStatus('running');
       }

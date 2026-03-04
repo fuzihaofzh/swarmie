@@ -46,6 +46,7 @@ export class CodexAdapter extends BaseAdapter {
     });
 
     this.ptyProcess.onData((data: string) => {
+      this.handleActivityDetection(data);
       this.emitEvent('raw:output', {
         data: Buffer.from(data).toString('base64'),
       } satisfies RawOutputData);
@@ -62,6 +63,7 @@ export class CodexAdapter extends BaseAdapter {
   }
 
   write(data: string): void {
+    this.handleUserInput();
     this.ptyProcess?.write(data);
   }
 
