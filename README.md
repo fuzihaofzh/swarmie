@@ -1,17 +1,26 @@
 # swarmie
 
-AI CLI tool aggregator — unify Claude Code, Codex, Gemini CLI and other AI coding tools into a single web multi-session dashboard.
+A web-based dashboard for orchestrating AI workloads. Monitor, control, and collaborate on multiple AI agent sessions from anywhere — your browser, your phone, or a shared team screen.
+
+> **Not just for coding agents.** Swarmie wraps any CLI tool via PTY — AI assistants, data pipelines, DevOps scripts, CI/CD tasks — and streams them to a real-time web dashboard.
+
+## Why Swarmie
+
+- **Access from anywhere** — The web dashboard works on any device with a browser. Run agents on a remote server, monitor from your iPad.
+- **Team-friendly** — Multiple people can share the same dashboard, watching and interacting with all running sessions in real time.
+- **Tool-agnostic** — Not limited to AI coding assistants. Wrap any CLI process: `swarmie claude`, `swarmie python train.py`, `swarmie kubectl logs -f ...`
+- **Zero external dependencies** — No tmux, no screen, no special setup. Just Node.js.
+- **Native macOS app** — Self-contained `.app` bundle with embedded Node.js runtime. Double-click and go.
 
 ## Features
 
-- **Unified entry point**: `swarmie claude`, `swarmie codex`, `swarmie gemini`, or any command
-- **Web dashboard**: Real-time terminal rendering (xterm.js), structured conversation view, event timeline
-- **Multi-session**: Run multiple AI tools simultaneously, switch between them in one dashboard
-- **Multi-process coordination**: First instance becomes the coordinator, subsequent instances auto-register via IPC
-- **Theme system**: 6 built-in themes (Solarized Light/Dark, Dracula, Nord, Monokai, GitHub Dark)
-- **Session recording**: `--record` to capture sessions as JSONL, with replay support
-- **Remote control**: Send input, resize, or kill any session from the web dashboard
-- **macOS desktop app**: Native .app wrapper with auto server management
+- **Real-time terminal** — Full terminal rendering via xterm.js, streamed over WebSocket
+- **Multi-session tabs** — Run and switch between multiple sessions in one dashboard
+- **Multi-process coordination** — Each `swarmie` instance auto-discovers the coordinator via IPC; sessions aggregate automatically
+- **Remote control** — Send input, resize, or kill any session from the web UI
+- **Session recording** — `--record` captures sessions as JSONL for replay and analysis
+- **6 built-in themes** — Solarized Light/Dark, Dracula, Nord, Monokai, GitHub Dark
+- **Keyboard shortcuts** — Fast session switching and management
 
 ## Quick Start
 
@@ -22,7 +31,7 @@ npm install
 # Build
 npm run build
 
-# Start (e.g. with Claude Code)
+# Start with Claude Code
 node dist/bin/swarmie.js claude
 
 # Start with any command
@@ -32,16 +41,31 @@ node dist/bin/swarmie.js vim
 open http://127.0.0.1:3200
 ```
 
+### Multi-Agent Workflow
+
+```bash
+# Terminal 1 — starts the coordinator + web server
+swarmie claude
+
+# Terminal 2 — auto-connects to the existing coordinator
+swarmie codex -- "add unit tests"
+
+# Terminal 3 — any CLI tool works
+swarmie python scripts/analyze.py
+
+# All three sessions appear in the same dashboard at localhost:3200
+```
+
 ### macOS Desktop App
 
 ```bash
-# Build the native app
+# Build the self-contained app (bundles Node.js + all dependencies)
 bash desktop/build.sh
 
 # Run
 open dist/Swarmie.app
 
-# Or install to Applications
+# Or install
 cp -r dist/Swarmie.app /Applications/
 ```
 
@@ -63,23 +87,6 @@ Everything before `--` is a swarmie option; everything after is passed to the un
 | `--record` | - | Record session to JSONL |
 | `--log` | - | Enable logging |
 
-### Examples
-
-```bash
-# Claude Code interactive mode
-swarmie claude
-
-# Claude Code non-interactive + recording
-swarmie claude --record -- -p "fix the bug" --output-format stream-json
-
-# Codex
-swarmie codex -- "add unit tests"
-
-# Multi-window — run one per terminal, dashboard auto-aggregates
-swarmie claude    # Terminal 1
-swarmie codex     # Terminal 2 (auto-connects to Terminal 1's coordinator)
-```
-
 ## Architecture
 
 ```
@@ -96,10 +103,11 @@ Terminal 1: swarmie claude          Terminal 2: swarmie codex
                      Web Dashboard (React + xterm.js)
 ```
 
-- **Adapters**: One adapter per AI tool, managing a PTY subprocess via node-pty and emitting normalized events
-- **Session Manager**: Manages lifecycle and event streams for all sessions
-- **IPC**: Unix socket communication; the first process (coordinator) runs the web server, subsequent processes register as clients
-- **Web**: React 19 + xterm.js + Zustand, with real-time event push over WebSocket
+- **Adapters** — One per tool, wrapping a PTY subprocess via node-pty and emitting normalized events
+- **Session Manager** — Manages lifecycle and event streams for all sessions
+- **IPC** — Unix socket coordination; first process becomes the coordinator, others register as clients
+- **Web** — React 19 + xterm.js + Zustand, real-time push over WebSocket
+- **Desktop** — Swift + WKWebView, auto-starts the bundled Node.js server
 
 ## Project Structure
 
@@ -112,7 +120,7 @@ src/
   ipc/                   IPC server/client
   server/                Fastify HTTP + WebSocket + static files
   web/                   React frontend
-    components/          TerminalView, SessionCard, StructuredView, EventTimeline
+    components/          TerminalView, TabBar, SessionCard, EventTimeline
     hooks/               useWebSocket, useSessions, useUI
     themes.ts            Theme definitions
 desktop/                 macOS native app (Swift + WKWebView)
@@ -131,6 +139,7 @@ tests/                   Vitest tests
 | Tailwind CSS v4 | Styling |
 | Commander | CLI argument parsing |
 | Vitest | Testing |
+| Swift + WKWebView | macOS desktop app |
 
 ## Development
 
@@ -138,4 +147,9 @@ tests/                   Vitest tests
 npm run build        # Build everything (TypeScript + Vite)
 npm run build:web    # Build frontend only
 npm test             # Run tests
+bash desktop/build.sh  # Build macOS app
 ```
+
+## License
+
+MIT
