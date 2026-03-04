@@ -5,7 +5,7 @@ import type { IPCClientMessage, IPCServerMessage } from './types.js';
 
 /**
  * IPC server runs on the coordinator process.
- * Non-coordinator polycode instances connect here to register sessions.
+ * Non-coordinator swarmie instances connect here to register sessions.
  */
 export class IPCServer extends EventEmitter {
   private server: Server | null = null;

@@ -4,7 +4,7 @@ import type { NormalizedEvent, AdapterInfo } from '../adapters/types.js';
 import type { IPCClientMessage, IPCServerMessage } from './types.js';
 
 /**
- * IPC client runs on non-coordinator polycode instances.
+ * IPC client runs on non-coordinator swarmie instances.
  * Connects to the coordinator's Unix socket to register sessions
  * and forward events.
  */

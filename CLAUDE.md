@@ -1,8 +1,8 @@
-# CLAUDE.md — polycode 项目指南
+# CLAUDE.md — swarmie 项目指南
 
 ## 项目概述
 
-polycode 是一个 AI CLI 工具聚合器，通过 PTY 包装 Claude Code、Codex、Gemini CLI 等工具，提供统一的 Web 多会话仪表盘。
+swarmie 是一个 AI CLI 工具聚合器，通过 PTY 包装 Claude Code、Codex、Gemini CLI 等工具，提供统一的 Web 多会话仪表盘。
 
 ## 构建和测试
 
@@ -17,7 +17,7 @@ npx tsc -p tsconfig.json  # 只做类型检查/编译后端
 
 - **tsconfig.json 排除 src/web/**: 后端用 tsc 编译，前端用 Vite 编译，两者互不干扰
 - **node-pty**: 需要从源码编译 (`npm rebuild node-pty --build-from-source`)，prebuilt 可能不兼容
-- **Coordinator 模式**: 第一个 polycode 进程成为 coordinator（启动 Web + IPC），后续进程通过 `~/.polycode/server.sock` 注册
+- **Coordinator 模式**: 第一个 swarmie 进程成为 coordinator（启动 Web + IPC），后续进程通过 `~/.swarmie/server.sock` 注册
 - **RemoteAdapter**: IPC 远程会话用虚拟适配器，通过 `onWrite/onResize/onKill` 回调转发到 IPC
 - **Session.isLocal**: 本地会话的 PTY 大小由 CLI 终端控制，Web resize 不影响它
 
@@ -31,7 +31,7 @@ npx tsc -p tsconfig.json  # 只做类型检查/编译后端
 
 ## 文件布局
 
-- `bin/polycode.ts` — CLI 入口，处理 stdin/stdout/PTY 管道
+- `bin/swarmie.ts` — CLI 入口，处理 stdin/stdout/PTY 管道
 - `src/adapters/` — 各工具适配器，base.ts 定义抽象类
 - `src/session/` — Session 类包装 adapter + 元数据
 - `src/coordinator.ts` — 多进程协调，IPC server/client 集成

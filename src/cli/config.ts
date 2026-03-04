@@ -2,17 +2,17 @@ import { readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-export interface PolycodeConfig {
+export interface SwarmieConfig {
   port: number;
   theme: string;
   defaultTool?: string;
   recordDir: string;
 }
 
-const CONFIG_DIR = join(homedir(), '.polycode');
+const CONFIG_DIR = join(homedir(), '.swarmie');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 
-const DEFAULT_CONFIG: PolycodeConfig = {
+const DEFAULT_CONFIG: SwarmieConfig = {
   port: 3200,
   theme: 'dark',
   recordDir: join(CONFIG_DIR, 'recordings'),
@@ -25,7 +25,7 @@ export function ensureConfigDir(): string {
   return CONFIG_DIR;
 }
 
-export function loadConfig(): PolycodeConfig {
+export function loadConfig(): SwarmieConfig {
   ensureConfigDir();
 
   if (!existsSync(CONFIG_FILE)) {
@@ -34,7 +34,7 @@ export function loadConfig(): PolycodeConfig {
 
   try {
     const raw = readFileSync(CONFIG_FILE, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<PolycodeConfig>;
+    const parsed = JSON.parse(raw) as Partial<SwarmieConfig>;
     return { ...DEFAULT_CONFIG, ...parsed };
   } catch {
     return { ...DEFAULT_CONFIG };

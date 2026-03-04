@@ -2,7 +2,7 @@ import { BaseAdapter, type AdapterOptions } from './base.js';
 import type { AdapterInfo, NormalizedEvent } from './types.js';
 
 /**
- * A virtual adapter that represents a session from a remote polycode instance.
+ * A virtual adapter that represents a session from a remote swarmie instance.
  * Events are pushed in via `pushEvent()` rather than spawning a process.
  */
 export class RemoteAdapter extends BaseAdapter {

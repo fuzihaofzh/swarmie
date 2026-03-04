@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import { useUIStore } from './useUI';
+import { playBellSound } from '../bellSound';
 
 export interface SessionSummary {
   id: string;
@@ -90,6 +92,9 @@ export const useSessionStore = create<SessionState>((set) => ({
         sessions = sessions.map((s) =>
           s.id === event.sessionId ? { ...s, status: newStatus } : s,
         );
+        if (newStatus === 'waiting_input' && useUIStore.getState().bellSound) {
+          playBellSound();
+        }
       }
       if (event.type === 'session:end') {
         sessions = sessions.map((s) =>

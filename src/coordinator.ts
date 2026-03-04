@@ -1,5 +1,5 @@
 import { existsSync, writeFileSync, unlinkSync, readFileSync } from 'node:fs';
-import type { PolycodeOptions } from './cli/index.js';
+import type { SwarmieOptions } from './cli/index.js';
 import { ensureConfigDir, getSocketPath, getLockPath } from './cli/config.js';
 import type { BaseAdapter } from './adapters/index.js';
 import type { NormalizedEvent } from './adapters/types.js';
@@ -10,17 +10,41 @@ import { SessionRecorder } from './session/recorder.js';
 import { loadConfig } from './cli/config.js';
 import { IPCServer } from './ipc/server.js';
 import { IPCClient } from './ipc/client.js';
+import { WSRemoteClient, parseServerAddress } from './ipc/ws-client.js';
+
+export interface CoordinatorHandle {
+  cleanup: () => Promise<void>;
+  /** Number of sessions still running (excluding completed/error) */
+  activeSessionCount: () => number;
+  /** Resolves when all sessions reach a terminal status */
+  waitForAllDone: () => Promise<void>;
+  /** Whether this process is the coordinator (has the web/IPC server) */
+  isCoordinator: boolean;
+  /** Session manager (only available on coordinator) */
+  manager?: SessionManager;
+}
 
 /**
  * Try to become the coordinator. If another coordinator is already running,
  * connect to it as a client instead.
+ *
+ * If `options.server` is set, connect to a remote coordinator via WebSocket
+ * instead of trying local IPC.
  */
 export async function startCoordinator(
-  options: PolycodeOptions,
-  adapter: BaseAdapter,
-  sessionId: string,
-  sessionName: string,
-): Promise<() => Promise<void>> {
+  options: SwarmieOptions,
+  adapter?: BaseAdapter,
+  sessionId?: string,
+  sessionName?: string,
+): Promise<CoordinatorHandle> {
+  // Remote server mode — connect to a remote coordinator via WebSocket
+  if (options.server) {
+    if (!adapter || !sessionId || !sessionName) {
+      throw new Error('Remote mode requires adapter, sessionId, and sessionName');
+    }
+    return startAsRemoteClient(options.server, adapter, sessionId, sessionName);
+  }
+
   ensureConfigDir();
   const socketPath = getSocketPath();
   const lockPath = getLockPath();
@@ -29,6 +53,9 @@ export async function startCoordinator(
   if (existsSync(socketPath) && existsSync(lockPath)) {
     const pid = parseInt(readFileSync(lockPath, 'utf-8').trim(), 10);
     if (isProcessRunning(pid)) {
+      if (!adapter || !sessionId || !sessionName) {
+        throw new Error('Another coordinator is already running; client mode requires adapter, sessionId, and sessionName');
+      }
       // Connect as IPC client
       return startAsClient(socketPath, adapter, sessionId, sessionName);
     }
@@ -42,13 +69,13 @@ export async function startCoordinator(
 }
 
 async function startAsCoordinator(
-  options: PolycodeOptions,
-  adapter: BaseAdapter,
-  sessionId: string,
-  sessionName: string,
+  options: SwarmieOptions,
+  adapter: BaseAdapter | undefined,
+  sessionId: string | undefined,
+  sessionName: string | undefined,
   socketPath: string,
   lockPath: string,
-): Promise<() => Promise<void>> {
+): Promise<CoordinatorHandle> {
   // Write lock file
   writeFileSync(lockPath, String(process.pid), 'utf-8');
 
@@ -117,29 +144,62 @@ async function startAsCoordinator(
     }
   });
 
-  // Register the local session
-  const session = manager.addSession(sessionId, sessionName, adapter);
-  session.isLocal = true;
-  session.start();
-
-  // Start recording if requested
+  // Register the local session (only if an adapter was provided)
   let recorder: SessionRecorder | undefined;
-  if (options.record) {
-    const config = loadConfig();
-    recorder = new SessionRecorder(config.recordDir, session);
-    console.error(`[polycode] Recording to ${recorder.filePath}`);
+  if (adapter && sessionId && sessionName) {
+    const session = manager.addSession(sessionId, sessionName, adapter);
+    session.isLocal = true;
+    session.start();
+
+    // Start recording if requested
+    if (options.record) {
+      const config = loadConfig();
+      recorder = new SessionRecorder(config.recordDir, session);
+      console.error(`[swarmie] Recording to ${recorder.filePath}`);
+    }
   }
 
   // Start web server
-  const server = await createServer(manager, { port: options.port });
-  console.error(`[polycode] Web server listening at ${server.address}`);
-  console.error(`[polycode] IPC server listening at ${socketPath}`);
+  const server = await createServer(manager, { port: options.port, host: options.host });
+  console.error(`[swarmie] Web server listening at ${server.address}`);
+  console.error(`[swarmie] IPC server listening at ${socketPath}`);
 
-  return async () => {
-    recorder?.close();
-    await ipcServer.close();
-    await server.close();
-    try { unlinkSync(lockPath); } catch { /* ignore */ }
+  return {
+    isCoordinator: true,
+    manager,
+    cleanup: async () => {
+      recorder?.close();
+      // Kill all still-running sessions
+      for (const s of manager.getAllSessions()) {
+        if (!['completed', 'error'].includes(s.status)) {
+          try { s.kill(); } catch { /* ignore */ }
+        }
+      }
+      await ipcServer.close();
+      await server.close();
+      try { unlinkSync(lockPath); } catch { /* ignore */ }
+    },
+    activeSessionCount: () => {
+      return manager.getAllSessions().filter(
+        (s) => !['completed', 'error'].includes(s.status),
+      ).length;
+    },
+    waitForAllDone: () => {
+      return new Promise<void>((resolve) => {
+        // Check immediately
+        const allDone = () =>
+          manager.getAllSessions().every((s) => ['completed', 'error'].includes(s.status));
+        if (allDone()) { resolve(); return; }
+        // Listen for status changes
+        const check = () => {
+          if (allDone()) {
+            manager.removeListener('event', check);
+            resolve();
+          }
+        };
+        manager.on('event', check);
+      });
+    },
   };
 }
 
@@ -148,7 +208,7 @@ async function startAsClient(
   adapter: BaseAdapter,
   sessionId: string,
   sessionName: string,
-): Promise<() => Promise<void>> {
+): Promise<CoordinatorHandle> {
   const client = new IPCClient(socketPath, sessionId);
   await client.connect();
 
@@ -181,10 +241,63 @@ async function startAsClient(
   // Start the adapter
   adapter.start();
 
-  console.error(`[polycode] Connected to coordinator via IPC`);
+  console.error(`[swarmie] Connected to coordinator via IPC`);
 
-  return async () => {
-    client.close();
+  return {
+    isCoordinator: false,
+    cleanup: async () => { client.close(); },
+    activeSessionCount: () => 0, // Client only knows about its own session
+    waitForAllDone: () => Promise.resolve(), // Client doesn't wait for others
+  };
+}
+
+async function startAsRemoteClient(
+  serverAddr: string,
+  adapter: BaseAdapter,
+  sessionId: string,
+  sessionName: string,
+): Promise<CoordinatorHandle> {
+  const wsUrl = parseServerAddress(serverAddr);
+  const client = new WSRemoteClient(wsUrl, sessionId);
+
+  await client.connect();
+
+  // Register this session with the remote coordinator
+  client.register({
+    name: sessionName,
+    tool: adapter.info.name,
+    adapterInfo: adapter.info,
+    cwd: process.cwd(),
+    hostname: (await import('node:os')).hostname(),
+    command: [],
+  });
+
+  // Forward adapter events to the remote coordinator
+  adapter.on('event', (event: NormalizedEvent) => {
+    client.sendEvent(event);
+  });
+
+  // Handle commands from coordinator (input/resize/kill from web dashboard)
+  client.on('input', (data: string) => {
+    adapter.write(data);
+  });
+  client.on('resize', (cols: number, rows: number) => {
+    adapter.resize(cols, rows);
+  });
+  client.on('kill', (signal?: string) => {
+    adapter.kill(signal);
+  });
+
+  // Start the adapter
+  adapter.start();
+
+  console.error(`[swarmie] Connected to remote coordinator at ${serverAddr}`);
+
+  return {
+    isCoordinator: false,
+    cleanup: async () => { client.close(); },
+    activeSessionCount: () => 0,
+    waitForAllDone: () => Promise.resolve(),
   };
 }
 

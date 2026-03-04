@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { loadRecording, replayRecording } from '../src/session/replayer.js';
 import type { NormalizedEvent } from '../src/adapters/types.js';
 
-const testDir = join(tmpdir(), 'polycode-test-replay');
+const testDir = join(tmpdir(), 'swarmie-test-replay');
 const testFile = join(testDir, 'test.jsonl');
 
 beforeAll(() => {

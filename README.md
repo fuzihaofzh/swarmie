@@ -1,10 +1,10 @@
-# polycode
+# swarmie
 
 AI CLI 工具聚合器 — 将 Claude Code、Codex、Gemini CLI 等 AI 编码工具统一到一个 Web 多会话仪表盘中。
 
 ## 功能
 
-- **统一入口**: `polycode claude`、`polycode codex`、`polycode gemini` 或任意命令
+- **统一入口**: `swarmie claude`、`swarmie codex`、`swarmie gemini` 或任意命令
 - **Web 仪表盘**: 实时终端渲染 (xterm.js)，结构化对话视图，事件时间线
 - **多会话**: 多个终端同时运行不同 AI 工具，在同一个仪表盘中切换
 - **多进程协调**: 第一个实例成为 coordinator，后续实例通过 IPC 自动注册
@@ -22,10 +22,10 @@ npm install
 npm run build
 
 # 启动（以 Claude Code 为例）
-node dist/bin/polycode.js claude
+node dist/bin/swarmie.js claude
 
 # 启动任意命令
-node dist/bin/polycode.js vim
+node dist/bin/swarmie.js vim
 
 # 打开浏览器访问
 open http://127.0.0.1:3200
@@ -34,12 +34,12 @@ open http://127.0.0.1:3200
 ## CLI 用法
 
 ```
-polycode <command> [options] [-- tool-args...]
+swarmie <command> [options] [-- tool-args...]
 ```
 
-`--` 之前是 polycode 参数，之后的全部传递给底层工具。
+`--` 之前是 swarmie 参数，之后的全部传递给底层工具。
 
-### polycode 参数
+### swarmie 参数
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -53,23 +53,23 @@ polycode <command> [options] [-- tool-args...]
 
 ```bash
 # Claude Code 交互模式
-polycode claude
+swarmie claude
 
 # Claude Code 非交互 + 录制
-polycode claude --record -- -p "fix the bug" --output-format stream-json
+swarmie claude --record -- -p "fix the bug" --output-format stream-json
 
 # Codex
-polycode codex -- "add unit tests"
+swarmie codex -- "add unit tests"
 
 # 多窗口 — 每个终端运行一个，Web 仪表盘自动聚合
-polycode claude    # 终端 1
-polycode codex     # 终端 2（自动连接到终端 1 的 coordinator）
+swarmie claude    # 终端 1
+swarmie codex     # 终端 2（自动连接到终端 1 的 coordinator）
 ```
 
 ## 架构
 
 ```
-Terminal 1: polycode claude          Terminal 2: polycode codex
+Terminal 1: swarmie claude          Terminal 2: swarmie codex
          |                                    |
     Claude Adapter (PTY)              Codex Adapter (PTY)
          |                                    |
@@ -90,7 +90,7 @@ Terminal 1: polycode claude          Terminal 2: polycode codex
 ## 项目结构
 
 ```
-bin/polycode.ts          CLI 入口
+bin/swarmie.ts          CLI 入口
 src/
   cli/                   参数解析、配置
   adapters/              适配器 (claude, codex, gemini, generic, remote)

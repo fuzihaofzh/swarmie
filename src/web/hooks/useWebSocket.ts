@@ -67,8 +67,8 @@ export function useWebSocket() {
         // Try to close the tab
         window.close();
         // Fallback if window.close() is blocked by browser
-        document.title = '[Closed] polycode';
-        document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:monospace;color:#8b949e;font-size:14px;">polycode server has stopped.</div>';
+        document.title = '[Closed] swarmie';
+        document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:monospace;color:#8b949e;font-size:14px;">swarmie server has stopped.</div>';
         return;
       case 'event': {
         const evt = msg.event as NormalizedEvent;
@@ -124,7 +124,31 @@ export function useWebSocket() {
     send({ type: 'resize', sessionId, cols, rows });
   }, [send]);
 
-  return { send, sendInput, sendResize };
+  const createSession = useCallback(async (opts: {
+    tool: string;
+    args?: string[];
+    cwd?: string;
+    sessionName?: string;
+  }): Promise<{ id: string; name: string; tool: string; status: string } | null> => {
+    try {
+      const res = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        console.error('Failed to create session:', err);
+        return null;
+      }
+      return await res.json();
+    } catch (err) {
+      console.error('Failed to create session:', err);
+      return null;
+    }
+  }, []);
+
+  return { send, sendInput, sendResize, createSession };
 }
 
 // Re-export types used in messages — matches server types

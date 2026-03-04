@@ -1,18 +1,20 @@
 import { Command } from 'commander';
 
-export interface PolycodeOptions {
+export interface SwarmieOptions {
   port: number;
+  host: string;
   web: boolean;
   log: boolean;
   theme: string;
   sessionName?: string;
   record: boolean;
   share: boolean;
+  server?: string;
 }
 
 export interface ParsedArgs {
-  tool: string;
-  polycodeOptions: PolycodeOptions;
+  tool: string | undefined;
+  swarmieOptions: SwarmieOptions;
   toolArgs: string[];
 }
 
@@ -22,60 +24,60 @@ export function createProgram(): Command {
   const program = new Command();
 
   program
-    .name('polycode')
+    .name('swarmie')
     .description('AI CLI tool aggregator — unified dashboard for Claude Code, Codex, Gemini CLI')
     .version('0.1.0')
-    .argument('<tool>', `command to launch (built-in: ${KNOWN_TOOLS.join(', ')}, or any command)`)
+    .argument('[tool]', `command to launch (built-in: ${KNOWN_TOOLS.join(', ')}, or any command)`)
     .option('--port <number>', 'Web dashboard port', '3200')
+    .option('--host <address>', 'Web dashboard listen address', '127.0.0.1')
     .option('--no-web', 'Disable web dashboard')
     .option('--log', 'Enable file logging', false)
     .option('--theme <name>', 'Dashboard theme', 'dark')
     .option('--session-name <name>', 'Custom session name')
     .option('--record', 'Record session to JSONL', false)
-    .option('--share', 'Generate shareable HTML after session', false);
+    .option('--share', 'Generate shareable HTML after session', false)
+    .option('--server <host:port>', 'Connect to a remote coordinator');
 
   return program;
 }
 
 /**
- * Parse argv, splitting polycode args from tool args at `--`.
+ * Parse argv, splitting swarmie args from tool args at `--`.
  *
- * Usage: polycode claude --port 3200 -- -p "fix bug"
+ * Usage: swarmie claude --port 3200 -- -p "fix bug"
  */
 export function parseArgs(argv: string[]): ParsedArgs {
   const doubleDashIdx = argv.indexOf('--');
-  let polycodeArgv: string[];
+  let swarmieArgv: string[];
   let toolArgs: string[];
 
   if (doubleDashIdx !== -1) {
-    polycodeArgv = argv.slice(0, doubleDashIdx);
+    swarmieArgv = argv.slice(0, doubleDashIdx);
     toolArgs = argv.slice(doubleDashIdx + 1);
   } else {
-    polycodeArgv = argv;
+    swarmieArgv = argv;
     toolArgs = [];
   }
 
   const program = createProgram();
-  program.parse(polycodeArgv);
+  program.parse(swarmieArgv);
 
-  const tool = program.args[0];
-  if (!tool) {
-    program.help();
-    process.exit(1);
-  }
+  const tool = program.args[0] as string | undefined;
 
   const opts = program.opts();
 
   return {
     tool,
-    polycodeOptions: {
+    swarmieOptions: {
       port: parseInt(opts.port, 10),
+      host: opts.host,
       web: opts.web !== false,
       log: opts.log,
       theme: opts.theme,
       sessionName: opts.sessionName,
       record: opts.record,
       share: opts.share,
+      server: opts.server,
     },
     toolArgs,
   };

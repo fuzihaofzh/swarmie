@@ -3,25 +3,23 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useSessionStore } from './hooks/useSessions';
 import { useUIStore } from './hooks/useUI';
 import { themes, applyTheme } from './themes';
-import { SessionList } from './components/SessionList';
+import { TabBar } from './components/TabBar';
 import { TerminalView } from './components/TerminalView';
-import { StructuredView } from './components/StructuredView';
-import { EventTimeline } from './components/EventTimeline';
+import { NewSessionPage } from './components/NewSessionPage';
 
 export function App() {
-  const { sendInput, sendResize } = useWebSocket();
+  const { sendInput, sendResize, createSession } = useWebSocket();
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
-  const activeSession = useSessionStore((s) =>
-    s.sessions.find((sess) => sess.id === s.activeSessionId),
-  );
 
   const drawerOpen = useUIStore((s) => s.drawerOpen);
-  const closeDrawer = useUIStore((s) => s.closeDrawer);
   const toggleDrawer = useUIStore((s) => s.toggleDrawer);
   const themeName = useUIStore((s) => s.theme);
-  const activeTab = useUIStore((s) => s.activeTab);
-  const setActiveTab = useUIStore((s) => s.setActiveTab);
+  const showNewSession = useUIStore((s) => s.showNewSession);
+  const setShowNewSession = useUIStore((s) => s.setShowNewSession);
+  const setActiveSession = useSessionStore((s) => s.setActiveSession);
+
+  const showNewSessionPage = showNewSession || sessions.length === 0;
 
   const currentTheme = themes[themeName] ?? themes['github-dark'];
 
@@ -30,12 +28,42 @@ export function App() {
     applyTheme(currentTheme);
   }, [currentTheme]);
 
+  // Cmd+Left / Cmd+Right to switch tabs, Cmd+T to new tab
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!e.metaKey) return;
+      if (e.key === 't' && e.ctrlKey) {
+        e.preventDefault();
+        useUIStore.getState().setShowNewSession(true);
+        return;
+      }
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const { sessions, activeSessionId } = useSessionStore.getState();
+      if (sessions.length < 2) return;
+      e.preventDefault();
+      const idx = sessions.findIndex((s) => s.id === activeSessionId);
+      const next = e.key === 'ArrowRight'
+        ? (idx + 1) % sessions.length
+        : (idx - 1 + sessions.length) % sessions.length;
+      setActiveSession(sessions[next].id);
+      useUIStore.getState().setShowNewSession(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [setActiveSession]);
+
   return (
     <div className="app-layout">
-      {/* Drawer — push layout, sits alongside main content */}
+      {/* Overlay */}
+      <div
+        className={`overlay ${drawerOpen ? 'open' : ''}`}
+        onClick={toggleDrawer}
+      />
+
+      {/* Drawer — fixed overlay mode */}
       <div className={`drawer ${drawerOpen ? 'open' : ''}`}>
         <div className="drawer-header">
-          <h3>polycode</h3>
+          <h3>swarmie</h3>
           <button className="drawer-close" onClick={toggleDrawer}>
             &times;
           </button>
@@ -46,68 +74,33 @@ export function App() {
             <div className="drawer-section-header">Settings</div>
             <DrawerSettings />
           </div>
-
-          {/* Sessions */}
-          <div className="drawer-section">
-            <div className="drawer-section-header">Sessions</div>
-            <SessionList />
-          </div>
         </div>
       </div>
 
       {/* Main area */}
       <div className="app-main">
-        {/* Header */}
-        <div className="header">
-          <button className="menu-btn" onClick={toggleDrawer}>
-            <span />
-            <span />
-            <span />
-          </button>
-          <div className="header-title">
-            {activeSession ? (
-              <>
-                <span className="tool-name">{activeSession.displayName}</span>
-                <span className="sep">@</span>
-                <span className="host-name">{activeSession.hostname}</span>
-                <span className="sep">:</span>
-                <span className="session-cwd">{shortPath(activeSession.cwd)}</span>
-              </>
-            ) : (
-              <span className="no-session">No active session</span>
-            )}
-          </div>
-          {activeSessionId && (
-            <div className="header-tabs">
-              <button
-                className={`tab-btn ${activeTab === 'terminal' ? 'active' : ''}`}
-                onClick={() => setActiveTab('terminal')}
-              >
-                Terminal
-              </button>
-              <button
-                className={`tab-btn ${activeTab === 'structured' ? 'active' : ''}`}
-                onClick={() => setActiveTab('structured')}
-              >
-                Structured
-              </button>
-              <button
-                className={`tab-btn ${activeTab === 'events' ? 'active' : ''}`}
-                onClick={() => setActiveTab('events')}
-              >
-                Events
-              </button>
-            </div>
-          )}
-        </div>
+        {/* Tab Bar */}
+        <TabBar />
 
         {/* Main Content */}
         <div className="terminal-container">
-          {sessions.length === 0 && <EmptyState />}
+          {showNewSessionPage && (
+            <NewSessionPage
+              onCreateSession={async (opts) => {
+                const result = await createSession(opts);
+                if (result) {
+                  setShowNewSession(false);
+                  setActiveSession(result.id);
+                }
+                return result;
+              }}
+              onCancel={sessions.length > 0 ? () => setShowNewSession(false) : undefined}
+            />
+          )}
 
           {/* One TerminalView per session, all always mounted, only active one visible */}
           {sessions.map((s) => {
-            const isActive = s.id === activeSessionId && activeTab === 'terminal';
+            const isActive = s.id === activeSessionId && !showNewSessionPage;
             return (
             <div
               key={`term-${s.id}`}
@@ -130,12 +123,6 @@ export function App() {
             );
           })}
 
-          {activeSessionId && activeTab === 'structured' && (
-            <StructuredView sessionId={activeSessionId} />
-          )}
-          {activeSessionId && activeTab === 'events' && (
-            <EventTimeline sessionId={activeSessionId} />
-          )}
         </div>
       </div>
     </div>
@@ -146,9 +133,11 @@ function DrawerSettings() {
   const themeName = useUIStore((s) => s.theme);
   const fontSize = useUIStore((s) => s.fontSize);
   const fontFamily = useUIStore((s) => s.fontFamily);
+  const bellSound = useUIStore((s) => s.bellSound);
   const setTheme = useUIStore((s) => s.setTheme);
   const setFontSize = useUIStore((s) => s.setFontSize);
   const setFontFamily = useUIStore((s) => s.setFontFamily);
+  const setBellSound = useUIStore((s) => s.setBellSound);
 
   return (
     <div className="settings-section">
@@ -187,32 +176,17 @@ function DrawerSettings() {
           <option value="monospace">System Monospace</option>
         </select>
       </div>
-    </div>
-  );
-}
-
-/** Shorten home dir to ~ */
-function shortPath(p: string): string {
-  const home = '/Users/';
-  if (p.startsWith(home)) {
-    const rest = p.slice(home.length);
-    const slashIdx = rest.indexOf('/');
-    if (slashIdx === -1) return '~';
-    return '~' + rest.slice(slashIdx);
-  }
-  return p;
-}
-
-function EmptyState() {
-  return (
-    <div className="empty-state">
-      <div>
-        <div className="icon">&gt;_</div>
-        <h2>No active sessions</h2>
-        <p>Start a session from the terminal:</p>
-        <code>polycode claude -- -p "fix the bug"</code>
-        <code>polycode codex -- "add tests"</code>
-        <code>polycode gemini -- -p "refactor utils"</code>
+      <div className="setting-group">
+        <label className="toggle-label">
+          <span>Bell Sound</span>
+          <button
+            className={`toggle-switch ${bellSound ? 'on' : ''}`}
+            onClick={() => setBellSound(!bellSound)}
+            aria-label="Toggle bell sound"
+          >
+            <span className="toggle-knob" />
+          </button>
+        </label>
       </div>
     </div>
   );
