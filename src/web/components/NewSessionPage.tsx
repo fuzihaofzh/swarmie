@@ -1,42 +1,7 @@
 import { useState } from 'react';
 import { useServerStore, LOCAL_SERVER } from '../hooks/useServers';
 import { useSessionStore } from '../hooks/useSessions';
-
-const RECENT_DIRS_KEY = 'swarmie-recent-dirs-v2';
-const MAX_RECENT = 12;
-
-interface RecentEntry {
-  dir: string;
-  hostname?: string;
-}
-
-function loadRecent(): RecentEntry[] {
-  try {
-    return JSON.parse(localStorage.getItem(RECENT_DIRS_KEY) || '[]');
-  } catch { return []; }
-}
-
-function saveRecent(entry: RecentEntry) {
-  const list = loadRecent().filter((e) => !(e.dir === entry.dir && e.hostname === entry.hostname));
-  list.unshift(entry);
-  localStorage.setItem(RECENT_DIRS_KEY, JSON.stringify(list.slice(0, MAX_RECENT)));
-}
-
-/** Merge persisted history with live session cwds, newest first */
-function getRecentEntries(sessions: { cwd: string; hostname: string }[]): RecentEntry[] {
-  const saved = loadRecent();
-  const keys = new Set(saved.map((e) => `${e.hostname || ''}:${e.dir}`));
-  for (const s of sessions) {
-    if (s.cwd && s.cwd !== '~') {
-      const key = `${s.hostname || ''}:${s.cwd}`;
-      if (!keys.has(key)) {
-        saved.push({ dir: s.cwd, hostname: s.hostname || undefined });
-        keys.add(key);
-      }
-    }
-  }
-  return saved.slice(0, MAX_RECENT);
-}
+import { saveRecentDir, getRecentEntries } from '../recentDirs';
 
 interface NewSessionPageProps {
   onCreateSession: (opts: {
@@ -57,7 +22,7 @@ export function NewSessionPage({ onCreateSession, onCancel }: NewSessionPageProp
 
   const handleStart = async (cwd?: string, hostname?: string) => {
     if (creating) return;
-    if (cwd) saveRecent({ dir: cwd, hostname });
+    if (cwd) saveRecentDir({ dir: cwd, hostname });
     setCreating(true);
     await onCreateSession({
       serverUrl: selectedServer || undefined,

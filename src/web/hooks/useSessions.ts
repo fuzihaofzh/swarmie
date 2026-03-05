@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { useUIStore } from './useUI';
 import { playBellSound } from '../bellSound';
+import { saveRecentDir } from '../recentDirs';
 
 export interface SessionSummary {
   id: string;
@@ -146,6 +147,10 @@ export const useSessionStore = create<SessionState>((set) => ({
       }
       if (event.type === 'cwd:change') {
         const { cwd } = event.data as { cwd: string };
+        const session = sessions.find((s) => s.id === event.sessionId);
+        if (cwd && cwd !== '~') {
+          saveRecentDir({ dir: cwd, hostname: session?.hostname });
+        }
         sessions = sessions.map((s) =>
           s.id === event.sessionId ? { ...s, cwd } : s,
         );
