@@ -170,7 +170,9 @@ class ServerManager {
         var env = ProcessInfo.processInfo.environment
         let nodeBinDir = (nodePath as NSString).deletingLastPathComponent
         let shellPath = loginShellPath() ?? env["PATH"] ?? "/usr/bin:/bin"
-        env["PATH"] = "\(nodeBinDir):\(shellPath)"
+        // Put shell PATH first so system npm/npx (with full lib/) is preferred;
+        // bundled node is only a fallback for running the server itself
+        env["PATH"] = "\(shellPath):\(nodeBinDir)"
         proc.environment = env
         NSLog("[swarmie-server] PATH: %@", env["PATH"] ?? "")
         let pipe = Pipe()
