@@ -210,8 +210,8 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
   app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
     const url = request.url;
 
-    // Always allow auth-related routes
-    if (url === '/login' || url === '/setup' || url.startsWith('/api/auth') || url === '/favicon.ico') {
+    // Always allow auth-related routes and CORS preflight
+    if (request.method === 'OPTIONS' || url === '/login' || url === '/setup' || url.startsWith('/api/auth') || url === '/favicon.ico') {
       return;
     }
 
