@@ -270,6 +270,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         webView = WKWebView(frame: rect, configuration: config)
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = self
+        // Include "Safari" in UA so xterm.js detects WebKit correctly (fixes IME input)
+        webView.customUserAgent = "Mozilla/5.0 (Macintosh; ARM Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15 Swarmie"
         window.contentView = webView
 
         webView.loadHTMLString(loadingHTML(), baseURL: nil)
