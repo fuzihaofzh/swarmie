@@ -264,6 +264,7 @@ function createWindow() {
     minWidth: 600,
     minHeight: 400,
     title: 'Swarmie',
+    backgroundColor: '#fdf6e3',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

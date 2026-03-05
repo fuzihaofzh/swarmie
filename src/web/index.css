@@ -300,6 +300,7 @@ body,
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  background: var(--terminal-bg, #000);
 }
 
 /* Session Items */
@@ -862,6 +863,8 @@ body,
 }
 
 /* xterm overrides */
-.xterm {
+.xterm,
+.xterm-viewport {
   height: 100%;
+  background: var(--terminal-bg, #000) !important;
 }

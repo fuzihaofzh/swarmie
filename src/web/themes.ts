@@ -288,4 +288,5 @@ export function applyTheme(theme: Theme): void {
   root.style.setProperty('--error', theme.error);
   root.style.setProperty('--user-color', theme.userColor);
   root.style.setProperty('--selected-bg', theme.selectedBg);
+  root.style.setProperty('--terminal-bg', theme.terminal.background);
 }
