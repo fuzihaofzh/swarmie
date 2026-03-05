@@ -11,9 +11,10 @@ interface TerminalViewProps {
   isActive?: boolean;
   onInput?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
+  onRedraw?: () => void;
 }
 
-export function TerminalView({ sessionId, isActive, onInput, onResize }: TerminalViewProps) {
+export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw }: TerminalViewProps) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
@@ -69,29 +70,17 @@ export function TerminalView({ sessionId, isActive, onInput, onResize }: Termina
       term.loadAddon(fitAddon);
       term.open(el);
 
-      // WKWebView: clear native DOM selection on click
-      const screen = el.querySelector('.xterm-screen');
-      if (screen) {
-        screen.addEventListener('mousedown', () => {
-          window.getSelection()?.removeAllRanges();
-        });
-      }
-
       // Intercept Shift+Enter: send backslash then Enter for newline in Claude Code
       // Claude Code uses `\` + Enter as the newline shortcut in non-kitty terminals
-      // Block both keydown and keypress to prevent xterm from also sending \r
-      let shiftEnterPending = false;
       term.attachCustomKeyEventHandler((e) => {
         if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
           if (e.type === 'keydown') {
-            shiftEnterPending = true;
+            e.preventDefault();
+            e.stopPropagation();
             onInput?.('\\');
-            setTimeout(() => {
-              shiftEnterPending = false;
-              onInput?.('\r');
-            }, 30);
+            setTimeout(() => onInput?.('\r'), 30);
           }
-          return false; // block both keydown and keypress
+          return false;
         }
         return true;
       });
@@ -170,10 +159,12 @@ export function TerminalView({ sessionId, isActive, onInput, onResize }: Termina
       term.write(bytes);
     });
 
-    // After (re)connecting, nudge the PTY with a resize so ink-based apps
-    // (Claude Code) redraw their current UI on the fresh terminal.
+    // After (re)connecting, trigger a SIGWINCH on the PTY (at its current size)
+    // so ink-based apps (Claude Code) redraw their UI on the fresh terminal.
+    // This works for both local and non-local sessions (unlike onResize which
+    // is blocked for local sessions).
     setTimeout(() => {
-      onResize?.(term.cols, term.rows);
+      onRedraw?.();
     }, 200);
 
     return () => {

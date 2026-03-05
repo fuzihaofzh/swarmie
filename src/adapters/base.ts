@@ -64,6 +64,11 @@ export abstract class BaseAdapter extends EventEmitter {
   /** Kill the underlying process */
   abstract kill(signal?: string): void;
 
+  /** Re-send current size to trigger SIGWINCH (forces ink apps to redraw) */
+  redraw(): void {
+    this.resize(this.cols, this.rows);
+  }
+
   /** Whether the process is still running */
   abstract get isRunning(): boolean;
 

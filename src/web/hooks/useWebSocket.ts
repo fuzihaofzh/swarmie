@@ -148,6 +148,10 @@ export function useWebSocket() {
     send({ type: 'resize', sessionId, cols, rows });
   }, [send]);
 
+  const sendRedraw = useCallback((sessionId: string) => {
+    send({ type: 'redraw', sessionId });
+  }, [send]);
+
   const createSession = useCallback(async (opts: {
     tool: string;
     args?: string[];
@@ -172,7 +176,7 @@ export function useWebSocket() {
     }
   }, []);
 
-  return { send, sendInput, sendResize, createSession };
+  return { send, sendInput, sendResize, sendRedraw, createSession };
 }
 
 // Re-export types used in messages — matches server types

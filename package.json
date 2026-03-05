@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src bin",
-    "build:app": "bash desktop/build.sh",
+    "build:electron": "bash desktop/build-electron.sh",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

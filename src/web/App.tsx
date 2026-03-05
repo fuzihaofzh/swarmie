@@ -8,7 +8,7 @@ import { TerminalView } from './components/TerminalView';
 import { NewSessionPage } from './components/NewSessionPage';
 
 export function App() {
-  const { sendInput, sendResize, createSession } = useWebSocket();
+  const { sendInput, sendResize, sendRedraw, createSession } = useWebSocket();
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
 
@@ -118,6 +118,7 @@ export function App() {
                 isActive={isActive}
                 onInput={(data) => sendInput(s.id, data)}
                 onResize={(cols, rows) => sendResize(s.id, cols, rows)}
+                onRedraw={() => sendRedraw(s.id)}
               />
             </div>
             );

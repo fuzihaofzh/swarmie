@@ -186,6 +186,14 @@ function handleMessage(
       }
       break;
     }
+    case 'redraw': {
+      const sessionId = msg.sessionId as string;
+      if (sessionId) {
+        const session = manager.getSession(sessionId);
+        session?.redraw();
+      }
+      break;
+    }
   }
 }
 

@@ -82,6 +82,11 @@ export class Session extends EventEmitter {
     this.adapter.resize(cols, rows);
   }
 
+  /** Trigger SIGWINCH at current PTY size — forces ink apps to redraw */
+  redraw(): void {
+    this.adapter.redraw();
+  }
+
   kill(signal?: string): void {
     this.adapter.kill(signal);
   }
