@@ -126,10 +126,10 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
         toolArgs: args ?? [],
         cols: cols ?? 120,
         rows: rows ?? 30,
-        cwd: cwd || undefined,
+        cwd: cwd || homedir(),
       });
 
-      const session = manager.addSession(sessionId, name, adapter);
+      const session = manager.addSession(sessionId, name, adapter, { cwd: cwd || homedir() });
       session.isLocal = false;
       session.start();
 
