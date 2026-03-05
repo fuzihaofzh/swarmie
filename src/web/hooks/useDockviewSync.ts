@@ -228,8 +228,7 @@ export function useDockviewSync(api: DockviewApi | null) {
     }
 
     // If showNewSession or no sessions, show new session panel.
-    // Skip when layout was restored — sessions will arrive from WS shortly.
-    if (!restored && (useUIStore.getState().showNewSession || sessions.length === 0)) {
+    if (useUIStore.getState().showNewSession || sessions.length === 0) {
       useUIStore.getState().setShowNewSession(true);
     }
   }, [api]);
