@@ -42,6 +42,19 @@ interface SessionState {
 const MAX_EVENTS_PER_SESSION = 2000;
 const EMPTY_EVENTS: NormalizedEvent[] = [];
 
+const AUTO_APPROVE_KEY = 'swarmie-auto-approve-map';
+
+function loadAutoApproveMap(): Record<string, boolean> {
+  try { return JSON.parse(localStorage.getItem(AUTO_APPROVE_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+function saveAutoApproveMap(sessions: SessionSummary[]) {
+  const map: Record<string, boolean> = {};
+  for (const s of sessions) { if (s.autoApprove) map[s.id] = true; }
+  localStorage.setItem(AUTO_APPROVE_KEY, JSON.stringify(map));
+}
+
 /** Module-level callback set by useWebSocket to send auto-approve input */
 let autoApproveSend: ((sessionId: string) => void) | null = null;
 export function registerAutoApproveSend(fn: ((sessionId: string) => void) | null) {
@@ -60,15 +73,21 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   setSessions: (sessions) =>
     set((state) => {
-      const activeSessionId = state.activeSessionId ?? sessions[0]?.id ?? null;
-      return { sessions, activeSessionId };
+      const saved = loadAutoApproveMap();
+      const merged = sessions.map((s) =>
+        saved[s.id] ? { ...s, autoApprove: true } : s,
+      );
+      const activeSessionId = state.activeSessionId ?? merged[0]?.id ?? null;
+      return { sessions: merged, activeSessionId };
     }),
 
   addSession: (session) =>
     set((state) => {
       const exists = state.sessions.some((s) => s.id === session.id);
       if (exists) return state;
-      const sessions = [...state.sessions, session];
+      const saved = loadAutoApproveMap();
+      const merged = saved[session.id] ? { ...session, autoApprove: true } : session;
+      const sessions = [...state.sessions, merged];
       const activeSessionId = state.activeSessionId ?? session.id;
       return { sessions, activeSessionId };
     }),
@@ -137,9 +156,11 @@ export const useSessionStore = create<SessionState>((set) => ({
     })),
 
   setSessionAutoApprove: (sessionId, value) =>
-    set((state) => ({
-      sessions: state.sessions.map((s) =>
+    set((state) => {
+      const sessions = state.sessions.map((s) =>
         s.id === sessionId ? { ...s, autoApprove: value } : s,
-      ),
-    })),
+      );
+      saveAutoApproveMap(sessions);
+      return { sessions };
+    }),
 }));

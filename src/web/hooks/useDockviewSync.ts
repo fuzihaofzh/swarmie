@@ -4,6 +4,8 @@ import { useSessionStore, type SessionSummary } from './useSessions';
 import { useUIStore } from './useUI';
 import { NEW_SESSION_PANEL_ID } from '../components/DockviewCustomTab';
 
+const LAYOUT_KEY = 'swarmie-dockview-layout';
+
 /**
  * Syncs Zustand session state ↔ Dockview panels.
  * - Session added → addPanel
@@ -121,26 +123,103 @@ export function useDockviewSync(api: DockviewApi | null) {
     return unsub;
   }, [api]);
 
+  // Save layout on changes (debounced)
+  useEffect(() => {
+    if (!api) return;
+
+    let timer: ReturnType<typeof setTimeout>;
+    const disposable = api.onDidLayoutChange(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        try {
+          localStorage.setItem(LAYOUT_KEY, JSON.stringify(api.toJSON()));
+        } catch { /* ignore quota errors */ }
+      }, 500);
+    });
+
+    return () => {
+      clearTimeout(timer);
+      disposable.dispose();
+    };
+  }, [api]);
+
   // Initialize existing sessions as panels on first api ready
   useEffect(() => {
     if (!api) return;
 
     const sessions = useSessionStore.getState().sessions;
     const activeId = useSessionStore.getState().activeSessionId;
+    const sessionIds = new Set(sessions.map((s: SessionSummary) => s.id));
+    let restored = false;
 
-    for (const session of sessions) {
-      if (!api.getPanel(session.id)) {
-        api.addPanel({
-          id: session.id,
-          component: 'terminal',
-          tabComponent: 'sessionTab',
-          params: { sessionId: session.id },
-          renderer: 'always',
-        });
+    // Try restoring saved layout
+    try {
+      const raw = localStorage.getItem(LAYOUT_KEY);
+      if (raw) {
+        const savedLayout = JSON.parse(raw);
+        api.fromJSON(savedLayout);
+        restored = true;
+
+        // Remove the transient new-session panel if it was in the saved layout
+        const newSessionPanel = api.getPanel(NEW_SESSION_PANEL_ID);
+        if (newSessionPanel) {
+          suppressZustandSync.current = true;
+          api.removePanel(newSessionPanel);
+          suppressZustandSync.current = false;
+        }
+
+        // Track all panel IDs that fromJSON restored so the sync
+        // subscription can properly diff when sessions arrive from WS.
+        const restoredIds = new Set(api.panels.map((p) => p.id));
+        prevSessionIdsRef.current = restoredIds;
+
+        // Only reconcile if sessions have already loaded (non-empty).
+        // If empty, the sync subscription will handle reconciliation
+        // when setSessions fires from WS.
+        if (sessions.length > 0) {
+          // Remove panels for sessions that no longer exist
+          for (const panel of [...api.panels]) {
+            if (panel.id !== NEW_SESSION_PANEL_ID && !sessionIds.has(panel.id)) {
+              suppressZustandSync.current = true;
+              api.removePanel(panel);
+              suppressZustandSync.current = false;
+            }
+          }
+          prevSessionIdsRef.current = sessionIds;
+
+          // Add panels for new sessions not in saved layout
+          for (const session of sessions) {
+            if (!api.getPanel(session.id)) {
+              api.addPanel({
+                id: session.id,
+                component: 'terminal',
+                tabComponent: 'sessionTab',
+                params: { sessionId: session.id },
+                renderer: 'always',
+              });
+            }
+          }
+        }
       }
+    } catch {
+      restored = false;
     }
 
-    prevSessionIdsRef.current = new Set(sessions.map((s: SessionSummary) => s.id));
+    // Fallback: add panels one by one
+    if (!restored) {
+      for (const session of sessions) {
+        if (!api.getPanel(session.id)) {
+          api.addPanel({
+            id: session.id,
+            component: 'terminal',
+            tabComponent: 'sessionTab',
+            params: { sessionId: session.id },
+            renderer: 'always',
+          });
+        }
+      }
+      prevSessionIdsRef.current = sessionIds;
+    }
 
     // Activate the right panel
     if (activeId) {
@@ -148,8 +227,9 @@ export function useDockviewSync(api: DockviewApi | null) {
       if (panel) panel.api.setActive();
     }
 
-    // If showNewSession or no sessions, show new session panel
-    if (useUIStore.getState().showNewSession || sessions.length === 0) {
+    // If showNewSession or no sessions, show new session panel.
+    // Skip when layout was restored — sessions will arrive from WS shortly.
+    if (!restored && (useUIStore.getState().showNewSession || sessions.length === 0)) {
       useUIStore.getState().setShowNewSession(true);
     }
   }, [api]);
