@@ -69,6 +69,17 @@ export function TerminalView({ sessionId, isActive, onInput, onResize }: Termina
       term.loadAddon(fitAddon);
       term.open(el);
 
+      // WKWebView: prevent native DOM selection from interfering with xterm.js
+      const screen = el.querySelector('.xterm-screen');
+      if (screen) {
+        screen.addEventListener('mousedown', () => {
+          window.getSelection()?.removeAllRanges();
+        });
+        screen.addEventListener('selectstart', (e) => {
+          e.preventDefault();
+        });
+      }
+
       // Delay fit() to ensure renderer is initialized
       requestAnimationFrame(() => {
         try { fitAddon.fit(); } catch { /* ignore */ }
