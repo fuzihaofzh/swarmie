@@ -42,6 +42,12 @@ interface SessionState {
 const MAX_EVENTS_PER_SESSION = 2000;
 const EMPTY_EVENTS: NormalizedEvent[] = [];
 
+/** Module-level callback set by useWebSocket to send auto-approve input */
+let autoApproveSend: ((sessionId: string) => void) | null = null;
+export function registerAutoApproveSend(fn: ((sessionId: string) => void) | null) {
+  autoApproveSend = fn;
+}
+
 /** Stable selector for session events — returns same ref when empty */
 export function useSessionEvents(sessionId: string): NormalizedEvent[] {
   return useSessionStore((state) => state.events[sessionId] ?? EMPTY_EVENTS);
@@ -94,8 +100,14 @@ export const useSessionStore = create<SessionState>((set) => ({
         sessions = sessions.map((s) =>
           s.id === event.sessionId ? { ...s, status: newStatus } : s,
         );
-        if (newStatus === 'waiting_input' && useUIStore.getState().bellSound) {
-          playBellSound();
+        if (newStatus === 'waiting_input') {
+          const sess = sessions.find((s) => s.id === event.sessionId);
+          if (sess?.autoApprove && autoApproveSend) {
+            const sid = event.sessionId;
+            queueMicrotask(() => autoApproveSend?.(sid));
+          } else if (useUIStore.getState().bellSound) {
+            playBellSound();
+          }
         }
       }
       if (event.type === 'session:end') {
