@@ -12,13 +12,15 @@ type WSMessage = {
  */
 export class ServerConnection {
   readonly serverUrl: string;
+  readonly token?: string;
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private shutdown = false;
   private disposed = false;
 
-  constructor(serverUrl: string) {
+  constructor(serverUrl: string, token?: string) {
     this.serverUrl = serverUrl;
+    this.token = token;
   }
 
   /** Whether this connection targets the local (same-origin) server */
@@ -31,9 +33,12 @@ export class ServerConnection {
 
     useServerStore.getState().setConnectionStatus(this.serverUrl, 'connecting');
 
-    const wsUrl = this.isLocal
+    let wsUrl = this.isLocal
       ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
       : `${this.serverUrl.replace(/^http/, 'ws')}/ws`;
+    if (this.token && !this.isLocal) {
+      wsUrl += `?token=${encodeURIComponent(this.token)}`;
+    }
 
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
@@ -103,7 +108,7 @@ export class ServerConnection {
       const base = this.apiBase();
       const res = await fetch(`${base}/api/sessions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
         body: JSON.stringify(opts),
       });
       if (!res.ok) {
@@ -121,7 +126,10 @@ export class ServerConnection {
   async killSession(sessionId: string): Promise<void> {
     try {
       const base = this.apiBase();
-      await fetch(`${base}/api/sessions/${sessionId}/kill`, { method: 'POST' });
+      await fetch(`${base}/api/sessions/${sessionId}/kill`, {
+        method: 'POST',
+        headers: this.authHeaders(),
+      });
     } catch {
       // ignore
     }
@@ -130,7 +138,9 @@ export class ServerConnection {
   async fetchRecentDirs(): Promise<string[]> {
     try {
       const base = this.apiBase();
-      const r = await fetch(`${base}/api/recent-dirs`);
+      const r = await fetch(`${base}/api/recent-dirs`, {
+        headers: this.authHeaders(),
+      });
       return await r.json();
     } catch {
       return [];
@@ -140,7 +150,10 @@ export class ServerConnection {
   async pickFolder(): Promise<string | null> {
     try {
       const base = this.apiBase();
-      const r = await fetch(`${base}/api/pick-folder`, { method: 'POST' });
+      const r = await fetch(`${base}/api/pick-folder`, {
+        method: 'POST',
+        headers: this.authHeaders(),
+      });
       if (r.ok) {
         const data = await r.json();
         return data?.path ?? null;
@@ -154,6 +167,14 @@ export class ServerConnection {
   /** Returns base URL for REST calls — empty string for local server */
   private apiBase(): string {
     return this.isLocal ? '' : this.serverUrl;
+  }
+
+  /** Returns fetch headers with auth token for remote servers */
+  private authHeaders(): Record<string, string> {
+    if (this.token && !this.isLocal) {
+      return { Authorization: `Bearer ${this.token}` };
+    }
+    return {};
   }
 
   private handleMessage(msg: WSMessage): void {

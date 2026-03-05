@@ -200,7 +200,7 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
     if (body?.password && hashPassword(body.password) === passwordHash) {
       reply
         .header('Set-Cookie', `${COOKIE_NAME}=${passwordHash}; HttpOnly; Path=/; SameSite=Lax`)
-        .send({ ok: true });
+        .send({ ok: true, token: passwordHash });
     } else {
       reply.status(401).send({ error: 'Invalid password' });
     }
@@ -230,6 +230,18 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
     const token = cookies[COOKIE_NAME];
 
     if (token === passwordHash) {
+      return;
+    }
+
+    // Check Authorization header (for cross-origin remote connections)
+    const authHeader = request.headers.authorization;
+    if (authHeader?.startsWith('Bearer ') && authHeader.slice(7) === passwordHash) {
+      return;
+    }
+
+    // Check query token (for WebSocket connections which can't set headers)
+    const queryToken = (request.query as Record<string, string>)?.token;
+    if (queryToken && queryToken === passwordHash) {
       return;
     }
 

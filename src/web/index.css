@@ -497,6 +497,7 @@ body,
 
 .server-add-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
 }
@@ -529,6 +530,12 @@ body,
 .server-add-row button:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.server-auth-error {
+  color: #f85149;
+  font-size: 11px;
+  margin-top: 4px;
 }
 
 /* Server badge on tabs */

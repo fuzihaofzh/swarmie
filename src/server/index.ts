@@ -19,11 +19,11 @@ export async function createServer(
 ): Promise<{ close: () => Promise<void>; address: string }> {
   const app = Fastify({ logger: false });
 
+  // CORS must be registered BEFORE auth so that CORS headers appear on 401 responses too
+  await app.register(cors, { origin: true, credentials: true });
+
   // Auth: always enabled. CLI --password overrides; otherwise uses stored password or prompts setup.
   setupAuth(app, options.password);
-
-  // CORS for remote dashboard connections
-  await app.register(cors, { origin: true });
 
   // WebSocket support
   await app.register(websocket);

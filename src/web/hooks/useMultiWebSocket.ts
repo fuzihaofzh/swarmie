@@ -42,7 +42,7 @@ export function useMultiWebSocket() {
     // Add new servers
     for (const server of servers) {
       if (!conns.has(server.url)) {
-        const conn = new ServerConnection(server.url);
+        const conn = new ServerConnection(server.url, server.token);
         conns.set(server.url, conn);
         conn.connect();
       }

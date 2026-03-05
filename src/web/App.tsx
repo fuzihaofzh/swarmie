@@ -243,14 +243,37 @@ function DrawerServers() {
   const addServer = useServerStore((s) => s.addServer);
   const removeServer = useServerStore((s) => s.removeServer);
   const [url, setUrl] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [adding, setAdding] = useState(false);
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     const trimmed = url.trim();
     if (!trimmed) return;
-    // Ensure it has a protocol
     const normalized = trimmed.startsWith('http') ? trimmed : `http://${trimmed}`;
-    addServer(normalized);
-    setUrl('');
+
+    setAdding(true);
+    setAuthError('');
+    try {
+      // Authenticate with remote server
+      const res = await fetch(`${normalized}/api/auth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      if (!res.ok) {
+        setAuthError('Authentication failed');
+        setAdding(false);
+        return;
+      }
+      const data = await res.json();
+      addServer(normalized, undefined, data.token);
+      setUrl('');
+      setPassword('');
+    } catch {
+      setAuthError('Cannot connect to server');
+    }
+    setAdding(false);
   };
 
   const localStatus = connectionStatus[''] ?? 'connecting';
@@ -286,12 +309,19 @@ function DrawerServers() {
           placeholder="host:port or URL"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
+        />
+        <input
+          type="password"
+          placeholder="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
         />
-        <button onClick={handleAdd} disabled={!url.trim()}>
-          Add
+        <button onClick={handleAdd} disabled={!url.trim() || !password || adding}>
+          {adding ? '...' : 'Add'}
         </button>
       </div>
+      {authError && <div className="server-auth-error">{authError}</div>}
     </div>
   );
 }

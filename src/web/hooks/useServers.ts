@@ -3,6 +3,7 @@ import { create } from 'zustand';
 export interface ServerEntry {
   url: string;
   label: string;
+  token?: string;
 }
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -14,7 +15,8 @@ interface ServerState {
   /** Remote servers only — local is always implicit */
   servers: ServerEntry[];
   connectionStatus: Record<string, ConnectionStatus>;
-  addServer: (url: string, label?: string) => void;
+  addServer: (url: string, label?: string, token?: string) => void;
+  getToken: (url: string) => string | undefined;
   removeServer: (url: string) => void;
   setConnectionStatus: (url: string, status: ConnectionStatus) => void;
 }
@@ -37,15 +39,20 @@ export const useServerStore = create<ServerState>((set) => ({
   servers: loadServers(),
   connectionStatus: {},
 
-  addServer: (url, label) =>
+  addServer: (url, label, token) =>
     set((state) => {
       // Normalize: strip trailing slash
       const normalized = url.replace(/\/+$/, '');
       if (!normalized || state.servers.some((s) => s.url === normalized)) return state;
-      const servers = [...state.servers, { url: normalized, label: label || normalized }];
+      const servers = [...state.servers, { url: normalized, label: label || normalized, token }];
       saveServers(servers);
       return { servers };
     }),
+
+  getToken: (url) => {
+    const state = useServerStore.getState();
+    return state.servers.find((s) => s.url === url)?.token;
+  },
 
   removeServer: (url) =>
     set((state) => {
