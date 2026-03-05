@@ -7,10 +7,10 @@
     "swarmie": "./dist/bin/swarmie.js"
   },
   "scripts": {
-    "build": "tsc && vite build",
-    "build:server": "tsc",
-    "build:web": "vite build",
-    "dev": "tsc --watch",
+    "build": "npx tsc && npx vite build",
+    "build:server": "npx tsc",
+    "build:web": "npx vite build",
+    "dev": "npx tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src bin",
