@@ -1,153 +1,134 @@
 # swarmie
 
-A web-based dashboard for orchestrating AI workloads. Monitor, control, and collaborate on multiple AI agent sessions from anywhere — your browser, your phone, or a shared team screen.
+AI terminal multiplexer for the browser. Run Claude Code, Codex, Gemini CLI — or any command — and manage everything from a single web dashboard.
 
-> **Not just for coding agents.** Swarmie wraps any CLI tool via PTY — AI assistants, data pipelines, DevOps scripts, CI/CD tasks — and streams them to a real-time web dashboard.
+```
+┌─ ☰ ─┬─ >_ ~/project ─┬─ >_ ~/api ─┬─ + ─────────────────────┐
+│                                                                │
+│  $ claude "refactor auth module"                               │
+│                                                                │
+│  ● I'll refactor the auth module. Let me start by reading...   │
+│                                                                │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
 
-## Why Swarmie
+## Install
 
-- **Access from anywhere** — The web dashboard works on any device with a browser. Run agents on a remote server, monitor from your iPad.
-- **Team-friendly** — Multiple people can share the same dashboard, watching and interacting with all running sessions in real time.
-- **Tool-agnostic** — Not limited to AI coding assistants. Wrap any CLI process: `swarmie claude`, `swarmie python train.py`, `swarmie kubectl logs -f ...`
-- **Zero external dependencies** — No tmux, no screen, no special setup. Just Node.js.
-- **Native macOS app** — Self-contained `.app` bundle with embedded Node.js runtime. Double-click and go.
+```bash
+npm install
+npm run build
+```
+
+## Usage
+
+```bash
+# Server-only mode — opens dashboard with a default shell
+swarmie
+
+# Launch a specific tool
+swarmie claude
+swarmie codex
+swarmie gemini
+
+# Launch any command
+swarmie python train.py
+swarmie vim
+
+# Multiple terminals auto-aggregate into one dashboard
+# Terminal 1
+swarmie claude
+# Terminal 2 (auto-discovers the running coordinator)
+swarmie codex -- "add unit tests"
+# Both appear at http://localhost:3200
+```
+
+First visit to the dashboard prompts you to set a password. Subsequent visits require login.
 
 ## Features
 
-- **Real-time terminal** — Full terminal rendering via xterm.js, streamed over WebSocket
-- **Multi-session tabs** — Run and switch between multiple sessions in one dashboard
-- **Multi-process coordination** — Each `swarmie` instance auto-discovers the coordinator via IPC; sessions aggregate automatically
-- **Remote control** — Send input, resize, or kill any session from the web UI
-- **Session recording** — `--record` captures sessions as JSONL for replay and analysis
-- **6 built-in themes** — Solarized Light/Dark, Dracula, Nord, Monokai, GitHub Dark
-- **Keyboard shortcuts** — Fast session switching and management
+- **Multi-session tabs** — Each session runs in its own PTY, rendered via xterm.js
+- **Auto-detection** — Detects Claude/Codex/Gemini running inside a shell and shows the appropriate icon
+- **Dynamic cwd** — Tab titles update as you `cd` around (via OSC 7)
+- **Multi-server** — Connect to remote swarmie instances from a single dashboard, with per-server authentication
+- **Password protection** — Browser-based setup, stored locally
+- **6 themes** — Solarized Light/Dark, Dracula, Nord, Monokai, GitHub Dark
+- **Session recording** — `--record` captures to JSONL for replay
+- **Recent directories** — VSCode-style recent dirs list, persisted across sessions
+- **Keyboard shortcuts** — `Cmd+←/→` switch tabs, `Ctrl+Cmd+T` new tab
 
-## Quick Start
-
-```bash
-# Install dependencies
-npm install
-
-# Build
-npm run build
-
-# Start with Claude Code
-node dist/bin/swarmie.js claude
-
-# Start with any command
-node dist/bin/swarmie.js vim
-
-# Open the dashboard
-open http://127.0.0.1:3200
-```
-
-### Multi-Agent Workflow
-
-```bash
-# Terminal 1 — starts the coordinator + web server
-swarmie claude
-
-# Terminal 2 — auto-connects to the existing coordinator
-swarmie codex -- "add unit tests"
-
-# Terminal 3 — any CLI tool works
-swarmie python scripts/analyze.py
-
-# All three sessions appear in the same dashboard at localhost:3200
-```
-
-### macOS Desktop App
-
-```bash
-# Build the self-contained app (bundles Node.js + all dependencies)
-bash desktop/build.sh
-
-# Run
-open dist/Swarmie.app
-
-# Or install
-cp -r dist/Swarmie.app /Applications/
-```
-
-## CLI Usage
+## CLI Options
 
 ```
-swarmie <command> [options] [-- tool-args...]
+swarmie [command] [options] [-- tool-args...]
 ```
-
-Everything before `--` is a swarmie option; everything after is passed to the underlying tool.
-
-### Options
 
 | Option | Default | Description |
-|--------|---------|-------------|
-| `--port <n>` | 3200 | Web server port |
-| `--no-web` | - | Don't start the web server |
-| `--session-name <name>` | Auto-generated | Session display name |
-| `--record` | - | Record session to JSONL |
-| `--log` | - | Enable logging |
+|---|---|---|
+| `--port <n>` | `3200` | Dashboard port |
+| `--host <addr>` | `127.0.0.1` | Listen address (`0.0.0.0` for remote access) |
+| `--password <pw>` | — | Set dashboard password via CLI |
+| `--session-name <name>` | auto | Custom session name |
+| `--record` | — | Record session to JSONL |
+| `--share` | — | Generate shareable HTML after session |
+| `--server <host:port>` | — | Connect to a remote coordinator |
+| `--no-web` | — | Disable the web dashboard |
+| `--log` | — | Enable file logging |
+
+## Multi-Server Setup
+
+Run swarmie on a remote machine:
+
+```bash
+# On remote server
+swarmie --host 0.0.0.0
+```
+
+In the local dashboard, open the drawer (☰), add the remote server address and its password. Sessions from both machines appear in the same UI.
 
 ## Architecture
 
 ```
-Terminal 1: swarmie claude          Terminal 2: swarmie codex
-         |                                    |
-    Claude Adapter (PTY)              Codex Adapter (PTY)
-         |                                    |
-         +--- IPC (Unix Socket) ---+----------+
-                                   |
-                            Session Manager
-                                   |
-                        Fastify (HTTP + WebSocket)
-                                   |
-                     Web Dashboard (React + xterm.js)
+swarmie claude        swarmie codex        swarmie (shell)
+     │                     │                     │
+  PTY adapter           PTY adapter          PTY adapter
+     │                     │                     │
+     └──── IPC (Unix Socket) ────┬───────────────┘
+                                 │
+                          Session Manager
+                                 │
+                      Fastify (HTTP + WS)
+                                 │
+                   Browser (React + xterm.js)
 ```
 
-- **Adapters** — One per tool, wrapping a PTY subprocess via node-pty and emitting normalized events
-- **Session Manager** — Manages lifecycle and event streams for all sessions
-- **IPC** — Unix socket coordination; first process becomes the coordinator, others register as clients
-- **Web** — React 19 + xterm.js + Zustand, real-time push over WebSocket
-- **Desktop** — Swift + WKWebView, auto-starts the bundled Node.js server
+- **Coordinator pattern** — First swarmie process owns the web server and IPC socket. Subsequent processes register their sessions via IPC.
+- **Adapters** — Wrap PTY subprocesses, emit normalized events. Auto-detect tool type from terminal output.
+- **Web** — React 19 + dockview + xterm.js + Zustand. All terminals stay mounted (hidden with CSS) for instant tab switching.
 
 ## Project Structure
 
 ```
-bin/swarmie.ts          CLI entry point
+bin/swarmie.ts           CLI entry point
 src/
-  cli/                   Argument parsing, configuration
-  adapters/              Adapters (claude, codex, gemini, generic, remote)
-  session/               Session management, recording, replay
-  ipc/                   IPC server/client
-  server/                Fastify HTTP + WebSocket + static files
+  cli/                   Arg parsing, config (~/.swarmie/)
+  adapters/              claude, codex, gemini, generic, remote
+  session/               Session lifecycle, recording
+  ipc/                   Unix socket server/client
+  server/                Fastify: routes, websocket, auth, static
   web/                   React frontend
-    components/          TerminalView, TabBar, SessionCard, EventTimeline
-    hooks/               useWebSocket, useSessions, useUI
-    themes.ts            Theme definitions
-desktop/                 macOS native app (Swift + WKWebView)
-tests/                   Vitest tests
+    components/          Terminal panels, tabs, new session page
+    hooks/               WebSocket, sessions, UI, dockview sync
+    themes.ts            6 color themes
+tests/                   Vitest
 ```
-
-## Tech Stack
-
-| Package | Purpose |
-|---------|---------|
-| node-pty | PTY subprocess management |
-| fastify + @fastify/websocket | Web server |
-| @xterm/xterm | Terminal rendering |
-| React 19 + Vite | Frontend framework |
-| Zustand | State management |
-| Tailwind CSS v4 | Styling |
-| Commander | CLI argument parsing |
-| Vitest | Testing |
-| Swift + WKWebView | macOS desktop app |
 
 ## Development
 
 ```bash
-npm run build        # Build everything (TypeScript + Vite)
-npm run build:web    # Build frontend only
-npm test             # Run tests
-bash desktop/build.sh  # Build macOS app
+npm run build          # TypeScript + Vite
+npm run build:web      # Frontend only
+npm test               # 28 tests via vitest
 ```
 
 ## License
