@@ -96,11 +96,6 @@ export function TerminalView({ sessionId, isActive, onInput, onResize }: Termina
         return true;
       });
 
-      // Delay fit() to ensure renderer is initialized
-      requestAnimationFrame(() => {
-        try { fitAddon.fit(); } catch { /* ignore */ }
-      });
-
       if (onInput) {
         term.onData(onInput);
       }
@@ -119,8 +114,12 @@ export function TerminalView({ sessionId, isActive, onInput, onResize }: Termina
       termRef.current = term;
       fitRef.current = fitAddon;
 
-      // Signal that terminal is ready so the events effect re-runs
-      setTermReady((c) => c + 1);
+      // Fit first, THEN signal ready — ensures buffered data is replayed
+      // at the correct terminal dimensions, not the default 80x24.
+      requestAnimationFrame(() => {
+        try { fitAddon.fit(); } catch { /* ignore */ }
+        setTermReady((c) => c + 1);
+      });
     };
 
     requestAnimationFrame(init);
@@ -170,6 +169,12 @@ export function TerminalView({ sessionId, isActive, onInput, onResize }: Termina
       }
       term.write(bytes);
     });
+
+    // After (re)connecting, nudge the PTY with a resize so ink-based apps
+    // (Claude Code) redraw their current UI on the fresh terminal.
+    setTimeout(() => {
+      onResize?.(term.cols, term.rows);
+    }, 200);
 
     return () => {
       unregisterTerminalWriter(sessionId);

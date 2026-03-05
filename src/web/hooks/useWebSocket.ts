@@ -84,15 +84,39 @@ export function useWebSocket() {
       case 'event:batch': {
         const sid = msg.sessionId as string;
         const all = msg.events as NormalizedEvent[];
-        // Split: raw:output goes direct, rest goes to Zustand
+        // Split: raw:output goes direct, rest goes to Zustand.
+        // Merge all raw:output into a single write so xterm processes
+        // all escape sequences atomically — avoids garbled partial redraws.
         const structured: NormalizedEvent[] = [];
+        const rawChunks: string[] = [];
         for (const evt of all) {
           if (evt.type === 'raw:output') {
-            const b64 = (evt.data as { data: string }).data;
-            writeToTerminal(sid, b64);
+            rawChunks.push((evt.data as { data: string }).data);
           } else {
             structured.push(evt);
           }
+        }
+        if (rawChunks.length > 0) {
+          // Decode all base64 chunks, concatenate, re-encode as single chunk
+          const parts: Uint8Array[] = [];
+          let totalLen = 0;
+          for (const b64 of rawChunks) {
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            parts.push(bytes);
+            totalLen += bytes.length;
+          }
+          const merged = new Uint8Array(totalLen);
+          let offset = 0;
+          for (const p of parts) {
+            merged.set(p, offset);
+            offset += p.length;
+          }
+          // Convert back to base64 for the terminal writer
+          let bin = '';
+          for (let i = 0; i < merged.length; i++) bin += String.fromCharCode(merged[i]);
+          writeToTerminal(sid, btoa(bin));
         }
         if (structured.length > 0) {
           addEventBatch(sid, structured);
