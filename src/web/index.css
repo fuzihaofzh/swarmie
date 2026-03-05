@@ -143,9 +143,9 @@ body,
   --dv-background-color: var(--bg, #fdf6e3);
   --dv-paneview-header-border-color: var(--border, #30363d);
   --dv-tabs-and-actions-container-background-color: var(--header-bg, #161b22);
-  --dv-activegroup-visiblepanel-tab-background-color: var(--header-bg, #161b22);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--bg, #0d1117);
   --dv-activegroup-hiddenpanel-tab-background-color: transparent;
-  --dv-inactivegroup-visiblepanel-tab-background-color: var(--header-bg, #161b22);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--bg, #0d1117);
   --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
   --dv-tab-divider-color: transparent;
   --dv-activegroup-visiblepanel-tab-color: var(--fg, #c9d1d9);
@@ -215,7 +215,9 @@ body,
   color: var(--text-secondary, #8b949e);
   cursor: pointer;
   font-size: 20px;
-  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 0 12px;
   height: 42px;
   flex-shrink: 0;
