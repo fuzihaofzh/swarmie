@@ -171,13 +171,9 @@ body,
   min-width: 0 !important;
 }
 
-/* Global Menu Button — positioned over dockview tab strip */
-.dv-menu-btn-global {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 10;
-  background: var(--header-bg, #161b22);
+/* Menu Button — left header action in dockview tab strip */
+.dv-menu-btn {
+  background: none;
   border: none;
   padding: 6px 10px;
   cursor: pointer;
@@ -185,27 +181,21 @@ body,
   flex-direction: column;
   gap: 4px;
   color: var(--fg, #c9d1d9);
-  flex-shrink: 0;
-  height: 35px;
+  height: 100%;
   align-items: center;
   justify-content: center;
 }
 
-.dv-menu-btn-global:hover {
+.dv-menu-btn:hover {
   opacity: 0.7;
 }
 
-.dv-menu-btn-global span {
+.dv-menu-btn span {
   display: block;
   width: 18px;
   height: 2px;
   background: currentColor;
   border-radius: 1px;
-}
-
-/* Offset the first group's tab strip so it doesn't overlap the menu button */
-.dockview-container .tabs-container {
-  padding-left: 38px;
 }
 
 /* New Tab Button (right header action) */
@@ -233,7 +223,7 @@ body,
 .dv-custom-tab {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   padding: 0 8px 0 12px;
   height: 100%;
   cursor: pointer;
@@ -244,6 +234,7 @@ body,
 }
 
 .dv-tab-name {
+  margin-left: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   font-weight: 600;
@@ -881,6 +872,61 @@ body,
   outline: none;
   border-color: var(--accent, #58a6ff) !important;
   box-shadow: 0 0 0 1px var(--accent, #58a6ff);
+}
+
+.recent-section h3 {
+  font-size: 18px;
+  font-weight: 400;
+  margin: 0 0 8px 0;
+  color: var(--fg, #c9d1d9);
+}
+
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.recent-item {
+  background: none;
+  border: none;
+  padding: 4px 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  text-align: left;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.recent-item:hover {
+  background: var(--header-bg, #161b22);
+}
+
+.recent-item-name {
+  color: var(--accent, #58a6ff);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.recent-item-path {
+  color: var(--text-secondary, #8b949e);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-item-host {
+  color: var(--accent, #58a6ff);
+  opacity: 0.7;
+  margin-right: 2px;
+}
+
+.recent-more {
+  color: var(--accent, #58a6ff);
+  font-size: 14px;
 }
 
 .form-actions {

@@ -34,6 +34,15 @@ function NewTabButton(_props: IDockviewHeaderActionsProps) {
   );
 }
 
+function MenuButton(_props: IDockviewHeaderActionsProps) {
+  const toggleDrawer = useUIStore((s) => s.toggleDrawer);
+  return (
+    <button className="dv-menu-btn" onClick={toggleDrawer} title="Settings">
+      <span /><span /><span />
+    </button>
+  );
+}
+
 export function App() {
   const wsFunctions = useMultiWebSocket();
   const [api, setApi] = useState<DockviewApi | null>(null);
@@ -122,15 +131,12 @@ export function App() {
 
         {/* Main area */}
         <div className="app-main">
-          {/* Hamburger menu — global, not per-group */}
-          <button className="dv-menu-btn-global" onClick={toggleDrawer} title="Settings">
-            <span /><span /><span />
-          </button>
           <DockviewReact
             className={`dockview-container ${currentTheme.isDark ? 'dockview-theme-dark' : 'dockview-theme-light'}`}
             onReady={onReady}
             components={components}
             tabComponents={tabComponents}
+            prefixHeaderActionsComponent={MenuButton}
             rightHeaderActionsComponent={NewTabButton}
           />
         </div>

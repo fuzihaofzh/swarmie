@@ -227,9 +227,30 @@ export function useDockviewSync(api: DockviewApi | null) {
       if (panel) panel.api.setActive();
     }
 
-    // If showNewSession or no sessions, show new session panel.
-    if (useUIStore.getState().showNewSession || sessions.length === 0) {
+    if (useUIStore.getState().showNewSession) {
       useUIStore.getState().setShowNewSession(true);
     }
+  }, [api]);
+
+  // When sessions change and there are none left, auto-show new session panel.
+  // Skip the very first render (sessions empty before WS connects) by using a ref.
+  const wsDeliveredRef = useRef(false);
+  useEffect(() => {
+    if (!api) return;
+
+    const unsub = useSessionStore.subscribe((state, prev) => {
+      // Mark that WS has delivered sessions at least once
+      if (!wsDeliveredRef.current && (state.sessions !== prev.sessions)) {
+        wsDeliveredRef.current = true;
+      }
+      if (!wsDeliveredRef.current) return;
+
+      // If all sessions removed, show new session panel
+      if (state.sessions.length === 0 && !useUIStore.getState().showNewSession) {
+        useUIStore.getState().setShowNewSession(true);
+      }
+    });
+
+    return unsub;
   }, [api]);
 }
