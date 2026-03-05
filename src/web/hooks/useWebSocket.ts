@@ -1,92 +1,217 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { useSessionStore, registerAutoApproveSend } from './useSessions';
+import { useSessionStore, registerAutoApproveSend, type SessionSummary, type NormalizedEvent } from './useSessions';
 import { writeToTerminal, clearTerminalBuffer } from '../terminalBus';
+import { useServerStore, LOCAL_SERVER } from './useServers';
 
 type WSMessage = {
   type: string;
   [key: string]: unknown;
 };
 
-export function useWebSocket() {
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
-  const shutdownRef = useRef(false);
-  const { setSessions, addSession, removeSession, addEvent, addEventBatch } = useSessionStore();
+/**
+ * Manages a single WebSocket + REST connection to one swarmie server.
+ */
+export class ServerConnection {
+  readonly serverUrl: string;
+  private ws: WebSocket | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private shutdown = false;
+  private disposed = false;
 
-  const connect = useCallback(() => {
-    if (shutdownRef.current) return;
+  constructor(serverUrl: string) {
+    this.serverUrl = serverUrl;
+  }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-    wsRef.current = ws;
+  /** Whether this connection targets the local (same-origin) server */
+  get isLocal(): boolean {
+    return this.serverUrl === LOCAL_SERVER;
+  }
+
+  connect(): void {
+    if (this.disposed || this.shutdown) return;
+
+    useServerStore.getState().setConnectionStatus(this.serverUrl, 'connecting');
+
+    const wsUrl = this.isLocal
+      ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
+      : `${this.serverUrl.replace(/^http/, 'ws')}/ws`;
+
+    const ws = new WebSocket(wsUrl);
+    this.ws = ws;
 
     ws.onopen = () => {
-      // Subscribe to all sessions
+      useServerStore.getState().setConnectionStatus(this.serverUrl, 'connected');
       ws.send(JSON.stringify({ type: 'subscribe:all' }));
     };
 
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data) as WSMessage;
-        handleMessage(msg);
+        this.handleMessage(msg);
       } catch {
         // ignore
       }
     };
 
     ws.onclose = () => {
-      wsRef.current = null;
-      if (!shutdownRef.current) {
-        reconnectTimer.current = setTimeout(connect, 2000);
+      this.ws = null;
+      if (!this.shutdown && !this.disposed) {
+        useServerStore.getState().setConnectionStatus(this.serverUrl, 'disconnected');
+        this.reconnectTimer = setTimeout(() => this.connect(), 2000);
       }
     };
 
     ws.onerror = () => {
+      useServerStore.getState().setConnectionStatus(this.serverUrl, 'error');
       ws.close();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }
 
-  const handleMessage = useCallback((msg: WSMessage) => {
+  disconnect(): void {
+    this.disposed = true;
+    this.shutdown = true;
+    clearTimeout(this.reconnectTimer);
+    this.ws?.close();
+    this.ws = null;
+    useServerStore.getState().setConnectionStatus(this.serverUrl, 'disconnected');
+  }
+
+  send(msg: WSMessage): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg));
+    }
+  }
+
+  sendInput(sessionId: string, data: string): void {
+    this.send({ type: 'input', sessionId, data });
+  }
+
+  sendResize(sessionId: string, cols: number, rows: number): void {
+    this.send({ type: 'resize', sessionId, cols, rows });
+  }
+
+  sendRedraw(sessionId: string): void {
+    this.send({ type: 'redraw', sessionId });
+  }
+
+  async createSession(opts: {
+    tool: string;
+    args?: string[];
+    cwd?: string;
+    sessionName?: string;
+  }): Promise<{ id: string; name: string; tool: string; status: string } | null> {
+    try {
+      const base = this.apiBase();
+      const res = await fetch(`${base}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        console.error('Failed to create session:', err);
+        return null;
+      }
+      return await res.json();
+    } catch (err) {
+      console.error('Failed to create session:', err);
+      return null;
+    }
+  }
+
+  async killSession(sessionId: string): Promise<void> {
+    try {
+      const base = this.apiBase();
+      await fetch(`${base}/api/sessions/${sessionId}/kill`, { method: 'POST' });
+    } catch {
+      // ignore
+    }
+  }
+
+  async fetchRecentDirs(): Promise<string[]> {
+    try {
+      const base = this.apiBase();
+      const r = await fetch(`${base}/api/recent-dirs`);
+      return await r.json();
+    } catch {
+      return [];
+    }
+  }
+
+  async pickFolder(): Promise<string | null> {
+    try {
+      const base = this.apiBase();
+      const r = await fetch(`${base}/api/pick-folder`, { method: 'POST' });
+      if (r.ok) {
+        const data = await r.json();
+        return data?.path ?? null;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  /** Returns base URL for REST calls — empty string for local server */
+  private apiBase(): string {
+    return this.isLocal ? '' : this.serverUrl;
+  }
+
+  private handleMessage(msg: WSMessage): void {
+    const store = useSessionStore.getState();
+    const serverUrl = this.serverUrl;
+
     switch (msg.type) {
-      case 'session:list':
-        setSessions(msg.sessions as SessionSummary[]);
+      case 'session:list': {
+        const sessions = (msg.sessions as SessionSummary[]).map((s) => ({
+          ...s,
+          serverUrl,
+        }));
+        store.setServerSessions(serverUrl, sessions);
         break;
-      case 'session:added':
-        addSession(msg.session as SessionSummary);
+      }
+      case 'session:added': {
+        const session = { ...(msg.session as SessionSummary), serverUrl };
+        store.addSession(session);
         break;
+      }
       case 'session:removed':
         clearTerminalBuffer(msg.sessionId as string);
-        removeSession(msg.sessionId as string);
+        store.removeSession(msg.sessionId as string);
         break;
       case 'server:shutdown':
-        shutdownRef.current = true;
-        clearTimeout(reconnectTimer.current);
-        wsRef.current?.close();
-        wsRef.current = null;
-        // Try to close the tab
-        window.close();
-        // Fallback if window.close() is blocked by browser
-        document.title = '[Closed] swarmie';
-        document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:monospace;color:#8b949e;font-size:14px;">swarmie server has stopped.</div>';
-        return;
+        if (this.isLocal) {
+          // Local server shutdown — same behavior as before
+          this.shutdown = true;
+          clearTimeout(this.reconnectTimer);
+          this.ws?.close();
+          this.ws = null;
+          window.close();
+          document.title = '[Closed] swarmie';
+          document.body.innerHTML =
+            '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:monospace;color:#8b949e;font-size:14px;">swarmie server has stopped.</div>';
+        } else {
+          // Remote server shutdown — just remove its sessions
+          this.shutdown = true;
+          clearTimeout(this.reconnectTimer);
+          this.ws?.close();
+          this.ws = null;
+          useServerStore.getState().setConnectionStatus(serverUrl, 'disconnected');
+          store.removeServerSessions(serverUrl);
+        }
+        break;
       case 'event': {
         const evt = msg.event as NormalizedEvent;
-        // Route raw terminal output directly to xterm, bypass Zustand
         if (evt.type === 'raw:output') {
           const b64 = (evt.data as { data: string }).data;
           writeToTerminal(evt.sessionId, b64);
         } else {
-          addEvent(evt);
+          store.addEvent(evt);
         }
         break;
       }
       case 'event:batch': {
         const sid = msg.sessionId as string;
         const all = msg.events as NormalizedEvent[];
-        // Split: raw:output goes direct, rest goes to Zustand.
-        // Merge all raw:output into a single write so xterm processes
-        // all escape sequences atomically — avoids garbled partial redraws.
         const structured: NormalizedEvent[] = [];
         const rawChunks: string[] = [];
         for (const evt of all) {
@@ -97,7 +222,6 @@ export function useWebSocket() {
           }
         }
         if (rawChunks.length > 0) {
-          // Decode all base64 chunks, concatenate, re-encode as single chunk
           const parts: Uint8Array[] = [];
           let totalLen = 0;
           for (const b64 of rawChunks) {
@@ -113,95 +237,25 @@ export function useWebSocket() {
             merged.set(p, offset);
             offset += p.length;
           }
-          // Convert back to base64 for the terminal writer
           let bin = '';
           for (let i = 0; i < merged.length; i++) bin += String.fromCharCode(merged[i]);
           writeToTerminal(sid, btoa(bin));
         }
         if (structured.length > 0) {
-          addEventBatch(sid, structured);
+          store.addEventBatch(sid, structured);
         }
         break;
       }
     }
-  }, [setSessions, addSession, removeSession, addEvent, addEventBatch]);
-
-  useEffect(() => {
-    connect();
-    return () => {
-      clearTimeout(reconnectTimer.current);
-      wsRef.current?.close();
-    };
-  }, [connect]);
-
-  const send = useCallback((msg: WSMessage) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg));
-    }
-  }, []);
-
-  // Auto-approve: register callback so useSessions can trigger input on waiting_input
-  useEffect(() => {
-    registerAutoApproveSend((sessionId) => {
-      send({ type: 'input', sessionId, data: '\r' });
-    });
-    return () => registerAutoApproveSend(null);
-  }, [send]);
-
-  const sendInput = useCallback((sessionId: string, data: string) => {
-    send({ type: 'input', sessionId, data });
-  }, [send]);
-
-  const sendResize = useCallback((sessionId: string, cols: number, rows: number) => {
-    send({ type: 'resize', sessionId, cols, rows });
-  }, [send]);
-
-  const sendRedraw = useCallback((sessionId: string) => {
-    send({ type: 'redraw', sessionId });
-  }, [send]);
-
-  const createSession = useCallback(async (opts: {
-    tool: string;
-    args?: string[];
-    cwd?: string;
-    sessionName?: string;
-  }): Promise<{ id: string; name: string; tool: string; status: string } | null> => {
-    try {
-      const res = await fetch('/api/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(opts),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        console.error('Failed to create session:', err);
-        return null;
-      }
-      return await res.json();
-    } catch (err) {
-      console.error('Failed to create session:', err);
-      return null;
-    }
-  }, []);
-
-  return { send, sendInput, sendResize, sendRedraw, createSession };
+  }
 }
 
-// Re-export types used in messages — matches server types
-interface SessionSummary {
-  id: string;
-  name: string;
-  tool: string;
-  status: string;
-  startTime: number;
-  endTime?: number;
-  displayName: string;
-  icon: string;
-}
-
-interface NormalizedEvent {
-  type: string;
-  sessionId: string;
-  timestamp: number;
-  data: Record<string, unknown>;
+/** Register the auto-approve callback that routes through the correct ServerConnection */
+export function registerAutoApproveForConnections(
+  getConnection: (sessionId: string) => ServerConnection | undefined,
+): void {
+  registerAutoApproveSend((sessionId) => {
+    const conn = getConnection(sessionId);
+    conn?.sendInput(sessionId, '\r');
+  });
 }

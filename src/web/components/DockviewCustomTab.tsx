@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import type { IDockviewPanelHeaderProps } from 'dockview';
 import { useSessionStore } from '../hooks/useSessions';
+import { useServerStore } from '../hooks/useServers';
+import { useWsContext } from '../contexts/WsContext';
 import { ToolIcon } from './ToolIcon';
 
 const NEW_SESSION_PANEL_ID = '__new_session__';
@@ -33,10 +35,16 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
   const sessionId = (params as { sessionId?: string }).sessionId;
   const session = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId));
   const setSessionAutoApprove = useSessionStore((s) => s.setSessionAutoApprove);
+  const servers = useServerStore((s) => s.servers);
+  const { killSession } = useWsContext();
 
   if (!session) return null;
 
   const active = !!session.autoApprove;
+  const multiServer = servers.length > 0;
+  const serverLabel = multiServer && session.serverUrl
+    ? servers.find((s) => s.url === session.serverUrl)?.label ?? session.serverUrl
+    : null;
 
   const handleShieldClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -45,11 +53,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
 
   const handleClose = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await fetch(`/api/sessions/${session.id}/kill`, { method: 'POST' });
-    } catch {
-      // ignore
-    }
+    await killSession(session.id);
   };
 
   return (
@@ -62,6 +66,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
       <ToolIcon tool={session.tool} status={session.status} />
       <span className="dv-tab-name">{session.displayName}</span>
       <span className="dv-tab-cwd">{shortPath(session.cwd)}</span>
+      {serverLabel && <span className="dv-tab-server">{serverLabel}</span>}
       <span
         className={`dv-tab-shield ${active || hovered ? 'visible' : ''}`}
         onClick={handleShieldClick}

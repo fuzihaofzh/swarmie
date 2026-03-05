@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ToolIcon } from './ToolIcon';
+import { useServerStore, LOCAL_SERVER } from '../hooks/useServers';
+import { useWsContext } from '../contexts/WsContext';
 
 const PRESET_TOOLS = [
   { id: 'claude', label: 'Claude Code', desc: 'Anthropic Claude CLI' },
@@ -40,6 +42,7 @@ interface NewSessionPageProps {
     args?: string[];
     cwd?: string;
     sessionName?: string;
+    serverUrl?: string;
   }) => Promise<{ id: string } | null>;
   onCancel?: () => void;
 }
@@ -52,6 +55,12 @@ export function NewSessionPage({ onCreateSession, onCancel }: NewSessionPageProp
   const [sessionName, setSessionName] = useState('');
   const [creating, setCreating] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [selectedServer, setSelectedServer] = useState(LOCAL_SERVER);
+
+  // Server list
+  const servers = useServerStore((s) => s.servers);
+  const multiServer = servers.length > 0;
+  const { getConnection } = useWsContext();
 
   // Recent dirs
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
@@ -63,20 +72,31 @@ export function NewSessionPage({ onCreateSession, onCancel }: NewSessionPageProp
   const canStart = tool.trim().length > 0 && !creating;
 
   useEffect(() => {
-    fetch('/api/recent-dirs')
-      .then((r) => r.json())
-      .then((dirs) => setRecentDirs(dirs))
-      .catch(() => {});
+    const conn = getConnection(selectedServer);
+    if (conn) {
+      conn.fetchRecentDirs().then(setRecentDirs);
+    } else {
+      fetch('/api/recent-dirs')
+        .then((r) => r.json())
+        .then((dirs) => setRecentDirs(dirs))
+        .catch(() => {});
+    }
     setRecentConfigs(loadRecentConfigs());
-  }, []);
+  }, [selectedServer, getConnection]);
 
   const pickFolder = async () => {
     setPicking(true);
     try {
-      const r = await fetch('/api/pick-folder', { method: 'POST' });
-      if (r.ok) {
-        const data = await r.json();
-        if (data?.path) setCwd(data.path);
+      const conn = getConnection(selectedServer);
+      if (conn) {
+        const path = await conn.pickFolder();
+        if (path) setCwd(path);
+      } else {
+        const r = await fetch('/api/pick-folder', { method: 'POST' });
+        if (r.ok) {
+          const data = await r.json();
+          if (data?.path) setCwd(data.path);
+        }
       }
     } catch {
       // user cancelled or error
@@ -105,6 +125,7 @@ export function NewSessionPage({ onCreateSession, onCancel }: NewSessionPageProp
       args: toolArgs,
       cwd: cwd.trim() || undefined,
       sessionName: sessionName.trim() || undefined,
+      serverUrl: selectedServer || undefined,
     });
   };
 
@@ -117,6 +138,22 @@ export function NewSessionPage({ onCreateSession, onCancel }: NewSessionPageProp
     <div className="new-session-page">
       <div className="new-session-content">
         <h2>New Session</h2>
+
+        {/* Server selector — only shown when multiple servers */}
+        {multiServer && (
+          <div className="form-group">
+            <label>Server</label>
+            <select
+              value={selectedServer}
+              onChange={(e) => setSelectedServer(e.target.value)}
+            >
+              <option value="">Local ({window.location.host})</option>
+              {servers.map((s) => (
+                <option key={s.url} value={s.url}>{s.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Quick Start */}
         {recentConfigs.length > 0 && (

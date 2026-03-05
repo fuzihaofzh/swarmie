@@ -14,6 +14,8 @@ export interface SessionSummary {
   cwd: string;
   hostname: string;
   autoApprove?: boolean;
+  /** '' for local server, absolute URL for remote */
+  serverUrl: string;
 }
 
 export interface NormalizedEvent {
@@ -37,6 +39,10 @@ interface SessionState {
   addEventBatch: (sessionId: string, events: NormalizedEvent[]) => void;
   updateSessionStatus: (sessionId: string, status: string) => void;
   setSessionAutoApprove: (sessionId: string, value: boolean) => void;
+  /** Replace all sessions from a given server */
+  setServerSessions: (serverUrl: string, sessions: SessionSummary[]) => void;
+  /** Remove all sessions for a disconnected server */
+  removeServerSessions: (serverUrl: string) => void;
 }
 
 const MAX_EVENTS_PER_SESSION = 2000;
@@ -74,9 +80,11 @@ export const useSessionStore = create<SessionState>((set) => ({
   setSessions: (sessions) =>
     set((state) => {
       const saved = loadAutoApproveMap();
-      const merged = sessions.map((s) =>
-        saved[s.id] ? { ...s, autoApprove: true } : s,
-      );
+      const merged = sessions.map((s) => ({
+        ...s,
+        serverUrl: s.serverUrl ?? '',
+        ...(saved[s.id] ? { autoApprove: true } : {}),
+      }));
       const activeSessionId = state.activeSessionId ?? merged[0]?.id ?? null;
       return { sessions: merged, activeSessionId };
     }),
@@ -86,7 +94,8 @@ export const useSessionStore = create<SessionState>((set) => ({
       const exists = state.sessions.some((s) => s.id === session.id);
       if (exists) return state;
       const saved = loadAutoApproveMap();
-      const merged = saved[session.id] ? { ...session, autoApprove: true } : session;
+      const tagged = { ...session, serverUrl: session.serverUrl ?? '' };
+      const merged = saved[session.id] ? { ...tagged, autoApprove: true } : tagged;
       const sessions = [...state.sessions, merged];
       const activeSessionId = state.activeSessionId ?? session.id;
       return { sessions, activeSessionId };
@@ -162,5 +171,32 @@ export const useSessionStore = create<SessionState>((set) => ({
       );
       saveAutoApproveMap(sessions);
       return { sessions };
+    }),
+
+  setServerSessions: (serverUrl, incoming) =>
+    set((state) => {
+      const saved = loadAutoApproveMap();
+      const tagged = incoming.map((s) => {
+        const merged = saved[s.id] ? { ...s, autoApprove: true, serverUrl } : { ...s, serverUrl };
+        return merged;
+      });
+      // Keep sessions from other servers, replace sessions from this server
+      const others = state.sessions.filter((s) => s.serverUrl !== serverUrl);
+      const sessions = [...others, ...tagged];
+      const activeSessionId = state.activeSessionId ?? sessions[0]?.id ?? null;
+      return { sessions, activeSessionId };
+    }),
+
+  removeServerSessions: (serverUrl) =>
+    set((state) => {
+      const removed = state.sessions.filter((s) => s.serverUrl === serverUrl);
+      const sessions = state.sessions.filter((s) => s.serverUrl !== serverUrl);
+      const events = { ...state.events };
+      for (const s of removed) delete events[s.id];
+      const activeSessionId =
+        removed.some((s) => s.id === state.activeSessionId)
+          ? (sessions[0]?.id ?? null)
+          : state.activeSessionId;
+      return { sessions, events, activeSessionId };
     }),
 }));

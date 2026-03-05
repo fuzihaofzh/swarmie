@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import type { SessionManager } from '../session/manager.js';
 import { setupRoutes } from './routes.js';
@@ -15,6 +16,9 @@ export async function createServer(
   options: ServerOptions,
 ): Promise<{ close: () => Promise<void>; address: string }> {
   const app = Fastify({ logger: false });
+
+  // CORS for remote dashboard connections
+  await app.register(cors, { origin: true });
 
   // WebSocket support
   await app.register(websocket);

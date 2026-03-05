@@ -1,9 +1,10 @@
 import { useEffect, useState, useMemo } from 'react';
 import { DockviewReact, type DockviewReadyEvent, type DockviewApi, type IDockviewHeaderActionsProps } from 'dockview';
 import 'dockview/dist/styles/dockview.css';
-import { useWebSocket } from './hooks/useWebSocket';
+import { useMultiWebSocket } from './hooks/useMultiWebSocket';
 import { useSessionStore } from './hooks/useSessions';
 import { useUIStore } from './hooks/useUI';
+import { useServerStore, type ConnectionStatus } from './hooks/useServers';
 import { themes, applyTheme } from './themes';
 import { WsContext, type WsFunctions } from './contexts/WsContext';
 import { DockviewTerminalPanel } from './components/DockviewTerminalPanel';
@@ -34,7 +35,7 @@ function NewTabButton(_props: IDockviewHeaderActionsProps) {
 }
 
 export function App() {
-  const wsFunctions = useWebSocket();
+  const wsFunctions = useMultiWebSocket();
   const [api, setApi] = useState<DockviewApi | null>(null);
 
   const drawerOpen = useUIStore((s) => s.drawerOpen);
@@ -47,7 +48,9 @@ export function App() {
     sendResize: wsFunctions.sendResize,
     sendRedraw: wsFunctions.sendRedraw,
     createSession: wsFunctions.createSession,
-  }), [wsFunctions.sendInput, wsFunctions.sendResize, wsFunctions.sendRedraw, wsFunctions.createSession]);
+    killSession: wsFunctions.killSession,
+    getConnection: wsFunctions.getConnection,
+  }), [wsFunctions.sendInput, wsFunctions.sendResize, wsFunctions.sendRedraw, wsFunctions.createSession, wsFunctions.killSession, wsFunctions.getConnection]);
 
   // Apply theme CSS variables
   useEffect(() => {
@@ -106,6 +109,10 @@ export function App() {
             </button>
           </div>
           <div className="drawer-content">
+            <div className="drawer-section">
+              <div className="drawer-section-header">Servers</div>
+              <DrawerServers />
+            </div>
             <div className="drawer-section">
               <div className="drawer-section-header">Settings</div>
               <DrawerSettings />
@@ -210,6 +217,74 @@ function DrawerSettings() {
             <span className="toggle-knob" />
           </button>
         </label>
+      </div>
+    </div>
+  );
+}
+
+function statusDotColor(status: ConnectionStatus | undefined): string {
+  switch (status) {
+    case 'connected': return '#3fb950';
+    case 'connecting': return '#d29922';
+    case 'error': return '#f85149';
+    default: return '#8b949e';
+  }
+}
+
+function DrawerServers() {
+  const servers = useServerStore((s) => s.servers);
+  const connectionStatus = useServerStore((s) => s.connectionStatus);
+  const addServer = useServerStore((s) => s.addServer);
+  const removeServer = useServerStore((s) => s.removeServer);
+  const [url, setUrl] = useState('');
+
+  const handleAdd = () => {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    // Ensure it has a protocol
+    const normalized = trimmed.startsWith('http') ? trimmed : `http://${trimmed}`;
+    addServer(normalized);
+    setUrl('');
+  };
+
+  const localStatus = connectionStatus[''] ?? 'connecting';
+
+  return (
+    <div className="settings-section">
+      {/* Local server — always shown, not removable */}
+      <div className="server-entry">
+        <span className="server-dot" style={{ background: statusDotColor(localStatus) }} />
+        <span className="server-label">Local</span>
+        <span className="server-url">{window.location.host}</span>
+      </div>
+
+      {/* Remote servers */}
+      {servers.map((s) => (
+        <div key={s.url} className="server-entry">
+          <span className="server-dot" style={{ background: statusDotColor(connectionStatus[s.url]) }} />
+          <span className="server-label">{s.label}</span>
+          <button
+            className="server-remove"
+            onClick={() => removeServer(s.url)}
+            title="Remove server"
+          >
+            &times;
+          </button>
+        </div>
+      ))}
+
+      {/* Add server input */}
+      <div className="server-add-row">
+        <input
+          type="text"
+          placeholder="host:port or URL"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+        />
+        <button onClick={handleAdd} disabled={!url.trim()}>
+          Add
+        </button>
       </div>
     </div>
   );
