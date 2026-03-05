@@ -69,16 +69,32 @@ export function TerminalView({ sessionId, isActive, onInput, onResize }: Termina
       term.loadAddon(fitAddon);
       term.open(el);
 
-      // WKWebView: prevent native DOM selection from interfering with xterm.js
+      // WKWebView: clear native DOM selection on click
       const screen = el.querySelector('.xterm-screen');
       if (screen) {
         screen.addEventListener('mousedown', () => {
           window.getSelection()?.removeAllRanges();
         });
-        screen.addEventListener('selectstart', (e) => {
-          e.preventDefault();
-        });
       }
+
+      // Intercept Shift+Enter: send backslash then Enter for newline in Claude Code
+      // Claude Code uses `\` + Enter as the newline shortcut in non-kitty terminals
+      // Block both keydown and keypress to prevent xterm from also sending \r
+      let shiftEnterPending = false;
+      term.attachCustomKeyEventHandler((e) => {
+        if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+          if (e.type === 'keydown') {
+            shiftEnterPending = true;
+            onInput?.('\\');
+            setTimeout(() => {
+              shiftEnterPending = false;
+              onInput?.('\r');
+            }, 30);
+          }
+          return false; // block both keydown and keypress
+        }
+        return true;
+      });
 
       // Delay fit() to ensure renderer is initialized
       requestAnimationFrame(() => {
