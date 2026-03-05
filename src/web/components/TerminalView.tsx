@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { useUIStore } from '../hooks/useUI';
 import { themes } from '../themes';
@@ -64,11 +65,20 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         fontFamily: fontFamilyRef.current,
         theme: t.terminal,
         allowProposedApi: true,
+        customGlyphs: true,
+        rescaleOverlappingGlyphs: true,
       });
 
       const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(el);
+
+      // WebGL renderer for proper box-drawing glyphs and performance
+      try {
+        term.loadAddon(new WebglAddon());
+      } catch {
+        // WebGL not available, fall back to default canvas renderer
+      }
 
       // Intercept Shift+Enter: send backslash then Enter for newline in Claude Code
       // Claude Code uses `\` + Enter as the newline shortcut in non-kitty terminals
