@@ -5,7 +5,18 @@ import type {
   RawOutputData,
   SessionStartData,
   SessionEndData,
+  ToolDetectData,
+  CwdChangeData,
 } from './types.js';
+
+const TOOL_SIGNATURES: { pattern: RegExp; tool: string; displayName: string }[] = [
+  { pattern: /claude/i, tool: 'claude', displayName: 'Claude Code' },
+  { pattern: /codex/i, tool: 'codex', displayName: 'Codex' },
+  { pattern: /gemini/i, tool: 'gemini', displayName: 'Gemini' },
+];
+
+// OSC 7: \x1b]7;file://host/path BEL — shell reports cwd
+const OSC7_RE = /\x1b\]7;file:\/\/[^/]*([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
 
 /**
  * Generic adapter — runs any command via PTY.
@@ -14,17 +25,24 @@ import type {
 export class GenericAdapter extends BaseAdapter {
   private ptyProcess: pty.IPty | null = null;
   private command: string;
+  private _detectedTool: string | null = null;
+  private _lastCwd: string = '';
+  /** Rolling buffer of stripped text for tool detection after Enter */
+  private _detectBuf = '';
+  private _detectActive = false;
 
   constructor(command: string, options: ConstructorParameters<typeof BaseAdapter>[0]) {
     super(options);
     this.command = command;
+    this._lastCwd = this.cwd;
   }
 
   get info(): AdapterInfo {
+    const sig = TOOL_SIGNATURES.find((s) => s.tool === this._detectedTool);
     return {
-      name: this.command,
-      displayName: this.command,
-      icon: '\u{1F527}',
+      name: this._detectedTool ?? this.command,
+      displayName: sig?.displayName ?? this.command,
+      icon: this._detectedTool ? '' : '\u{1F527}',
       command: this.command,
       supportsStructured: false,
     };
@@ -56,6 +74,8 @@ export class GenericAdapter extends BaseAdapter {
 
     this.ptyProcess.onData((data: string) => {
       this.handleActivityDetection(data);
+      this.parseOSC(data);
+      this.detectTool(data);
       this.emitEvent('raw:output', {
         data: Buffer.from(data).toString('base64'),
       } satisfies RawOutputData);
@@ -75,6 +95,11 @@ export class GenericAdapter extends BaseAdapter {
   write(data: string): void {
     this.ptyProcess?.write(data);
     this.handleUserInput();
+    // On Enter, start scanning output for tool signatures
+    if (data === '\r' || data === '\n') {
+      this._detectActive = true;
+      this._detectBuf = '';
+    }
   }
 
   resize(cols: number, rows: number): void {
@@ -85,5 +110,63 @@ export class GenericAdapter extends BaseAdapter {
 
   kill(signal?: string): void {
     this.ptyProcess?.kill(signal);
+  }
+
+  private parseOSC(chunk: string): void {
+    let match: RegExpExecArray | null;
+    OSC7_RE.lastIndex = 0;
+    while ((match = OSC7_RE.exec(chunk)) !== null) {
+      const newCwd = decodeURIComponent(match[1]);
+      if (newCwd && newCwd !== this._lastCwd) {
+        this._lastCwd = newCwd;
+        this.cwd = newCwd;
+        this.emitEvent('cwd:change', { cwd: newCwd } satisfies CwdChangeData);
+      }
+    }
+  }
+
+  /** Scan stripped PTY output for tool names after user presses Enter */
+  private detectTool(chunk: string): void {
+    if (!this._detectActive) return;
+
+    // Extract ALL text: OSC content + visible text
+    const allText: string[] = [];
+
+    // Extract OSC payload text (titles etc.)
+    const oscPayloadRe = /\x1b\]\d+;([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = oscPayloadRe.exec(chunk)) !== null) {
+      allText.push(m[1]);
+    }
+
+    // Strip ANSI/control to get visible text
+    const stripped = chunk
+      .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, '')
+      .replace(/\x1b[^\[].?/g, '')
+      .replace(/[\x00-\x1f]/g, ' ');
+    allText.push(stripped);
+
+    this._detectBuf += allText.join(' ');
+
+    // Cap buffer
+    if (this._detectBuf.length > 8000) {
+      this._detectActive = false;
+      return;
+    }
+
+    for (const sig of TOOL_SIGNATURES) {
+      if (sig.pattern.test(this._detectBuf)) {
+        if (this._detectedTool !== sig.tool) {
+          this._detectedTool = sig.tool;
+          this.emitEvent('tool:detect', {
+            tool: sig.tool,
+            displayName: sig.displayName,
+          } satisfies ToolDetectData);
+        }
+        this._detectActive = false;
+        return;
+      }
+    }
   }
 }

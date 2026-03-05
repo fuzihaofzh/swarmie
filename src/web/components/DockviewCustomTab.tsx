@@ -75,8 +75,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
       onClick={() => api.setActive()}
     >
       <ToolIcon tool={session.tool} status={session.status} />
-      <span className="dv-tab-name">{session.displayName}</span>
-      <span className="dv-tab-cwd">
+      <span className="dv-tab-name">
         {remoteHost ? `${remoteHost}:${shortPath(session.cwd)}` : shortPath(session.cwd)}
       </span>
       <span

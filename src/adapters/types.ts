@@ -5,6 +5,8 @@ export type NormalizedEventType =
   | 'assistant:message:delta'
   | 'tool:use'
   | 'tool:result'
+  | 'tool:detect'
+  | 'cwd:change'
   | 'user:input'
   | 'error'
   | 'raw:output'
@@ -27,6 +29,8 @@ export type EventData =
   | AssistantMessageDeltaData
   | ToolUseData
   | ToolResultData
+  | ToolDetectData
+  | CwdChangeData
   | UserInputData
   | ErrorData
   | RawOutputData
@@ -83,6 +87,15 @@ export interface RawOutputData {
 export interface StatusChangeData {
   from: SessionStatus;
   to: SessionStatus;
+}
+
+export interface ToolDetectData {
+  tool: string;
+  displayName: string;
+}
+
+export interface CwdChangeData {
+  cwd: string;
 }
 
 export interface MetadataData {

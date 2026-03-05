@@ -114,6 +114,11 @@ export class Session extends EventEmitter {
         this._endTime = event.timestamp;
         break;
       }
+      case 'cwd:change': {
+        const data = event.data as { cwd: string };
+        this._cwd = data.cwd;
+        break;
+      }
       case 'metadata': {
         const meta = event.data as MetadataData;
         if (meta.model) this._metadata.model = meta.model;

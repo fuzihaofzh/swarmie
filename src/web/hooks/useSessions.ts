@@ -138,6 +138,18 @@ export const useSessionStore = create<SessionState>((set) => ({
           }
         }
       }
+      if (event.type === 'tool:detect') {
+        const { tool: detectedTool, displayName } = event.data as { tool: string; displayName: string };
+        sessions = sessions.map((s) =>
+          s.id === event.sessionId ? { ...s, tool: detectedTool, displayName } : s,
+        );
+      }
+      if (event.type === 'cwd:change') {
+        const { cwd } = event.data as { cwd: string };
+        sessions = sessions.map((s) =>
+          s.id === event.sessionId ? { ...s, cwd } : s,
+        );
+      }
       if (event.type === 'session:end') {
         sessions = sessions.map((s) =>
           s.id === event.sessionId ? { ...s, endTime: event.timestamp } : s,
@@ -154,7 +166,25 @@ export const useSessionStore = create<SessionState>((set) => ({
       const trimmed = merged.length > MAX_EVENTS_PER_SESSION
         ? merged.slice(-MAX_EVENTS_PER_SESSION)
         : merged;
-      return { events: { ...state.events, [sessionId]: trimmed } };
+
+      // Apply tool:detect and cwd:change from batch (e.g. on page refresh)
+      let sessions = state.sessions;
+      const detectEvt = newEvents.findLast((e) => e.type === 'tool:detect');
+      if (detectEvt) {
+        const { tool: detectedTool, displayName } = detectEvt.data as { tool: string; displayName: string };
+        sessions = sessions.map((s) =>
+          s.id === sessionId ? { ...s, tool: detectedTool, displayName } : s,
+        );
+      }
+      const cwdEvt = newEvents.findLast((e) => e.type === 'cwd:change');
+      if (cwdEvt) {
+        const { cwd } = cwdEvt.data as { cwd: string };
+        sessions = sessions.map((s) =>
+          s.id === sessionId ? { ...s, cwd } : s,
+        );
+      }
+
+      return { events: { ...state.events, [sessionId]: trimmed }, sessions };
     }),
 
   updateSessionStatus: (sessionId, status) =>
