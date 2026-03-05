@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { useUIStore } from '../hooks/useUI';
 import { themes } from '../themes';
@@ -18,8 +19,12 @@ interface TerminalViewProps {
 export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw }: TerminalViewProps) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
   const [termReady, setTermReady] = useState(0);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const themeName = useUIStore((s) => s.theme);
   const fontSize = useUIStore((s) => s.fontSize);
@@ -80,6 +85,10 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         // WebGL not available, fall back to default canvas renderer
       }
 
+      const searchAddon = new SearchAddon();
+      term.loadAddon(searchAddon);
+      searchRef.current = searchAddon;
+
       // Intercept Shift+Enter: send backslash then Enter for newline in Claude Code
       // Claude Code uses `\` + Enter as the newline shortcut in non-kitty terminals
       term.attachCustomKeyEventHandler((e) => {
@@ -94,6 +103,14 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         }
         // Let Ctrl+` bubble up for tab switcher
         if (e.ctrlKey && (e.key === '`' || e.key === '~')) {
+          return false;
+        }
+        // Ctrl+F / Cmd+F to open search
+        if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !e.shiftKey && !e.altKey) {
+          if (e.type === 'keydown') {
+            e.preventDefault();
+            setSearchOpen(true);
+          }
           return false;
         }
         return true;
@@ -158,6 +175,30 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     });
   }, [currentTheme, fontSize, fontFamily]);
 
+  // Focus search input when search opens
+  useEffect(() => {
+    if (searchOpen) {
+      requestAnimationFrame(() => searchInputRef.current?.focus());
+    } else {
+      setSearchQuery('');
+      searchRef.current?.clearDecorations();
+      termRef.current?.focus();
+    }
+  }, [searchOpen]);
+
+  const handleSearch = useCallback((query: string, direction: 'next' | 'prev' = 'next') => {
+    if (!searchRef.current || !query) return;
+    if (direction === 'next') {
+      searchRef.current.findNext(query, { regex: false, caseSensitive: false, decorations: { matchOverviewRuler: '#888', activeMatchColorOverviewRuler: '#ffb',  matchBackground: '#5a5a2a', activeMatchBackground: '#7a7a0a' } });
+    } else {
+      searchRef.current.findPrevious(query, { regex: false, caseSensitive: false, decorations: { matchOverviewRuler: '#888', activeMatchColorOverviewRuler: '#ffb', matchBackground: '#5a5a2a', activeMatchBackground: '#7a7a0a' } });
+    }
+  }, []);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+  }, []);
+
   // Register this terminal as a writer on the terminalBus so raw:output
   // data is written directly from useWebSocket without going through Zustand.
   useEffect(() => {
@@ -187,9 +228,38 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
   }, [sessionId, termReady]);
 
   return (
-    <div
-      ref={containerCallbackRef}
-      style={{ flex: 1, width: '100%', height: '100%', minHeight: 0, padding: '4px' }}
-    />
+    <div style={{ flex: 1, width: '100%', height: '100%', minHeight: 0, position: 'relative' }}>
+      {searchOpen && (
+        <div className="terminal-search-bar">
+          <input
+            ref={searchInputRef}
+            type="text"
+            className="terminal-search-input"
+            placeholder="Search..."
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              if (e.target.value) handleSearch(e.target.value, 'next');
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleSearch(searchQuery, e.shiftKey ? 'prev' : 'next');
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeSearch();
+              }
+            }}
+          />
+          <button className="terminal-search-btn" onClick={() => handleSearch(searchQuery, 'prev')} title="Previous (Shift+Enter)">&#x25B2;</button>
+          <button className="terminal-search-btn" onClick={() => handleSearch(searchQuery, 'next')} title="Next (Enter)">&#x25BC;</button>
+          <button className="terminal-search-btn" onClick={closeSearch} title="Close (Esc)">&times;</button>
+        </div>
+      )}
+      <div
+        ref={containerCallbackRef}
+        style={{ width: '100%', height: '100%', minHeight: 0, padding: '4px' }}
+      />
+    </div>
   );
 }
