@@ -24,6 +24,7 @@ export interface TerminalColors {
 export interface Theme {
   name: string;
   label: string;
+  isDark: boolean;
   bg: string;
   fg: string;
   headerBg: string;
@@ -43,6 +44,7 @@ export const themes: Record<string, Theme> = {
   'github-dark': {
     name: 'github-dark',
     label: 'GitHub Dark',
+    isDark: true,
     bg: '#0d1117',
     fg: '#c9d1d9',
     headerBg: '#161b22',
@@ -81,6 +83,7 @@ export const themes: Record<string, Theme> = {
   dracula: {
     name: 'dracula',
     label: 'Dracula',
+    isDark: true,
     bg: '#282a36',
     fg: '#f8f8f2',
     headerBg: '#21222c',
@@ -119,6 +122,7 @@ export const themes: Record<string, Theme> = {
   nord: {
     name: 'nord',
     label: 'Nord',
+    isDark: true,
     bg: '#2e3440',
     fg: '#d8dee9',
     headerBg: '#3b4252',
@@ -157,6 +161,7 @@ export const themes: Record<string, Theme> = {
   monokai: {
     name: 'monokai',
     label: 'Monokai',
+    isDark: true,
     bg: '#272822',
     fg: '#f8f8f2',
     headerBg: '#1e1f1c',
@@ -195,6 +200,7 @@ export const themes: Record<string, Theme> = {
   'solarized-dark': {
     name: 'solarized-dark',
     label: 'Solarized Dark',
+    isDark: true,
     bg: '#002b36',
     fg: '#839496',
     headerBg: '#073642',
@@ -233,6 +239,7 @@ export const themes: Record<string, Theme> = {
   'solarized-light': {
     name: 'solarized-light',
     label: 'Solarized Light',
+    isDark: false,
     bg: '#fdf6e3',
     fg: '#657b83',
     headerBg: '#eee8d5',

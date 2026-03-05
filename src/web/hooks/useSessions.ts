@@ -70,7 +70,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       const sessions = state.sessions.filter((s) => s.id !== id);
       const events = { ...state.events };
       delete events[id];
-      const activeSessionId = state.activeSessionId === id ? (sessions[0]?.id ?? null) : state.activeSessionId;
+      const activeSessionId = state.activeSessionId === id ? null : state.activeSessionId;
       return { sessions, events, activeSessionId };
     }),
 

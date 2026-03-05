@@ -1,34 +1,63 @@
-import { useEffect } from 'react';
+import { useEffect, useState, useMemo } from 'react';
+import { DockviewReact, type DockviewReadyEvent, type DockviewApi, type IDockviewHeaderActionsProps } from 'dockview';
+import 'dockview/dist/styles/dockview.css';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSessionStore } from './hooks/useSessions';
 import { useUIStore } from './hooks/useUI';
 import { themes, applyTheme } from './themes';
-import { TabBar } from './components/TabBar';
-import { TerminalView } from './components/TerminalView';
-import { NewSessionPage } from './components/NewSessionPage';
+import { WsContext, type WsFunctions } from './contexts/WsContext';
+import { DockviewTerminalPanel } from './components/DockviewTerminalPanel';
+import { DockviewNewSessionPanel } from './components/DockviewNewSessionPanel';
+import { DockviewCustomTab, DockviewNewSessionTab } from './components/DockviewCustomTab';
+import { useDockviewSync } from './hooks/useDockviewSync';
+
+const components = {
+  terminal: DockviewTerminalPanel,
+  newSession: DockviewNewSessionPanel,
+};
+
+const tabComponents = {
+  sessionTab: DockviewCustomTab,
+  newSessionTab: DockviewNewSessionTab,
+};
+
+function NewTabButton(_props: IDockviewHeaderActionsProps) {
+  return (
+    <button
+      className="dv-new-tab-btn"
+      onClick={() => useUIStore.getState().setShowNewSession(true)}
+      title="New Session"
+    >
+      +
+    </button>
+  );
+}
 
 export function App() {
-  const { sendInput, sendResize, sendRedraw, createSession } = useWebSocket();
-  const sessions = useSessionStore((s) => s.sessions);
-  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const wsFunctions = useWebSocket();
+  const [api, setApi] = useState<DockviewApi | null>(null);
 
   const drawerOpen = useUIStore((s) => s.drawerOpen);
   const toggleDrawer = useUIStore((s) => s.toggleDrawer);
   const themeName = useUIStore((s) => s.theme);
-  const showNewSession = useUIStore((s) => s.showNewSession);
-  const setShowNewSession = useUIStore((s) => s.setShowNewSession);
-  const setActiveSession = useSessionStore((s) => s.setActiveSession);
-
-  const showNewSessionPage = showNewSession || sessions.length === 0;
-
   const currentTheme = themes[themeName] ?? themes['github-dark'];
+
+  const wsContext = useMemo<WsFunctions>(() => ({
+    sendInput: wsFunctions.sendInput,
+    sendResize: wsFunctions.sendResize,
+    sendRedraw: wsFunctions.sendRedraw,
+    createSession: wsFunctions.createSession,
+  }), [wsFunctions.sendInput, wsFunctions.sendResize, wsFunctions.sendRedraw, wsFunctions.createSession]);
 
   // Apply theme CSS variables
   useEffect(() => {
     applyTheme(currentTheme);
   }, [currentTheme]);
 
-  // Cmd+Left / Cmd+Right to switch tabs, Cmd+T to new tab
+  // Sync Zustand ↔ Dockview
+  useDockviewSync(api);
+
+  // Cmd+Left / Cmd+Right to switch tabs within active group, Ctrl+Cmd+T for new tab
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
@@ -38,95 +67,68 @@ export function App() {
         return;
       }
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-      const { sessions, activeSessionId } = useSessionStore.getState();
-      if (sessions.length < 2) return;
+      if (!api) return;
+      const group = api.activeGroup;
+      if (!group) return;
+      const panels = group.panels;
+      if (panels.length < 2) return;
       e.preventDefault();
-      const idx = sessions.findIndex((s) => s.id === activeSessionId);
+      const activePanel = api.activePanel;
+      const idx = panels.findIndex((p) => p === activePanel);
       const next = e.key === 'ArrowRight'
-        ? (idx + 1) % sessions.length
-        : (idx - 1 + sessions.length) % sessions.length;
-      setActiveSession(sessions[next].id);
-      useUIStore.getState().setShowNewSession(false);
+        ? (idx + 1) % panels.length
+        : (idx - 1 + panels.length) % panels.length;
+      panels[next].api.setActive();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [setActiveSession]);
+  }, [api]);
+
+  const onReady = (event: DockviewReadyEvent) => {
+    setApi(event.api);
+  };
 
   return (
-    <div className="app-layout">
-      {/* Overlay */}
-      <div
-        className={`overlay ${drawerOpen ? 'open' : ''}`}
-        onClick={toggleDrawer}
-      />
+    <WsContext value={wsContext}>
+      <div className="app-layout">
+        {/* Overlay */}
+        <div
+          className={`overlay ${drawerOpen ? 'open' : ''}`}
+          onClick={toggleDrawer}
+        />
 
-      {/* Drawer — fixed overlay mode */}
-      <div className={`drawer ${drawerOpen ? 'open' : ''}`}>
-        <div className="drawer-header">
-          <h3>swarmie</h3>
-          <button className="drawer-close" onClick={toggleDrawer}>
-            &times;
-          </button>
-        </div>
-        <div className="drawer-content">
-          {/* Settings */}
-          <div className="drawer-section">
-            <div className="drawer-section-header">Settings</div>
-            <DrawerSettings />
+        {/* Drawer */}
+        <div className={`drawer ${drawerOpen ? 'open' : ''}`}>
+          <div className="drawer-header">
+            <h3>swarmie</h3>
+            <button className="drawer-close" onClick={toggleDrawer}>
+              &times;
+            </button>
+          </div>
+          <div className="drawer-content">
+            <div className="drawer-section">
+              <div className="drawer-section-header">Settings</div>
+              <DrawerSettings />
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Main area */}
-      <div className="app-main">
-        {/* Tab Bar */}
-        <TabBar />
-
-        {/* Main Content */}
-        <div className="terminal-container">
-          {showNewSessionPage && (
-            <NewSessionPage
-              onCreateSession={async (opts) => {
-                const result = await createSession(opts);
-                if (result) {
-                  setShowNewSession(false);
-                  setActiveSession(result.id);
-                }
-                return result;
-              }}
-              onCancel={sessions.length > 0 ? () => setShowNewSession(false) : undefined}
-            />
-          )}
-
-          {/* One TerminalView per session, all always mounted, only active one visible */}
-          {sessions.map((s) => {
-            const isActive = s.id === activeSessionId && !showNewSessionPage;
-            return (
-            <div
-              key={`term-${s.id}`}
-              style={{
-                position: 'absolute',
-                top: 0, left: 0, right: 0, bottom: 0,
-                display: 'flex',
-                flexDirection: 'column',
-                visibility: isActive ? 'visible' : 'hidden',
-                pointerEvents: isActive ? 'auto' : 'none',
-              }}
-            >
-              <TerminalView
-                sessionId={s.id}
-                isActive={isActive}
-                onInput={(data) => sendInput(s.id, data)}
-                onResize={(cols, rows) => sendResize(s.id, cols, rows)}
-                onRedraw={() => sendRedraw(s.id)}
-              />
-            </div>
-            );
-          })}
-
+        {/* Main area */}
+        <div className="app-main">
+          {/* Hamburger menu — global, not per-group */}
+          <button className="dv-menu-btn-global" onClick={toggleDrawer} title="Settings">
+            <span /><span /><span />
+          </button>
+          <DockviewReact
+            className={`dockview-container ${currentTheme.isDark ? 'dockview-theme-dark' : 'dockview-theme-light'}`}
+            onReady={onReady}
+            components={components}
+            tabComponents={tabComponents}
+            rightHeaderActionsComponent={NewTabButton}
+          />
         </div>
       </div>
-    </div>
+    </WsContext>
   );
 }
 

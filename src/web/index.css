@@ -40,6 +40,7 @@ body,
   min-width: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 /* Overlay */
@@ -130,33 +131,71 @@ body,
   opacity: 0.5;
 }
 
-/* Tab Bar */
-.tab-bar {
-  display: flex;
-  align-items: center;
-  background: var(--header-bg, #161b22);
-  border-bottom: 1px solid var(--border, #30363d);
-  flex-shrink: 0;
-  height: 42px;
+/* Dockview layout */
+.dockview-container {
+  flex: 1;
+  min-height: 0;
 }
 
-.menu-btn {
-  background: none;
+/* Dockview Theme Mapping — double-class selector to override dockview-theme-* defaults */
+.dockview-container.dockview-theme-dark,
+.dockview-container.dockview-theme-light {
+  --dv-background-color: var(--bg, #fdf6e3);
+  --dv-paneview-header-border-color: var(--border, #30363d);
+  --dv-tabs-and-actions-container-background-color: var(--header-bg, #161b22);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--header-bg, #161b22);
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--header-bg, #161b22);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-tab-divider-color: transparent;
+  --dv-activegroup-visiblepanel-tab-color: var(--fg, #c9d1d9);
+  --dv-activegroup-hiddenpanel-tab-color: var(--text-secondary, #8b949e);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--fg, #c9d1d9);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--text-secondary, #8b949e);
+  --dv-separator-border: var(--border, #30363d);
+  --dv-group-view-background-color: var(--terminal-bg, #000);
+  --dv-drag-over-background-color: rgba(128, 128, 128, 0.3);
+  --dv-drag-over-border-color: var(--accent, #58a6ff);
+  --dv-icon-hover-background-color: rgba(128, 128, 128, 0.2);
+}
+
+/* Dockview tab strip height */
+.dockview-container .tabs-and-actions-container {
+  height: 42px !important;
+}
+
+/* Dockview tab inner */
+.dockview-container .tab {
+  height: 42px !important;
+  padding: 0 !important;
+  min-width: 0 !important;
+}
+
+/* Global Menu Button — positioned over dockview tab strip */
+.dv-menu-btn-global {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 10;
+  background: var(--header-bg, #161b22);
   border: none;
   padding: 6px 10px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  color: inherit;
+  color: var(--fg, #c9d1d9);
   flex-shrink: 0;
+  height: 35px;
+  align-items: center;
+  justify-content: center;
 }
 
-.menu-btn:hover {
+.dv-menu-btn-global:hover {
   opacity: 0.7;
 }
 
-.menu-btn span {
+.dv-menu-btn-global span {
   display: block;
   width: 18px;
   height: 2px;
@@ -164,46 +203,80 @@ body,
   border-radius: 1px;
 }
 
-.tab-list {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  overflow-x: auto;
-  scrollbar-width: none;
+/* Offset the first group's tab strip so it doesn't overlap the menu button */
+.dockview-container .tabs-container {
+  padding-left: 38px;
 }
 
-.tab-list::-webkit-scrollbar {
-  display: none;
+/* New Tab Button (right header action) */
+.dv-new-tab-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #8b949e);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 12px;
+  height: 42px;
+  flex-shrink: 0;
+  font-family: inherit;
+  transition: color 0.15s;
 }
 
-.tab {
+.dv-new-tab-btn:hover {
+  color: var(--accent, #58a6ff);
+}
+
+/* Custom Tab */
+.dv-custom-tab {
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 0 8px 0 12px;
-  height: 42px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--text-secondary, #8b949e);
+  height: 100%;
   cursor: pointer;
   font-family: inherit;
   font-size: 14px;
   white-space: nowrap;
-  flex: 1;
   min-width: 0;
-  transition: color 0.15s, background 0.15s;
 }
 
-.tab:hover {
-  color: var(--fg, #c9d1d9);
-  background: rgba(255, 255, 255, 0.04);
+.dv-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
 }
 
-.tab.active {
-  color: var(--fg, #c9d1d9);
-  border-bottom-color: var(--accent, #58a6ff);
-  background: rgba(255, 255, 255, 0.06);
+.dv-tab-cwd {
+  font-size: 12px;
+  opacity: 0.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dv-tab-close {
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  margin-left: auto;
+  padding: 0 2px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+}
+
+.dv-tab-close.visible {
+  opacity: 0.5;
+}
+
+.dv-tab-close:hover {
+  opacity: 1 !important;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.dv-new-session-tab {
+  gap: 6px;
 }
 
 .tool-icon {
@@ -239,67 +312,8 @@ body,
   75% { transform: rotate(0deg); }
 }
 
-.tab-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 600;
-}
-
-.tab-cwd {
-  font-size: 12px;
-  opacity: 0.5;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.tab-close {
-  font-size: 14px;
-  line-height: 1;
-  opacity: 0;
-  margin-left: auto;
-  padding: 0 2px;
-  border-radius: 3px;
-  flex-shrink: 0;
-  transition: opacity 0.15s;
-}
-
-.tab:hover .tab-close {
-  opacity: 0.5;
-}
-
-.tab-close:hover {
-  opacity: 1 !important;
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.1);
-}
-
-.tab-new-btn {
-  background: none;
-  border: none;
-  color: var(--text-secondary, #8b949e);
-  cursor: pointer;
-  font-size: 20px;
-  line-height: 1;
-  padding: 0 12px;
-  height: 42px;
-  flex-shrink: 0;
-  font-family: inherit;
-  transition: color 0.15s;
-}
-
-.tab-new-btn:hover,
-.tab-new-btn.active {
-  color: var(--accent, #58a6ff);
-}
-
-/* Terminal Container */
-.terminal-container {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
+/* Dockview panel content — make terminal fill the panel */
+.dockview-container .view-container .view {
   background: var(--terminal-bg, #000);
 }
 
