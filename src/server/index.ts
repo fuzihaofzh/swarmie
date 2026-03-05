@@ -5,10 +5,12 @@ import type { SessionManager } from '../session/manager.js';
 import { setupRoutes } from './routes.js';
 import { setupWebSocket } from './websocket.js';
 import { setupStatic } from './static.js';
+import { setupAuth } from './auth.js';
 
 export interface ServerOptions {
   port: number;
   host?: string;
+  password?: string;
 }
 
 export async function createServer(
@@ -16,6 +18,9 @@ export async function createServer(
   options: ServerOptions,
 ): Promise<{ close: () => Promise<void>; address: string }> {
   const app = Fastify({ logger: false });
+
+  // Auth: always enabled. CLI --password overrides; otherwise uses stored password or prompts setup.
+  setupAuth(app, options.password);
 
   // CORS for remote dashboard connections
   await app.register(cors, { origin: true });

@@ -160,7 +160,7 @@ async function startAsCoordinator(
   }
 
   // Start web server
-  const server = await createServer(manager, { port: options.port, host: options.host });
+  const server = await createServer(manager, { port: options.port, host: options.host, password: options.password });
   console.error(`[swarmie] Web server listening at ${server.address}`);
   console.error(`[swarmie] IPC server listening at ${socketPath}`);
 

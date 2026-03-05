@@ -10,6 +10,7 @@ export interface SwarmieOptions {
   record: boolean;
   share: boolean;
   server?: string;
+  password?: string;
 }
 
 export interface ParsedArgs {
@@ -36,7 +37,8 @@ export function createProgram(): Command {
     .option('--session-name <name>', 'Custom session name')
     .option('--record', 'Record session to JSONL', false)
     .option('--share', 'Generate shareable HTML after session', false)
-    .option('--server <host:port>', 'Connect to a remote coordinator');
+    .option('--server <host:port>', 'Connect to a remote coordinator')
+    .option('--password <string>', 'Password for web dashboard');
 
   return program;
 }
@@ -78,6 +80,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       record: opts.record,
       share: opts.share,
       server: opts.server,
+      password: opts.password,
     },
     toolArgs,
   };

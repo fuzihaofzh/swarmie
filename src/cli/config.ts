@@ -1,4 +1,4 @@
-import { readFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -7,6 +7,7 @@ export interface SwarmieConfig {
   theme: string;
   defaultTool?: string;
   recordDir: string;
+  passwordHash?: string;
 }
 
 const CONFIG_DIR = join(homedir(), '.swarmie');
@@ -39,6 +40,11 @@ export function loadConfig(): SwarmieConfig {
   } catch {
     return { ...DEFAULT_CONFIG };
   }
+}
+
+export function saveConfig(config: SwarmieConfig): void {
+  ensureConfigDir();
+  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
 }
 
 export function getConfigDir(): string {
