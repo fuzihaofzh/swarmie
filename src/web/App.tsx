@@ -11,6 +11,8 @@ import { DockviewTerminalPanel } from './components/DockviewTerminalPanel';
 import { DockviewNewSessionPanel } from './components/DockviewNewSessionPanel';
 import { DockviewCustomTab, DockviewNewSessionTab } from './components/DockviewCustomTab';
 import { useDockviewSync } from './hooks/useDockviewSync';
+import { useMRU } from './hooks/useMRU';
+import { TabSwitcher } from './components/TabSwitcher';
 
 const components = {
   terminal: DockviewTerminalPanel,
@@ -68,6 +70,9 @@ export function App() {
 
   // Sync Zustand ↔ Dockview
   useDockviewSync(api);
+
+  // MRU tracking for Ctrl+Tab switcher
+  const mruRef = useMRU();
 
   // Cmd+Left / Cmd+Right to switch tabs within active group, Ctrl+Cmd+T for new tab
   useEffect(() => {
@@ -141,6 +146,7 @@ export function App() {
           />
         </div>
       </div>
+      <TabSwitcher mruRef={mruRef} />
     </WsContext>
   );
 }

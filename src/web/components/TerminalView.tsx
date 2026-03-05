@@ -92,6 +92,10 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
           }
           return false;
         }
+        // Let Ctrl+` bubble up for tab switcher
+        if (e.ctrlKey && (e.key === '`' || e.key === '~')) {
+          return false;
+        }
         return true;
       });
 
