@@ -13,6 +13,7 @@ export interface SessionSummary {
   icon: string;
   cwd: string;
   hostname: string;
+  autoApprove?: boolean;
 }
 
 export interface NormalizedEvent {
@@ -35,6 +36,7 @@ interface SessionState {
   addEvent: (event: NormalizedEvent) => void;
   addEventBatch: (sessionId: string, events: NormalizedEvent[]) => void;
   updateSessionStatus: (sessionId: string, status: string) => void;
+  setSessionAutoApprove: (sessionId: string, value: boolean) => void;
 }
 
 const MAX_EVENTS_PER_SESSION = 2000;
@@ -119,6 +121,13 @@ export const useSessionStore = create<SessionState>((set) => ({
     set((state) => ({
       sessions: state.sessions.map((s) =>
         s.id === sessionId ? { ...s, status } : s,
+      ),
+    })),
+
+  setSessionAutoApprove: (sessionId, value) =>
+    set((state) => ({
+      sessions: state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, autoApprove: value } : s,
       ),
     })),
 }));

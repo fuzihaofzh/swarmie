@@ -254,11 +254,29 @@ body,
   text-overflow: ellipsis;
 }
 
+.dv-tab-shield {
+  opacity: 0;
+  margin-left: auto;
+  padding: 0 2px;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  display: flex;
+  align-items: center;
+}
+
+.dv-tab-shield.visible {
+  opacity: 1;
+}
+
+.dv-tab-shield:hover {
+  opacity: 1 !important;
+}
+
 .dv-tab-close {
   font-size: 14px;
   line-height: 1;
   opacity: 0;
-  margin-left: auto;
   padding: 0 2px;
   border-radius: 3px;
   flex-shrink: 0;

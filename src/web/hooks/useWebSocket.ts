@@ -140,6 +140,24 @@ export function useWebSocket() {
     }
   }, []);
 
+  // Auto-approve: watch for sessions entering waiting_input with autoApprove on
+  useEffect(() => {
+    let prevStatuses: Record<string, string> = {};
+    const unsub = useSessionStore.subscribe((state) => {
+      for (const s of state.sessions) {
+        const prev = prevStatuses[s.id];
+        if (s.status === 'waiting_input' && prev !== 'waiting_input' && s.autoApprove) {
+          send({ type: 'input', sessionId: s.id, data: '\n' });
+        }
+      }
+      prevStatuses = {};
+      for (const s of state.sessions) {
+        prevStatuses[s.id] = s.status;
+      }
+    });
+    return unsub;
+  }, [send]);
+
   const sendInput = useCallback((sessionId: string, data: string) => {
     send({ type: 'input', sessionId, data });
   }, [send]);

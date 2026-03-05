@@ -142,6 +142,13 @@ function DrawerSettings() {
   const setFontFamily = useUIStore((s) => s.setFontFamily);
   const setBellSound = useUIStore((s) => s.setBellSound);
 
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const activeSession = useSessionStore((s) =>
+    s.sessions.find((sess) => sess.id === s.activeSessionId),
+  );
+  const setSessionAutoApprove = useSessionStore((s) => s.setSessionAutoApprove);
+  const autoApprove = !!activeSession?.autoApprove;
+
   return (
     <div className="settings-section">
       <div className="setting-group">
@@ -186,6 +193,19 @@ function DrawerSettings() {
             className={`toggle-switch ${bellSound ? 'on' : ''}`}
             onClick={() => setBellSound(!bellSound)}
             aria-label="Toggle bell sound"
+          >
+            <span className="toggle-knob" />
+          </button>
+        </label>
+      </div>
+      <div className="setting-group">
+        <label className="toggle-label">
+          <span>Auto-approve</span>
+          <button
+            className={`toggle-switch ${autoApprove ? 'on' : ''}`}
+            onClick={() => activeSessionId && setSessionAutoApprove(activeSessionId, !autoApprove)}
+            disabled={!activeSessionId}
+            aria-label="Toggle auto-approve for active session"
           >
             <span className="toggle-knob" />
           </button>
