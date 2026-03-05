@@ -109,6 +109,7 @@ export function NewSessionPage({ onCreateSession, onCancel }: NewSessionPageProp
     args?: string[];
     cwd?: string;
     sessionName?: string;
+    serverUrl?: string;
   }) => {
     setCreating(true);
     saveRecentConfig({ tool: config.tool, args: config.args, cwd: config.cwd });

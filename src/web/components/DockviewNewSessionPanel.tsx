@@ -13,8 +13,8 @@ export function DockviewNewSessionPanel({ api }: IDockviewPanelProps) {
         const result = await createSession(opts);
         if (result) {
           useSessionStore.getState().setActiveSession(result.id);
-          // Close the new-session panel
-          api.close();
+          // Close the new-session panel (may already be removed by dockview sync)
+          try { api.close(); } catch { /* already closed */ }
         }
         return result;
       }}

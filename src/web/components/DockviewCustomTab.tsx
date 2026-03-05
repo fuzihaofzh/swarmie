@@ -8,12 +8,15 @@ import { ToolIcon } from './ToolIcon';
 const NEW_SESSION_PANEL_ID = '__new_session__';
 
 function shortPath(p: string): string {
-  const home = '/Users/';
-  if (p.startsWith(home)) {
-    const rest = p.slice(home.length);
-    const slashIdx = rest.indexOf('/');
-    if (slashIdx === -1) return '~';
-    return '~' + rest.slice(slashIdx);
+  // macOS: /Users/name/... → ~/...
+  // Linux: /home/name/... → ~/...
+  for (const prefix of ['/Users/', '/home/']) {
+    if (p.startsWith(prefix)) {
+      const rest = p.slice(prefix.length);
+      const slashIdx = rest.indexOf('/');
+      if (slashIdx === -1) return '~';
+      return '~' + rest.slice(slashIdx);
+    }
   }
   return p;
 }
@@ -41,9 +44,17 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
   if (!session) return null;
 
   const active = !!session.autoApprove;
-  const multiServer = servers.length > 0;
-  const serverLabel = multiServer && session.serverUrl
-    ? servers.find((s) => s.url === session.serverUrl)?.label ?? session.serverUrl
+  const isRemote = !!session.serverUrl;
+  // Extract short hostname from server URL (e.g. "http://seis10:3200" → "seis10")
+  const remoteHost = isRemote
+    ? (() => {
+        try {
+          const h = new URL(session.serverUrl).hostname;
+          return h;
+        } catch {
+          return session.serverUrl;
+        }
+      })()
     : null;
 
   const handleShieldClick = (e: React.MouseEvent) => {
@@ -65,8 +76,9 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
     >
       <ToolIcon tool={session.tool} status={session.status} />
       <span className="dv-tab-name">{session.displayName}</span>
-      <span className="dv-tab-cwd">{shortPath(session.cwd)}</span>
-      {serverLabel && <span className="dv-tab-server">{serverLabel}</span>}
+      <span className="dv-tab-cwd">
+        {remoteHost ? `${remoteHost}:${shortPath(session.cwd)}` : shortPath(session.cwd)}
+      </span>
       <span
         className={`dv-tab-shield ${active || hovered ? 'visible' : ''}`}
         onClick={handleShieldClick}

@@ -79,7 +79,10 @@ export function useMultiWebSocket() {
   }): Promise<{ id: string; name: string; tool: string; status: string } | null> => {
     const targetUrl = opts.serverUrl ?? LOCAL_SERVER;
     const conn = connectionsRef.current.get(targetUrl);
-    if (!conn) return null;
+    if (!conn) {
+      console.error(`No connection found for server: "${targetUrl}". Available:`, [...connectionsRef.current.keys()]);
+      return null;
+    }
     return conn.createSession(opts);
   }, []);
 
