@@ -94,7 +94,7 @@ export class ServerConnection {
   }
 
   async createSession(opts: {
-    tool: string;
+    tool?: string;
     args?: string[];
     cwd?: string;
     sessionName?: string;

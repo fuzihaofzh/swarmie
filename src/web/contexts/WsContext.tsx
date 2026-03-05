@@ -6,7 +6,7 @@ export interface WsFunctions {
   sendResize: (sessionId: string, cols: number, rows: number) => void;
   sendRedraw: (sessionId: string) => void;
   createSession: (opts: {
-    tool: string;
+    tool?: string;
     args?: string[];
     cwd?: string;
     sessionName?: string;

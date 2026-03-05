@@ -104,7 +104,7 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
   // Create a new session from web UI
   app.post<{
     Body: {
-      tool: string;
+      tool?: string;
       args?: string[];
       cwd?: string;
       sessionName?: string;
@@ -112,10 +112,8 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
       rows?: number;
     };
   }>('/api/sessions', async (request, reply) => {
-    const { tool, args, cwd, sessionName, cols, rows } = request.body;
-    if (!tool) {
-      return reply.status(400).send({ error: 'tool is required' });
-    }
+    const { tool: rawTool, args, cwd, sessionName, cols, rows } = request.body;
+    const tool = rawTool || process.env.SHELL || 'bash';
 
     const sessionId = nanoid(12);
     const name = sessionName || `${tool}-${sessionId.slice(0, 6)}`;

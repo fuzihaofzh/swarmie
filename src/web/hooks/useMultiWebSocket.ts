@@ -71,7 +71,7 @@ export function useMultiWebSocket() {
   }, [getConnectionForSession]);
 
   const createSession = useCallback(async (opts: {
-    tool: string;
+    tool?: string;
     args?: string[];
     cwd?: string;
     sessionName?: string;
