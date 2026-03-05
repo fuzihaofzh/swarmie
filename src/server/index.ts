@@ -38,7 +38,9 @@ export async function createServer(
   await setupStatic(app);
 
   const host = options.host ?? '127.0.0.1';
-  const address = await app.listen({ port: options.port, host });
+  await app.listen({ port: options.port, host });
+  const displayHost = host === '0.0.0.0' ? '0.0.0.0' : host;
+  const address = `http://${displayHost}:${options.port}`;
 
   return {
     address,
