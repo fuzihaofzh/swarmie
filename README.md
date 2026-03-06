@@ -4,7 +4,7 @@
 
 ### A web terminal for your AI coding agents
 
-Run Claude Code, Codex, Gemini CLI — or anything — across multiple machines, in one browser tab.
+Run Claude Code, Codex, Gemini CLI — or anything — across multiple machines, in one browser tab or desktop app.
 
 [![npm](https://img.shields.io/npm/v/swarmie)](https://www.npmjs.com/package/swarmie)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -22,11 +22,27 @@ Most agent session managers are native apps tied to one machine. swarmie runs in
 - **Works with everything** — Claude Code, Codex, Gemini CLI, Aider, or plain `bash`. If it runs in a terminal, it works.
 - **Zero config** — `npm install -g swarmie && swarmie`. That's it.
 
-## Quick Start
+## Install
+
+**CLI (npm)**
 
 ```bash
 npm install -g swarmie
+```
 
+**Desktop App (macOS)**
+
+```bash
+# Build the Electron app
+./desktop/build-electron.sh
+
+# Run it
+open dist/electron/Swarmie-darwin-*/Swarmie.app
+```
+
+## Quick Start
+
+```bash
 # Opens a web dashboard at http://localhost:3200
 swarmie
 
