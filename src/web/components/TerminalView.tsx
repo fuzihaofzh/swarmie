@@ -104,8 +104,8 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
           }
           return false;
         }
-        // Let Ctrl+` bubble up for tab switcher
-        if (e.ctrlKey && (e.key === '`' || e.key === '~')) {
+        // Option+[ / Option+Shift+[ : let bubble up for tab switcher
+        if (e.altKey && e.code === 'BracketLeft') {
           return false;
         }
         // Option+key: send as Meta escape sequences (ESC + key) for tmux/readline
