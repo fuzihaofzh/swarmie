@@ -1,6 +1,6 @@
 {
   "name": "swarmie",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "AI CLI tool aggregator — wrap Claude Code, Codex, Gemini CLI with a unified web dashboard",
   "type": "module",
   "bin": {
@@ -54,7 +54,9 @@
     "node": ">=20.0.0"
   },
   "files": [
-    "dist",
+    "dist/bin",
+    "dist/src",
+    "dist/web",
     "bin"
   ],
   "license": "MIT"
