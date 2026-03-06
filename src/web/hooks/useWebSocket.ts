@@ -15,6 +15,7 @@ export class ServerConnection {
   readonly token?: string;
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private pingTimer: ReturnType<typeof setInterval> | undefined;
   private shutdown = false;
   private disposed = false;
 
@@ -46,6 +47,13 @@ export class ServerConnection {
     ws.onopen = () => {
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'connected');
       ws.send(JSON.stringify({ type: 'subscribe:all' }));
+      // Heartbeat to keep connection alive in background tabs
+      clearInterval(this.pingTimer);
+      this.pingTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 15000);
     };
 
     ws.onmessage = (ev) => {
@@ -59,6 +67,7 @@ export class ServerConnection {
 
     ws.onclose = () => {
       this.ws = null;
+      clearInterval(this.pingTimer);
       if (!this.shutdown && !this.disposed) {
         useServerStore.getState().setConnectionStatus(this.serverUrl, 'disconnected');
         this.reconnectTimer = setTimeout(() => this.connect(), 2000);
@@ -71,10 +80,19 @@ export class ServerConnection {
     };
   }
 
+  /** Reconnect immediately if the WebSocket is not open (e.g. after returning from background tab) */
+  reconnectIfNeeded(): void {
+    if (this.disposed || this.shutdown) return;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    clearTimeout(this.reconnectTimer);
+    this.connect();
+  }
+
   disconnect(): void {
     this.disposed = true;
     this.shutdown = true;
     clearTimeout(this.reconnectTimer);
+    clearInterval(this.pingTimer);
     this.ws?.close();
     this.ws = null;
     useServerStore.getState().setConnectionStatus(this.serverUrl, 'disconnected');

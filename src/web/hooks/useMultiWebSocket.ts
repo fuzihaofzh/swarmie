@@ -25,7 +25,18 @@ export function useMultiWebSocket() {
     // Register auto-approve routing
     registerAutoApproveForConnections(getConnectionForSession);
 
+    // Reconnect all connections when page becomes visible again
+    const onVisibility = () => {
+      if (!document.hidden) {
+        for (const conn of connectionsRef.current.values()) {
+          conn.reconnectIfNeeded();
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
       registerAutoApproveSend(null);
       for (const conn of connectionsRef.current.values()) {
         conn.disconnect();

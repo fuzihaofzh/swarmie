@@ -316,7 +316,7 @@ body,
 @keyframes icon-glow {
   0% { filter: hue-rotate(0deg) brightness(1); }
   33% { filter: hue-rotate(40deg) brightness(1.3); }
-  66% { filter: hue-rotate(-30deg) brightness(0.9); }
+  66% { filter: hue-rotate(-30deg) brightness(1.1); }
   100% { filter: hue-rotate(0deg) brightness(1); }
 }
 

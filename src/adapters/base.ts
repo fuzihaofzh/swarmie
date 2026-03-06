@@ -123,11 +123,8 @@ export abstract class BaseAdapter extends EventEmitter {
       }
     }
 
-    // Only substantial *visible* output counts as "active work".
-    // Cursor blinks, timer ticks, status bar refreshes are just escape sequences
-    // with little or no printable text — ignore them.
-    const printable = stripped.replace(/\s+/g, '');
-    if (this._status !== 'waiting_input' && printable.length > 5) {
+    // Any PTY output (even pure escape sequences) means the process is active.
+    if (this._status !== 'waiting_input') {
       if (this._status === 'idle') {
         this.setStatus('running');
       }
@@ -158,6 +155,6 @@ export abstract class BaseAdapter extends EventEmitter {
       if (this._status === 'running' || this._status === 'tool_executing') {
         this.setStatus('idle');
       }
-    }, 2000);
+    }, 10000);
   }
 }
