@@ -63,6 +63,37 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
     return () => window.removeEventListener('resize', check);
   }, []);
 
+  // Handle native keyboard pushing the viewport up
+  useEffect(() => {
+    if (!isMobileDevice() || !window.visualViewport) return;
+
+    const vv = window.visualViewport;
+    const onResize = () => {
+      // When native keyboard opens, visualViewport.height shrinks.
+      // Set the app height to match so everything fits above the keyboard.
+      const root = document.getElementById('root');
+      if (root) {
+        root.style.height = vv.height + 'px';
+      }
+      window.scrollTo(0, 0);
+    };
+
+    const onScroll = () => {
+      window.scrollTo(0, 0);
+    };
+
+    vv.addEventListener('resize', onResize);
+    vv.addEventListener('scroll', onScroll);
+    onResize();
+
+    return () => {
+      vv.removeEventListener('resize', onResize);
+      vv.removeEventListener('scroll', onScroll);
+      const root = document.getElementById('root');
+      if (root) root.style.height = '';
+    };
+  }, []);
+
   const resolveKey = useCallback(
     (key?: string, seq?: string): string => {
       if (seq) return seq;
@@ -87,7 +118,6 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
       const data = resolveKey(key, seq);
       if (data && onInput) {
         onInput(data);
-        // Reset modifiers after sending
         setCtrlActive(false);
         setAltActive(false);
         if (ctrlTimeoutRef.current) {

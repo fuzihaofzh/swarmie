@@ -1165,7 +1165,7 @@ body,
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: transparent;
+  background: var(--bg);
   color: var(--fg);
   font-size: 12px;
   font-family: monospace;
@@ -1175,10 +1175,11 @@ body,
   text-align: center;
   -webkit-user-select: none;
   user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .mobile-toolbar-btn:active {
-  opacity: 0.6;
+  background: var(--selected-bg);
   transform: scale(0.95);
 }
 
