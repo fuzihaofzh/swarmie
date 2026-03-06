@@ -73,6 +73,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         allowProposedApi: true,
         customGlyphs: true,
         rescaleOverlappingGlyphs: true,
+        macOptionIsMeta: false,
       });
 
       const fitAddon = new FitAddon();
@@ -106,8 +107,22 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         if (e.ctrlKey && (e.key === '`' || e.key === '~')) {
           return false;
         }
-        // Ctrl+F / Cmd+F to open search
-        if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !e.shiftKey && !e.altKey) {
+        // Option+Arrow: send Alt-modified arrow escape sequences (for tmux etc.)
+        if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+          const arrowSeq: Record<string, string> = {
+            ArrowLeft: '\x1b[1;3D',
+            ArrowRight: '\x1b[1;3C',
+            ArrowUp: '\x1b[1;3A',
+            ArrowDown: '\x1b[1;3B',
+          };
+          const seq = arrowSeq[e.key];
+          if (seq) {
+            if (e.type === 'keydown') onInput?.(seq);
+            return false;
+          }
+        }
+        // Cmd+Shift+F to open search
+        if (e.metaKey && e.shiftKey && e.key === 'f' && !e.ctrlKey && !e.altKey) {
           if (e.type === 'keydown') {
             e.preventDefault();
             setSearchOpen(true);
