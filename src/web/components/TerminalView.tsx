@@ -26,6 +26,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const isActiveRef = useRef(isActive);
 
   const themeName = useUIStore((s) => s.theme);
   const fontSize = useUIStore((s) => s.fontSize);
@@ -41,6 +42,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     themeRef.current = currentTheme;
     fontSizeRef.current = fontSize;
     fontFamilyRef.current = fontFamily;
+    isActiveRef.current = isActive;
   });
 
   const containerCallbackRef = useCallback((el: HTMLDivElement | null) => {
@@ -153,6 +155,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
 
       const ro = new ResizeObserver(() => {
         requestAnimationFrame(() => {
+          if (!isActiveRef.current) return;
           if (!el.clientWidth || !el.clientHeight) return;
           try {
             fitAddon.fit();
@@ -189,13 +192,20 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     };
   }, []);
 
-  // Focus and scroll to bottom when tab becomes active
+  // Fit, scroll, and focus when tab becomes active
   useEffect(() => {
     if (!isActive) return;
     const term = termRef.current;
+    const fitAddon = fitRef.current;
     if (!term) return;
-    term.scrollToBottom();
-    term.focus();
+    requestAnimationFrame(() => {
+      try {
+        fitAddon?.fit();
+        onResize?.(term.cols, term.rows);
+      } catch { /* ignore */ }
+      term.scrollToBottom();
+      term.focus();
+    });
   }, [isActive]);
 
   // Update terminal when theme/font changes
