@@ -74,6 +74,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         customGlyphs: true,
         rescaleOverlappingGlyphs: true,
         macOptionIsMeta: false,
+        scrollOnOutput: true,
       });
 
       const fitAddon = new FitAddon();
@@ -152,9 +153,11 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
 
       const ro = new ResizeObserver(() => {
         requestAnimationFrame(() => {
+          if (!el.clientWidth || !el.clientHeight) return;
           try {
             fitAddon.fit();
             onResize?.(term.cols, term.rows);
+            term.scrollToBottom();
           } catch { /* ignore */ }
         });
       });
@@ -186,11 +189,13 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     };
   }, []);
 
-  // Focus terminal when it becomes active
+  // Focus and scroll to bottom when tab becomes active
   useEffect(() => {
-    if (isActive && termRef.current) {
-      termRef.current.focus();
-    }
+    if (!isActive) return;
+    const term = termRef.current;
+    if (!term) return;
+    term.scrollToBottom();
+    term.focus();
   }, [isActive]);
 
   // Update terminal when theme/font changes

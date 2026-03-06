@@ -334,10 +334,24 @@ body,
   75% { transform: rotate(0deg); }
 }
 
+/* Keep ALL terminal panels mounted and sized — override dockview's
+   display:none with visibility:hidden so terminals never lose their
+   dimensions. Tab switching is instant with no reflow/fit. */
+.dv-render-overlay {
+  display: block !important;
+  visibility: hidden;
+  pointer-events: none;
+}
+.dv-render-overlay:not([style*="display: none"]) {
+  visibility: visible;
+  pointer-events: auto;
+}
+
 /* Dockview panel content — make terminal fill the panel */
 .dockview-container .view-container .view {
   background: var(--terminal-bg, #000);
 }
+
 
 /* Session Items */
 .session-item {
