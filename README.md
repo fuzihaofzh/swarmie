@@ -1,61 +1,68 @@
+<div align="center">
+
 # swarmie
 
-AI terminal multiplexer for the browser. Run Claude Code, Codex, Gemini CLI — or any command — and manage everything from a single web dashboard.
+### A web terminal for your AI coding agents
 
-```
-┌─ ☰ ─┬─ >_ ~/project ─┬─ >_ ~/api ─┬─ + ─────────────────────┐
-│                                                                │
-│  $ claude "refactor auth module"                               │
-│                                                                │
-│  ● I'll refactor the auth module. Let me start by reading...   │
-│                                                                │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
+Run Claude Code, Codex, Gemini CLI — or anything — across multiple machines, in one browser tab.
 
-## Install
+[![npm](https://img.shields.io/npm/v/swarmie)](https://www.npmjs.com/package/swarmie)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+<!-- TODO: replace with a real screenshot or GIF -->
+<!-- ![swarmie demo](docs/demo.gif) -->
+
+</div>
+
+## Why swarmie?
+
+Most agent session managers are native apps tied to one machine. swarmie runs in the browser — open a tab and you have all your agents, from all your machines, in one place.
+
+- **Access from anywhere** — Phone, tablet, another laptop. If it has a browser, you're in.
+- **Aggregate multiple machines** — Connect remote servers to a single dashboard. No SSH juggling.
+- **Works with everything** — Claude Code, Codex, Gemini CLI, Aider, or plain `bash`. If it runs in a terminal, it works.
+- **Zero config** — `npm install -g swarmie && swarmie`. That's it.
+
+## Quick Start
 
 ```bash
 npm install -g swarmie
-```
 
-## Usage
-
-```bash
-# Server-only mode — opens dashboard with a default shell
+# Opens a web dashboard at http://localhost:3200
 swarmie
 
-# Launch a specific tool
+# Or launch directly with a tool
 swarmie claude
 swarmie codex
 swarmie gemini
-
-# Launch any command
-swarmie python train.py
-swarmie vim
-
-# Multiple terminals auto-aggregate into one dashboard
-# Terminal 1
-swarmie claude
-# Terminal 2 (auto-discovers the running coordinator)
-swarmie codex -- "add unit tests"
-# Both appear at http://localhost:3200
 ```
 
-## Features
+Multiple swarmie processes auto-discover each other and aggregate into one dashboard:
 
-- **Multi-session tabs** — Each session runs in its own PTY, rendered via xterm.js with WebGL acceleration
-- **Auto-detection** — Detects Claude/Codex/Gemini running inside a shell and shows the appropriate icon
-- **Dynamic cwd** — Tab titles update as you `cd` around (via OSC 7)
-- **Multi-server** — Connect to remote swarmie instances from a single dashboard, with per-server authentication
-- **Password protection** — `--password` flag or browser-based setup, stored locally
-- **Terminal search** — `Ctrl+F` / `Cmd+F` to search terminal output, with match highlighting
-- **Tab switcher** — `Ctrl+`` to cycle sessions by most-recently-used order (like VSCode's Ctrl+Tab)
-- **6 themes** — Solarized Light/Dark, Dracula, Nord, Monokai, GitHub Dark
-- **Recent directories** — VSCode-style recent dirs list, persisted across sessions
-- **Keyboard shortcuts** — `Cmd+←/→` switch tabs, `Ctrl+Cmd+T` new tab, `Shift+Enter` multi-line input
-- **Box-drawing & Unicode** — Proper rendering of tables, borders, and special characters via WebGL
-- **Session recording** — `--record` captures to JSONL for replay
+```bash
+swarmie claude                        # Terminal 1
+swarmie codex -- "add unit tests"     # Terminal 2 — appears in the same dashboard
+```
+
+## Multi-Server
+
+Run swarmie on a remote machine, connect from your local dashboard. Sessions from all machines appear side by side.
+
+```bash
+# Remote server
+swarmie --host 0.0.0.0 --password mysecret
+
+# Local browser → open drawer (☰) → add remote address + password
+```
+
+## Supported Agents
+
+| Agent | Status |
+|:------|:-------|
+| [Claude Code](https://github.com/anthropics/claude-code) | Auto-detected |
+| [OpenAI Codex CLI](https://github.com/openai/codex) | Auto-detected |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Auto-detected |
+| Any CLI program | Works |
 
 ## CLI Options
 
@@ -64,27 +71,12 @@ swarmie [command] [options] [-- tool-args...]
 ```
 
 | Option | Default | Description |
-|---|---|---|
+|:-------|:--------|:------------|
 | `--port <n>` | `3200` | Dashboard port |
-| `--host <addr>` | `127.0.0.1` | Listen address (`0.0.0.0` for remote access) |
-| `--password <pw>` | — | Set dashboard password via CLI |
-| `--session-name <name>` | auto | Custom session name |
+| `--host <addr>` | `127.0.0.1` | Listen address (`0.0.0.0` for network access) |
+| `--password <pw>` | — | Require password for dashboard access |
 | `--record` | — | Record session to JSONL |
-| `--share` | — | Generate shareable HTML after session |
-| `--server <host:port>` | — | Connect to a remote coordinator |
 | `--no-web` | — | Disable the web dashboard |
-| `--log` | — | Enable file logging |
-
-## Multi-Server Setup
-
-Run swarmie on a remote machine:
-
-```bash
-# On remote server
-swarmie --host 0.0.0.0 --password mysecret
-```
-
-In the local dashboard, open the drawer (☰), add the remote server address and its password. Sessions from both machines appear in the same UI.
 
 ## Architecture
 
@@ -95,39 +87,19 @@ swarmie claude        swarmie codex        swarmie (shell)
      │                     │                     │
      └──── IPC (Unix Socket) ────┬───────────────┘
                                  │
-                          Session Manager
+                          Coordinator
                                  │
                       Fastify (HTTP + WS)
                                  │
-                   Browser (React + xterm.js)
+                    Browser (React + xterm.js)
 ```
 
-- **Coordinator pattern** — First swarmie process owns the web server and IPC socket. Subsequent processes register their sessions via IPC.
-- **Adapters** — Wrap PTY subprocesses, emit normalized events. Auto-detect tool type from terminal output.
-- **Web** — React 19 + dockview + xterm.js + Zustand. All terminals stay mounted (hidden with CSS) for instant tab switching.
-
-## Project Structure
-
-```
-bin/swarmie.ts           CLI entry point
-src/
-  cli/                   Arg parsing, config (~/.swarmie/)
-  adapters/              claude, codex, gemini, generic, remote
-  session/               Session lifecycle, recording
-  ipc/                   Unix socket server/client
-  server/                Fastify: routes, websocket, auth, static
-  web/                   React frontend
-    components/          Terminal panels, tabs, search, tab switcher
-    hooks/               WebSocket, sessions, UI, dockview sync, MRU
-    themes.ts            6 color themes
-tests/                   Vitest
-```
+First swarmie process becomes the **coordinator** — it owns the web server and IPC socket. Subsequent processes register their sessions via IPC automatically.
 
 ## Development
 
 ```bash
 npm run build          # TypeScript + Vite
-npm run build:web      # Frontend only
 npm test               # Vitest
 ```
 
