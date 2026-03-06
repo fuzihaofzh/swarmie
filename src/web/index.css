@@ -692,6 +692,64 @@ body,
   transform: translateX(16px);
 }
 
+/* Keybinding settings */
+.keybinding-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.keybinding-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.keybinding-key {
+  font-family: 'SF Mono', Monaco, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #30363d);
+  background: var(--bg-secondary, #161b22);
+  color: var(--text-primary, #e6edf3);
+  cursor: pointer;
+  min-width: 60px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.keybinding-key:hover {
+  border-color: var(--accent, #58a6ff);
+}
+
+.keybinding-key.recording {
+  border-color: var(--accent, #58a6ff);
+  background: var(--accent, #58a6ff);
+  color: #fff;
+  animation: pulse-border 1s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.keybinding-reset {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #8b949e);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.keybinding-reset:hover {
+  color: #f85149;
+}
+
 /* Empty states */
 .empty-state {
   flex: 1;

@@ -2,9 +2,9 @@
 
 # swarmie
 
-### A web terminal for your AI coding agents
+### An LLM-agent-oriented Terminal
 
-Run Claude Code, Codex, Gemini CLI — or anything — across multiple machines, in one place.
+Manage Claude Code, Codex, Gemini CLI — or any terminal program — across multiple machines from a single browser tab.
 Browser · Desktop App · Mobile · Multi-server
 
 [![npm](https://img.shields.io/npm/v/swarmie)](https://www.npmjs.com/package/swarmie)
@@ -16,11 +16,11 @@ Browser · Desktop App · Mobile · Multi-server
 
 ## Why swarmie?
 
-Most agent session managers are native apps tied to one machine. swarmie runs in the browser — open a tab and you have all your agents, from all your machines, in one place.
+Terminal-based AI agents are powerful, but managing many of them across machines and workspaces is painful. swarmie is an agent-oriented terminal purpose-built for LLM coding agents — think tmux, but designed around the workflow of running, monitoring, and steering multiple AI agents at once.
 
 - **Access from anywhere** — Phone, tablet, another laptop. If it has a browser, you're in.
 - **Aggregate multiple machines** — Connect remote servers to a single dashboard. No SSH juggling.
-- **One-click auto-approve** — Toggle the shield icon on any tab to auto-accept agent prompts. Let your agents run hands-free.
+- **One-click auto-approve** — Toggle the switch on any tab to auto-accept agent prompts. Let your agents run hands-free.
 - **Agent status at a glance** — See which agents are running, thinking, or waiting for input — right in the tab icon.
 - **Works with everything** — Claude Code, Codex, Gemini CLI, Aider, or plain `bash`. If it runs in a terminal, it works.
 - **Zero config** — `npm install -g swarmie && swarmie`. That's it.

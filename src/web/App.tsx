@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { DockviewReact, type DockviewReadyEvent, type DockviewApi, type IDockviewHeaderActionsProps } from 'dockview';
 import 'dockview/dist/styles/dockview.css';
 import { useMultiWebSocket } from './hooks/useMultiWebSocket';
@@ -6,6 +6,7 @@ import { useSessionStore } from './hooks/useSessions';
 import { useUIStore } from './hooks/useUI';
 import { useServerStore, type ConnectionStatus } from './hooks/useServers';
 import { themes, applyTheme } from './themes';
+import { useKeybindingStore, matchesBinding, formatBinding, DEFAULT_BINDINGS, ACTION_LABELS, type ActionId, type KeyBinding } from './hooks/useKeybindings';
 import { WsContext, type WsFunctions } from './contexts/WsContext';
 import { DockviewTerminalPanel } from './components/DockviewTerminalPanel';
 import { DockviewNewSessionPanel } from './components/DockviewNewSessionPanel';
@@ -132,6 +133,10 @@ export function App() {
               <DrawerSettings />
             </div>
             <div className="drawer-section">
+              <div className="drawer-section-header">Keybindings</div>
+              <KeybindingSettings />
+            </div>
+            <div className="drawer-section">
               <a href="/change-password" className="drawer-link">Change Password</a>
             </div>
           </div>
@@ -233,6 +238,91 @@ function DrawerSettings() {
           </button>
         </label>
       </div>
+    </div>
+  );
+}
+
+function KeybindingRecorder({ value, onChange, onCancel }: {
+  value: KeyBinding;
+  onChange: (b: KeyBinding) => void;
+  onCancel: () => void;
+}) {
+  const [recording, setRecording] = useState(false);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Ignore bare modifier presses
+    if (['Alt', 'Control', 'Meta', 'Shift'].includes(e.key)) return;
+    onChange({
+      code: e.code,
+      alt: e.altKey || undefined,
+      ctrl: e.ctrlKey || undefined,
+      meta: e.metaKey || undefined,
+      shift: e.shiftKey || undefined,
+    });
+    setRecording(false);
+  }, [onChange]);
+
+  useEffect(() => {
+    if (!recording) return;
+    window.addEventListener('keydown', handleKeyDown, true);
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setRecording(false); onCancel(); }
+    };
+    window.addEventListener('keyup', handleEsc, true);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+      window.removeEventListener('keyup', handleEsc, true);
+    };
+  }, [recording, handleKeyDown, onCancel]);
+
+  return (
+    <button
+      className={`keybinding-key ${recording ? 'recording' : ''}`}
+      onClick={() => setRecording(true)}
+      title="Click to rebind, Esc to cancel"
+    >
+      {recording ? 'Press keys...' : formatBinding(value)}
+    </button>
+  );
+}
+
+function KeybindingSettings() {
+  const getBinding = useKeybindingStore((s) => s.getBinding);
+  const setBinding = useKeybindingStore((s) => s.setBinding);
+  const resetBinding = useKeybindingStore((s) => s.resetBinding);
+  const overrides = useKeybindingStore((s) => s.overrides);
+
+  const actions = Object.keys(DEFAULT_BINDINGS) as ActionId[];
+
+  return (
+    <div className="settings-section">
+      {actions.map((action) => {
+        const binding = getBinding(action);
+        const isCustom = !!overrides[action];
+        return (
+          <div key={action} className="setting-group keybinding-row">
+            <label>{ACTION_LABELS[action]}</label>
+            <div className="keybinding-controls">
+              <KeybindingRecorder
+                value={binding}
+                onChange={(b) => setBinding(action, b)}
+                onCancel={() => {}}
+              />
+              {isCustom && (
+                <button
+                  className="keybinding-reset"
+                  onClick={() => resetBinding(action)}
+                  title="Reset to default"
+                >
+                  &times;
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

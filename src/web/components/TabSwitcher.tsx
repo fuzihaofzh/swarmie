@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSessionStore } from '../hooks/useSessions';
 import { ToolIcon } from './ToolIcon';
+import { useKeybindingStore, matchesAction } from '../hooks/useKeybindings';
 
 interface TabSwitcherProps {
   mruRef: React.RefObject<string[]>;
@@ -33,11 +34,11 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
         const len = mruListRef.current.length;
         if (len === 0) return;
 
-        if (e.key === 'ArrowUp' || (e.altKey && e.shiftKey && e.code === 'BracketLeft')) {
+        if (e.key === 'ArrowUp' || matchesAction(e, 'tab-switcher-prev')) {
           e.preventDefault();
           e.stopPropagation();
           setSelectedIndex((prev) => (prev - 1 + len) % len);
-        } else if (e.key === 'ArrowDown' || (e.altKey && !e.shiftKey && e.code === 'BracketLeft')) {
+        } else if (e.key === 'ArrowDown' || matchesAction(e, 'tab-switcher')) {
           e.preventDefault();
           e.stopPropagation();
           setSelectedIndex((prev) => (prev + 1) % len);
@@ -57,8 +58,8 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
         return;
       }
 
-      // Option+[ to open switcher
-      if (e.altKey && e.code === 'BracketLeft') {
+      // Open switcher
+      if (matchesAction(e, 'tab-switcher') || matchesAction(e, 'tab-switcher-prev')) {
         e.preventDefault();
         e.stopPropagation();
         mruListRef.current = [...(mruRef.current ?? [])];
@@ -72,8 +73,13 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
 
     const handleKeyUp = (e: KeyboardEvent) => {
       if (!open) return;
-      // Release Option key to confirm selection
-      if (e.key === 'Alt') {
+      // Release the modifier key to confirm selection
+      const binding = useKeybindingStore.getState().getBinding('tab-switcher');
+      const isModRelease =
+        (binding.alt && e.key === 'Alt') ||
+        (binding.ctrl && e.key === 'Control') ||
+        (binding.meta && e.key === 'Meta');
+      if (isModRelease) {
         e.preventDefault();
         e.stopPropagation();
         const targetId = mruListRef.current[selectedIndex];

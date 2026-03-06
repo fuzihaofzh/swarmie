@@ -8,6 +8,7 @@ import { useUIStore } from '../hooks/useUI';
 import { themes } from '../themes';
 import { registerTerminalWriter, unregisterTerminalWriter } from '../terminalBus';
 import { MobileToolbar } from './MobileToolbar';
+import { useKeybindingStore, matchesBinding } from '../hooks/useKeybindings';
 
 interface TerminalViewProps {
   sessionId: string;
@@ -94,10 +95,15 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
       term.loadAddon(searchAddon);
       searchRef.current = searchAddon;
 
-      // Intercept Shift+Enter: send backslash then Enter for newline in Claude Code
-      // Claude Code uses `\` + Enter as the newline shortcut in non-kitty terminals
       term.attachCustomKeyEventHandler((e) => {
-        if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const { getBinding } = useKeybindingStore.getState();
+        const newLineBinding = getBinding('new-line');
+        const searchBinding = getBinding('search');
+        const tabSwitchBinding = getBinding('tab-switcher');
+        const tabSwitchPrevBinding = getBinding('tab-switcher-prev');
+
+        // New-line shortcut (default: Shift+Enter → backslash + Enter for Claude Code)
+        if (matchesBinding(e, newLineBinding)) {
           if (e.type === 'keydown') {
             e.preventDefault();
             e.stopPropagation();
@@ -106,8 +112,8 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
           }
           return false;
         }
-        // Option+[ / Option+Shift+[ : let bubble up for tab switcher
-        if (e.altKey && e.code === 'BracketLeft') {
+        // Tab switcher: let bubble up
+        if (matchesBinding(e, tabSwitchBinding) || matchesBinding(e, tabSwitchPrevBinding)) {
           return false;
         }
         // Option+key: send as Meta escape sequences (ESC + key) for tmux/readline
@@ -138,8 +144,8 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
             }
           }
         }
-        // Cmd+Shift+F to open search
-        if (e.metaKey && e.shiftKey && e.key === 'f' && !e.ctrlKey && !e.altKey) {
+        // Search shortcut (default: Cmd+Shift+F)
+        if (matchesBinding(e, searchBinding)) {
           if (e.type === 'keydown') {
             e.preventDefault();
             setSearchOpen(true);
