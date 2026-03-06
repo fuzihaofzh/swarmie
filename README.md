@@ -19,6 +19,7 @@ Most agent session managers are native apps tied to one machine. swarmie runs in
 
 - **Access from anywhere** — Phone, tablet, another laptop. If it has a browser, you're in.
 - **Aggregate multiple machines** — Connect remote servers to a single dashboard. No SSH juggling.
+- **Agent status at a glance** — See which agents are running, thinking, or waiting for input — right in the tab icon.
 - **Works with everything** — Claude Code, Codex, Gemini CLI, Aider, or plain `bash`. If it runs in a terminal, it works.
 - **Zero config** — `npm install -g swarmie && swarmie`. That's it.
 
