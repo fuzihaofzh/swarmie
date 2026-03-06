@@ -107,8 +107,9 @@ swarmie claude        swarmie codex        swarmie (shell)
                           Coordinator
                                  │
                       Fastify (HTTP + WS)
-                                 │
-                    Browser (React + xterm.js)
+                           ┌─────┴─────┐
+                       Browser     Desktop App
+                  (React + xterm.js)  (Electron)
 ```
 
 First swarmie process becomes the **coordinator** — it owns the web server and IPC socket. Subsequent processes register their sessions via IPC automatically.
