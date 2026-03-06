@@ -9,8 +9,7 @@ Run Claude Code, Codex, Gemini CLI — or anything — across multiple machines,
 [![npm](https://img.shields.io/npm/v/swarmie)](https://www.npmjs.com/package/swarmie)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-<!-- TODO: replace with a real screenshot or GIF -->
-<!-- ![swarmie demo](docs/demo.gif) -->
+![swarmie hero](docs/hero.png)
 
 </div>
 
@@ -36,6 +35,8 @@ swarmie claude
 swarmie codex
 swarmie gemini
 ```
+
+![swarmie screenshot](docs/screenshot-dark.png)
 
 Multiple swarmie processes auto-discover each other and aggregate into one dashboard:
 
