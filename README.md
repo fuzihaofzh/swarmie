@@ -16,8 +16,7 @@ AI terminal multiplexer for the browser. Run Claude Code, Codex, Gemini CLI — 
 ## Install
 
 ```bash
-npm install
-npm run build
+npm install -g swarmie
 ```
 
 ## Usage
@@ -43,19 +42,20 @@ swarmie codex -- "add unit tests"
 # Both appear at http://localhost:3200
 ```
 
-First visit to the dashboard prompts you to set a password. Subsequent visits require login.
-
 ## Features
 
-- **Multi-session tabs** — Each session runs in its own PTY, rendered via xterm.js
+- **Multi-session tabs** — Each session runs in its own PTY, rendered via xterm.js with WebGL acceleration
 - **Auto-detection** — Detects Claude/Codex/Gemini running inside a shell and shows the appropriate icon
 - **Dynamic cwd** — Tab titles update as you `cd` around (via OSC 7)
 - **Multi-server** — Connect to remote swarmie instances from a single dashboard, with per-server authentication
-- **Password protection** — Browser-based setup, stored locally
+- **Password protection** — `--password` flag or browser-based setup, stored locally
+- **Terminal search** — `Ctrl+F` / `Cmd+F` to search terminal output, with match highlighting
+- **Tab switcher** — `Ctrl+`` to cycle sessions by most-recently-used order (like VSCode's Ctrl+Tab)
 - **6 themes** — Solarized Light/Dark, Dracula, Nord, Monokai, GitHub Dark
-- **Session recording** — `--record` captures to JSONL for replay
 - **Recent directories** — VSCode-style recent dirs list, persisted across sessions
-- **Keyboard shortcuts** — `Cmd+←/→` switch tabs, `Ctrl+Cmd+T` new tab
+- **Keyboard shortcuts** — `Cmd+←/→` switch tabs, `Ctrl+Cmd+T` new tab, `Shift+Enter` multi-line input
+- **Box-drawing & Unicode** — Proper rendering of tables, borders, and special characters via WebGL
+- **Session recording** — `--record` captures to JSONL for replay
 
 ## CLI Options
 
@@ -81,7 +81,7 @@ Run swarmie on a remote machine:
 
 ```bash
 # On remote server
-swarmie --host 0.0.0.0
+swarmie --host 0.0.0.0 --password mysecret
 ```
 
 In the local dashboard, open the drawer (☰), add the remote server address and its password. Sessions from both machines appear in the same UI.
@@ -117,8 +117,8 @@ src/
   ipc/                   Unix socket server/client
   server/                Fastify: routes, websocket, auth, static
   web/                   React frontend
-    components/          Terminal panels, tabs, new session page
-    hooks/               WebSocket, sessions, UI, dockview sync
+    components/          Terminal panels, tabs, search, tab switcher
+    hooks/               WebSocket, sessions, UI, dockview sync, MRU
     themes.ts            6 color themes
 tests/                   Vitest
 ```
@@ -128,7 +128,7 @@ tests/                   Vitest
 ```bash
 npm run build          # TypeScript + Vite
 npm run build:web      # Frontend only
-npm test               # 28 tests via vitest
+npm test               # Vitest
 ```
 
 ## License
