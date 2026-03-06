@@ -107,8 +107,8 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         if (e.ctrlKey && (e.key === '`' || e.key === '~')) {
           return false;
         }
-        // Option+Arrow: send Alt-modified arrow escape sequences (for tmux etc.)
-        if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        // Option+key: send as Meta escape sequences (ESC + key) for tmux/readline
+        if (e.altKey && !e.ctrlKey && !e.metaKey) {
           const arrowSeq: Record<string, string> = {
             ArrowLeft: '\x1b[1;3D',
             ArrowRight: '\x1b[1;3C',
@@ -119,6 +119,20 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
           if (seq) {
             if (e.type === 'keydown') onInput?.(seq);
             return false;
+          }
+          // Option+letter/digit: send \x1b + key (e.g. Option+F → \x1bf)
+          if (e.type === 'keydown' && e.code.length > 0) {
+            const match = e.code.match(/^Key([A-Z])$/);
+            if (match) {
+              const ch = e.shiftKey ? match[1] : match[1].toLowerCase();
+              onInput?.(`\x1b${ch}`);
+              return false;
+            }
+            const digit = e.code.match(/^Digit([0-9])$/);
+            if (digit) {
+              onInput?.(`\x1b${digit[1]}`);
+              return false;
+            }
           }
         }
         // Cmd+Shift+F to open search
