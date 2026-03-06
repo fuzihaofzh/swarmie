@@ -7,6 +7,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useUIStore } from '../hooks/useUI';
 import { themes } from '../themes';
 import { registerTerminalWriter, unregisterTerminalWriter } from '../terminalBus';
+import { MobileToolbar } from './MobileToolbar';
 
 interface TerminalViewProps {
   sessionId: string;
@@ -228,7 +229,8 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
   }, [sessionId, termReady]);
 
   return (
-    <div style={{ flex: 1, width: '100%', height: '100%', minHeight: 0, position: 'relative' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, width: '100%', height: '100%', minHeight: 0 }}>
+    <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
       {searchOpen && (
         <div className="terminal-search-bar">
           <input
@@ -260,6 +262,8 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         ref={containerCallbackRef}
         style={{ width: '100%', height: '100%', minHeight: 0, padding: '4px' }}
       />
+    </div>
+    <MobileToolbar onInput={onInput} />
     </div>
   );
 }
