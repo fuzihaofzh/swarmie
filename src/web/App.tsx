@@ -131,6 +131,9 @@ export function App() {
               <div className="drawer-section-header">Settings</div>
               <DrawerSettings />
             </div>
+            <div className="drawer-section">
+              <a href="/change-password" className="drawer-link">Change Password</a>
+            </div>
           </div>
         </div>
 

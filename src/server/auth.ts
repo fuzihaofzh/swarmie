@@ -154,6 +154,69 @@ const LOGIN_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+const CHANGE_PASSWORD_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>swarmie — Change Password</title>
+  <style>${PAGE_STYLE}</style>
+  ${THEME_SCRIPT}
+</head>
+<body>
+  <div class="card">
+    <h1>swarmie</h1>
+    <p class="subtitle">Change your password</p>
+    <form id="form">
+      <label for="current">Current password</label>
+      <input type="password" id="current" name="current" autofocus required>
+      <label for="password">New password</label>
+      <input type="password" id="password" name="password" placeholder="Min 4 characters" required>
+      <label for="confirm">Confirm new password</label>
+      <input type="password" id="confirm" name="confirm" required>
+      <button type="submit">Change Password</button>
+      <div class="error" id="error"></div>
+      <div class="success" id="success" style="color:var(--accent);font-size:0.875rem;margin-top:0.75rem;text-align:center;display:none;">Password changed successfully</div>
+    </form>
+  </div>
+  <script>
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errEl = document.getElementById('error');
+      const successEl = document.getElementById('success');
+      errEl.style.display = 'none';
+      successEl.style.display = 'none';
+      const current = document.getElementById('current').value;
+      const password = document.getElementById('password').value;
+      const confirm = document.getElementById('confirm').value;
+      if (password.length < 4) {
+        errEl.textContent = 'New password must be at least 4 characters';
+        errEl.style.display = 'block';
+        return;
+      }
+      if (password !== confirm) {
+        errEl.textContent = 'Passwords do not match';
+        errEl.style.display = 'block';
+        return;
+      }
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current, password }),
+      });
+      if (res.ok) {
+        successEl.style.display = 'block';
+        document.getElementById('form').reset();
+      } else {
+        const data = await res.json();
+        errEl.textContent = data.error || 'Failed to change password';
+        errEl.style.display = 'block';
+      }
+    });
+  </script>
+</body>
+</html>`;
+
 /**
  * Set up auth for the web dashboard.
  *
@@ -232,6 +295,37 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
     } else {
       reply.status(401).send({ error: 'Invalid password' });
     }
+  });
+
+  // Change password page (requires auth — handled by the hook below)
+  app.get('/change-password', async (_request: FastifyRequest, reply: FastifyReply) => {
+    reply.type('text/html').send(CHANGE_PASSWORD_HTML);
+  });
+
+  // Change password endpoint
+  app.post('/api/auth/change-password', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!passwordHash) {
+      reply.status(400).send({ error: 'No password configured' });
+      return;
+    }
+    const body = request.body as { current?: string; password?: string } | null;
+    if (!body?.current || hashPassword(body.current) !== passwordHash) {
+      reply.status(401).send({ error: 'Current password is incorrect' });
+      return;
+    }
+    const newPwd = body.password;
+    if (!newPwd || newPwd.length < 4) {
+      reply.status(400).send({ error: 'New password must be at least 4 characters' });
+      return;
+    }
+    passwordHash = hashPassword(newPwd);
+    const config = loadConfig();
+    config.passwordHash = passwordHash;
+    saveConfig(config);
+    console.error('[swarmie] Password has been changed');
+    reply
+      .header('Set-Cookie', `${COOKIE_NAME}=${passwordHash}; HttpOnly; Path=/; SameSite=Lax`)
+      .send({ ok: true });
   });
 
   // Auth check hook
