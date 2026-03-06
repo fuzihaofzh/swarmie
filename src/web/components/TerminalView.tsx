@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
+import { CanvasAddon } from '@xterm/addon-canvas';
 import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { useUIStore } from '../hooks/useUI';
@@ -84,11 +84,11 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
       term.loadAddon(fitAddon);
       term.open(el);
 
-      // WebGL renderer for proper box-drawing glyphs and performance
+      // Canvas renderer for box-drawing glyphs + proper CJK wide-char rendering
       try {
-        term.loadAddon(new WebglAddon());
+        term.loadAddon(new CanvasAddon());
       } catch {
-        // WebGL not available, fall back to default canvas renderer
+        // Fall back to default DOM renderer
       }
 
       const searchAddon = new SearchAddon();
