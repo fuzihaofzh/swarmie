@@ -26,7 +26,6 @@ body {
   gap: 24px;
 }
 
-/* Subtle grid background */
 .container::before {
   content: '';
   position: absolute;
@@ -37,7 +36,6 @@ body {
   background-size: 40px 40px;
 }
 
-/* Glow */
 .glow {
   position: absolute;
   width: 500px;
@@ -75,10 +73,10 @@ body {
   color: #58a6ff;
 }
 
-/* Screenshot mockup with browser chrome */
+/* Browser frame */
 .browser-frame {
   width: 1060px;
-  height: 420px;
+  height: 440px;
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 12px;
@@ -86,13 +84,104 @@ body {
   position: relative;
   z-index: 1;
   box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
 }
 
-.browser-frame img {
+/* Custom tab bar overlay */
+.tab-bar {
+  height: 36px;
+  min-height: 36px;
+  background: #1c2128;
+  border-bottom: 1px solid #30363d;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+
+.menu-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5px;
+  padding: 6px 10px;
+  margin-right: 4px;
+}
+.menu-btn span {
+  width: 14px;
+  height: 1.5px;
+  background: #8b949e;
+  border-radius: 1px;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 16px;
+  font-size: 12.5px;
+  color: #8b949e;
+  cursor: default;
+  white-space: nowrap;
+  border-right: 1px solid #30363d;
+  height: 100%;
+}
+.tab.active {
+  background: #161b22;
+  color: #e6edf3;
+}
+
+.tab-icon {
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.tab-icon.claude { background: #e8754a; }
+.tab-icon.codex { background: #10a37f; }
+.tab-icon.shell { background: #8b949e; }
+
+.tab-close {
+  font-size: 14px;
+  color: #484f58;
+  margin-left: 4px;
+}
+.tab.active .tab-close { color: #8b949e; }
+
+.tab-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.badge-remote {
+  background: #1f6feb33;
+  color: #58a6ff;
+}
+
+.new-tab {
+  color: #484f58;
+  font-size: 18px;
+  padding: 0 12px;
+  margin-left: auto;
+  line-height: 1;
+}
+
+/* Screenshot area */
+.screenshot-area {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+.screenshot-area img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: top left;
+  /* Crop out the original tab bar from the screenshot */
+  object-position: 0 -36px;
   display: block;
 }
 </style>
@@ -110,7 +199,29 @@ body {
   </div>
 
   <div class="browser-frame">
-    <img src="screenshot-dark.png" />
+    <div class="tab-bar">
+      <div class="menu-btn"><span></span><span></span><span></span></div>
+      <div class="tab active">
+        <span class="tab-icon claude"></span>
+        ~/workbench
+        <span class="tab-close">&times;</span>
+      </div>
+      <div class="tab">
+        <span class="tab-icon codex"></span>
+        ~/api
+        <span class="tab-close">&times;</span>
+      </div>
+      <div class="tab">
+        <span class="tab-icon shell"></span>
+        <span class="tab-badge badge-remote">REMOTE</span>
+        ~/task
+        <span class="tab-close">&times;</span>
+      </div>
+      <div class="new-tab">+</div>
+    </div>
+    <div class="screenshot-area">
+      <img src="screenshot-dark.png" />
+    </div>
   </div>
 </div>
 </body>
