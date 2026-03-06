@@ -12,10 +12,18 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
   const sessions = useSessionStore((s) => s.sessions);
   const mruListRef = useRef<string[]>([]);
 
+  const setSessionAutoApprove = useSessionStore((s) => s.setSessionAutoApprove);
+
   const getMRUSessions = useCallback(() => {
     const mru = mruListRef.current;
     const sessionMap = new Map(sessions.map((s) => [s.id, s]));
-    return mru.map((id) => sessionMap.get(id)).filter(Boolean) as typeof sessions;
+    const list = mru.map((id) => sessionMap.get(id)).filter(Boolean) as typeof sessions;
+    // Sort: waiting_input (bell) first, then preserve MRU order
+    return list.sort((a, b) => {
+      const aBell = a.status === 'waiting_input' ? 0 : 1;
+      const bBell = b.status === 'waiting_input' ? 0 : 1;
+      return aBell - bBell;
+    });
   }, [sessions]);
 
   useEffect(() => {
@@ -111,6 +119,18 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
               {s.hostname && s.hostname !== 'local' && (
                 <span className="tab-switcher-host">{s.hostname}</span>
               )}
+              <span
+                className="tab-switcher-toggle"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSessionAutoApprove(s.id, !s.autoApprove);
+                }}
+                title={`Auto-approve: ${s.autoApprove ? 'on' : 'off'}`}
+              >
+                <span className={`dv-tab-toggle ${s.autoApprove ? 'on' : ''}`}>
+                  <span className="dv-tab-toggle-knob" />
+                </span>
+              </span>
             </div>
           );
         })}

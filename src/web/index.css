@@ -277,6 +277,37 @@ body,
   opacity: 1 !important;
 }
 
+/* Toggle switch */
+.dv-tab-toggle {
+  display: inline-block;
+  width: 22px;
+  height: 12px;
+  border-radius: 6px;
+  background: #484f58;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.dv-tab-toggle.on {
+  background: #3fb950;
+}
+
+.dv-tab-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.2s;
+}
+
+.dv-tab-toggle.on .dv-tab-toggle-knob {
+  left: 12px;
+}
+
 .dv-tab-close {
   font-size: 14px;
   line-height: 1;
@@ -1124,6 +1155,15 @@ body,
 .tab-switcher-host {
   font-size: 11px;
   opacity: 0.6;
+}
+
+.tab-switcher-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
 }
 
 /* Terminal search bar */

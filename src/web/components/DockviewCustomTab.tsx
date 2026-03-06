@@ -21,15 +21,15 @@ function shortPath(p: string): string {
   return p;
 }
 
-function ShieldIcon({ active }: { active: boolean }) {
+function ToggleSwitch({ active }: { active: boolean }) {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-      style={{ color: active ? '#3fb950' : 'currentColor', flexShrink: 0 }}
+    <span
+      className={`dv-tab-toggle ${active ? 'on' : ''}`}
+      aria-checked={active}
+      role="switch"
     >
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-      {active && <polyline points="9 12 11 14 15 10" />}
-    </svg>
+      <span className="dv-tab-toggle-knob" />
+    </span>
   );
 }
 
@@ -83,7 +83,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
         onClick={handleShieldClick}
         title={`Auto-approve: ${active ? 'on' : 'off'}`}
       >
-        <ShieldIcon active={active} />
+        <ToggleSwitch active={active} />
       </span>
       <span
         className={`dv-tab-close ${hovered ? 'visible' : ''}`}
