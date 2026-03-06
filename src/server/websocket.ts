@@ -179,8 +179,7 @@ function handleMessage(
       const rows = msg.rows as number;
       if (sessionId && cols && rows) {
         const session = manager.getSession(sessionId);
-        // Don't resize local sessions — their PTY size is controlled by the CLI terminal
-        if (session && !session.isLocal) {
+        if (session) {
           session.resize(cols, rows);
         }
       }
