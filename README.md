@@ -4,7 +4,8 @@
 
 ### A web terminal for your AI coding agents
 
-Run Claude Code, Codex, Gemini CLI — or anything — across multiple machines, in one browser tab or desktop app.
+Run Claude Code, Codex, Gemini CLI — or anything — across multiple machines, in one place.
+Browser · Desktop App · Mobile · Multi-server
 
 [![npm](https://img.shields.io/npm/v/swarmie)](https://www.npmjs.com/package/swarmie)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -100,13 +101,13 @@ swarmie [command] [options] [-- tool-args...]
 ## Architecture
 
 ```
-swarmie claude        swarmie codex        swarmie (shell)
-     │                     │                     │
-  PTY adapter           PTY adapter          PTY adapter
-     │                     │                     │
-     └──── IPC (Unix Socket) ────┬───────────────┘
-                                 │
-                          Coordinator
+swarmie claude     swarmie codex     swarmie (shell)     Remote server
+     │                  │                  │                  │
+  PTY adapter        PTY adapter       PTY adapter      WebSocket (WS)
+     │                  │                  │                  │
+     └──── IPC (Unix Socket) ────┬─────────┘                 │
+                                 │                           │
+                          Coordinator ───────────────────────┘
                                  │
                       Fastify (HTTP + WS)
                       ┌────────┼────────┐
