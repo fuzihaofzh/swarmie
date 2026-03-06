@@ -23,17 +23,43 @@ function parseCookies(header: string | undefined): Record<string, string> {
 
 const PAGE_STYLE = `
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-    .card { background: #16213e; border-radius: 12px; padding: 2rem; width: 100%; max-width: 360px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--fg); display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .card { background: var(--header-bg); border-radius: 12px; padding: 2rem; width: 100%; max-width: 360px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
     h1 { font-size: 1.5rem; margin-bottom: 0.5rem; text-align: center; }
-    .subtitle { font-size: 0.875rem; color: #a0a0b0; text-align: center; margin-bottom: 1.5rem; }
-    label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; color: #a0a0b0; }
-    input[type="password"] { width: 100%; padding: 0.75rem; border: 1px solid #2a2a4a; border-radius: 8px; background: #0f3460; color: #e0e0e0; font-size: 1rem; outline: none; margin-bottom: 0.75rem; }
-    input[type="password"]:focus { border-color: #e94560; }
-    button { width: 100%; padding: 0.75rem; margin-top: 0.5rem; border: none; border-radius: 8px; background: #e94560; color: #fff; font-size: 1rem; cursor: pointer; font-weight: 600; }
-    button:hover { background: #c73652; }
-    .error { color: #e94560; font-size: 0.875rem; margin-top: 0.75rem; text-align: center; display: none; }
+    .subtitle { font-size: 0.875rem; color: var(--text-secondary); text-align: center; margin-bottom: 1.5rem; }
+    label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; color: var(--text-secondary); }
+    input[type="password"] { width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--selected-bg); color: var(--fg); font-size: 1rem; outline: none; margin-bottom: 0.75rem; }
+    input[type="password"]:focus { border-color: var(--accent); }
+    button { width: 100%; padding: 0.75rem; margin-top: 0.5rem; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-size: 1rem; cursor: pointer; font-weight: 600; }
+    button:hover { opacity: 0.85; }
+    .error { color: var(--error); font-size: 0.875rem; margin-top: 0.75rem; text-align: center; display: none; }
 `;
+
+// Theme data embedded for login/setup pages (mirrors src/web/themes.ts)
+const THEME_SCRIPT = `<script>
+(function() {
+  var themes = {
+    'github-dark': { bg:'#0d1117', fg:'#c9d1d9', headerBg:'#161b22', border:'#30363d', textSecondary:'#8b949e', accent:'#58a6ff', selectedBg:'#0d1117', error:'#f85149' },
+    'dracula': { bg:'#282a36', fg:'#f8f8f2', headerBg:'#21222c', border:'#44475a', textSecondary:'#6272a4', accent:'#8be9fd', selectedBg:'#282a36', error:'#ff5555' },
+    'nord': { bg:'#2e3440', fg:'#d8dee9', headerBg:'#3b4252', border:'#4c566a', textSecondary:'#81a1c1', accent:'#88c0d0', selectedBg:'#2e3440', error:'#bf616a' },
+    'monokai': { bg:'#272822', fg:'#f8f8f2', headerBg:'#1e1f1c', border:'#3e3d32', textSecondary:'#75715e', accent:'#66d9ef', selectedBg:'#272822', error:'#f92672' },
+    'solarized-dark': { bg:'#002b36', fg:'#839496', headerBg:'#073642', border:'#586e75', textSecondary:'#657b83', accent:'#268bd2', selectedBg:'#002b36', error:'#dc322f' },
+    'solarized-light': { bg:'#fdf6e3', fg:'#657b83', headerBg:'#eee8d5', border:'#93a1a1', textSecondary:'#93a1a1', accent:'#268bd2', selectedBg:'#fdf6e3', error:'#dc322f' }
+  };
+  var name = null;
+  try { name = localStorage.getItem('swarmie-theme'); } catch(e) {}
+  var t = themes[name] || themes['solarized-light'];
+  var r = document.documentElement;
+  r.style.setProperty('--bg', t.bg);
+  r.style.setProperty('--fg', t.fg);
+  r.style.setProperty('--header-bg', t.headerBg);
+  r.style.setProperty('--border', t.border);
+  r.style.setProperty('--text-secondary', t.textSecondary);
+  r.style.setProperty('--accent', t.accent);
+  r.style.setProperty('--selected-bg', t.selectedBg);
+  r.style.setProperty('--error', t.error);
+})();
+</script>`;
 
 const SETUP_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -42,6 +68,7 @@ const SETUP_HTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>swarmie — Setup</title>
   <style>${PAGE_STYLE}</style>
+  ${THEME_SCRIPT}
 </head>
 <body>
   <div class="card">
@@ -96,6 +123,7 @@ const LOGIN_HTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>swarmie — Login</title>
   <style>${PAGE_STYLE}</style>
+  ${THEME_SCRIPT}
 </head>
 <body>
   <div class="card">

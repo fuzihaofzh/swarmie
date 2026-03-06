@@ -19,6 +19,7 @@ Most agent session managers are native apps tied to one machine. swarmie runs in
 
 - **Access from anywhere** — Phone, tablet, another laptop. If it has a browser, you're in.
 - **Aggregate multiple machines** — Connect remote servers to a single dashboard. No SSH juggling.
+- **One-click auto-approve** — Toggle the shield icon on any tab to auto-accept agent prompts. Let your agents run hands-free.
 - **Agent status at a glance** — See which agents are running, thinking, or waiting for input — right in the tab icon.
 - **Works with everything** — Claude Code, Codex, Gemini CLI, Aider, or plain `bash`. If it runs in a terminal, it works.
 - **Zero config** — `npm install -g swarmie && swarmie`. That's it.
@@ -108,9 +109,9 @@ swarmie claude        swarmie codex        swarmie (shell)
                           Coordinator
                                  │
                       Fastify (HTTP + WS)
-                           ┌─────┴─────┐
-                       Browser     Desktop App
-                  (React + xterm.js)  (Electron)
+                      ┌────────┼────────┐
+                  Browser   Desktop App  Mobile
+              (React + xterm.js) (Electron) (Touch UI)
 ```
 
 First swarmie process becomes the **coordinator** — it owns the web server and IPC socket. Subsequent processes register their sessions via IPC automatically.
