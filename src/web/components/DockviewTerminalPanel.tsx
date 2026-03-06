@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { IDockviewPanelProps } from 'dockview';
 import { TerminalView } from './TerminalView';
 import { useWsContext } from '../contexts/WsContext';
@@ -12,10 +12,12 @@ export interface TerminalPanelParams {
 export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<TerminalPanelParams>) {
   const { sendInput, sendResize, sendRedraw } = useWsContext();
   const sessionId = params.sessionId;
+  const [active, setActive] = useState(api.isActive);
 
   // Track active state from dockview
   useEffect(() => {
     const disposable = api.onDidActiveChange((e) => {
+      setActive(e.isActive);
       if (e.isActive) {
         // Update Zustand when dockview activates this panel
         useSessionStore.getState().setActiveSession(sessionId);
@@ -28,7 +30,7 @@ export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<Termi
   return (
     <TerminalView
       sessionId={sessionId}
-      isActive={api.isActive}
+      isActive={active}
       onInput={(data) => sendInput(sessionId, data)}
       onResize={(cols, rows) => sendResize(sessionId, cols, rows)}
       onRedraw={() => sendRedraw(sessionId)}
