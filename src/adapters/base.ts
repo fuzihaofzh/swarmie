@@ -112,7 +112,7 @@ export abstract class BaseAdapter extends EventEmitter {
     }
 
     // Check for waiting-for-input prompts (from any active state).
-    if (this._status === 'running' || this._status === 'tool_executing' || this._status === 'idle') {
+    if (this._status !== 'waiting_input' && this._status !== 'completed' && this._status !== 'error') {
       for (const needle of WAITING_INPUT_SUBSTRINGS) {
         if (this._detectBuffer.includes(needle)) {
           this.setStatus('waiting_input');
