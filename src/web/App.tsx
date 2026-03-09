@@ -102,6 +102,20 @@ export function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [api]);
 
+  // Forward horizontal trackpad deltaX to tab bar scrollLeft
+  useEffect(() => {
+    const handler = (e: WheelEvent) => {
+      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+      const target = e.target as HTMLElement;
+      const container = target.closest('.dv-tabs-container') as HTMLElement;
+      if (!container) return;
+      container.scrollLeft += e.deltaX;
+      e.preventDefault();
+    };
+    window.addEventListener('wheel', handler, { passive: false });
+    return () => window.removeEventListener('wheel', handler);
+  }, []);
+
   const onReady = (event: DockviewReadyEvent) => {
     setApi(event.api);
   };
