@@ -11,7 +11,7 @@ Browser · Desktop App · Mobile · Multi-server
 [![GitHub](https://img.shields.io/github/stars/fuzihaofzh/swarmie?style=social)](https://github.com/fuzihaofzh/swarmie)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-![swarmie hero](docs/hero.png)
+![swarmie hero](https://raw.githubusercontent.com/fuzihaofzh/swarmie/main/docs/hero.png)
 
 </div>
 
@@ -56,7 +56,7 @@ swarmie codex
 swarmie gemini
 ```
 
-![swarmie screenshot](docs/screenshot-dark.png)
+![swarmie screenshot](https://raw.githubusercontent.com/fuzihaofzh/swarmie/main/docs/screenshot-dark.png)
 
 Multiple swarmie processes auto-discover each other and aggregate into one dashboard:
 
