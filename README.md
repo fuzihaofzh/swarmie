@@ -49,11 +49,6 @@ open dist/electron/Swarmie-darwin-*/Swarmie.app
 ```bash
 # Opens a web dashboard at http://localhost:3200
 swarmie
-
-# Or launch directly with a tool
-swarmie claude
-swarmie codex
-swarmie gemini
 ```
 
 ![swarmie screenshot](https://raw.githubusercontent.com/fuzihaofzh/swarmie/main/docs/screenshot-dark.png)
@@ -61,8 +56,8 @@ swarmie gemini
 Multiple swarmie processes auto-discover each other and aggregate into one dashboard:
 
 ```bash
-swarmie claude                        # Terminal 1
-swarmie codex -- "add unit tests"     # Terminal 2 — appears in the same dashboard
+swarmie                               # Terminal 1
+swarmie                               # Terminal 2 — appears in the same dashboard
 ```
 
 ## Multi-Server
