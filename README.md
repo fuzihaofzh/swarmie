@@ -8,6 +8,7 @@ Manage Claude Code, Codex, Gemini CLI — or any terminal program — across mul
 Browser · Desktop App · Mobile · Multi-server
 
 [![npm](https://img.shields.io/npm/v/swarmie)](https://www.npmjs.com/package/swarmie)
+[![GitHub](https://img.shields.io/github/stars/fuzihaofzh/swarmie?style=social)](https://github.com/fuzihaofzh/swarmie)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ![swarmie hero](docs/hero.png)
