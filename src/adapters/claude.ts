@@ -66,6 +66,7 @@ export class ClaudeAdapter extends BaseAdapter {
       cwd: this.cwd,
       env,
     });
+    this.startCwdPolling(this.ptyProcess.pid);
 
     this.ptyProcess.onData((data: string) => {
       if (this.structuredMode) {

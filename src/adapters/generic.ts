@@ -71,6 +71,7 @@ export class GenericAdapter extends BaseAdapter {
       cwd: this.cwd,
       env: process.env as Record<string, string>,
     });
+    this.startCwdPolling(this.ptyProcess.pid);
 
     this.ptyProcess.onData((data: string) => {
       this.handleActivityDetection(data);

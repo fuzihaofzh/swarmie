@@ -1,5 +1,10 @@
 import { EventEmitter } from 'node:events';
-import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, SessionStatus } from './types.js';
+import { readlink } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, SessionStatus, CwdChangeData } from './types.js';
+
+const execFileAsync = promisify(execFile);
 
 // Plain substrings that indicate the tool is waiting for user input.
 const WAITING_INPUT_SUBSTRINGS = [
@@ -30,6 +35,7 @@ export abstract class BaseAdapter extends EventEmitter {
   protected _status: SessionStatus = 'starting';
   protected _startTime: number = Date.now();
   private _idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private _cwdTimer: ReturnType<typeof setInterval> | null = null;
   /** Rolling buffer of ANSI-stripped text for waiting_input detection */
   private _detectBuffer: string = '';
 
@@ -132,6 +138,41 @@ export abstract class BaseAdapter extends EventEmitter {
     }
   }
 
+  /** Start polling the cwd of a child process by PID */
+  protected startCwdPolling(pid: number): void {
+    this.stopCwdPolling();
+    this._cwdTimer = setInterval(() => this.pollCwd(pid), 5000);
+  }
+
+  protected stopCwdPolling(): void {
+    if (this._cwdTimer) {
+      clearInterval(this._cwdTimer);
+      this._cwdTimer = null;
+    }
+  }
+
+  private async pollCwd(pid: number): Promise<void> {
+    try {
+      let resolvedCwd: string;
+      if (process.platform === 'linux') {
+        resolvedCwd = await readlink(`/proc/${pid}/cwd`);
+      } else if (process.platform === 'darwin') {
+        const { stdout } = await execFileAsync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 3000 });
+        const match = stdout.match(/\nn(.*)/);
+        if (!match) return;
+        resolvedCwd = match[1];
+      } else {
+        return; // unsupported platform
+      }
+      if (resolvedCwd && resolvedCwd !== this.cwd) {
+        this.cwd = resolvedCwd;
+        this.emitEvent('cwd:change', { cwd: resolvedCwd } satisfies CwdChangeData);
+      }
+    } catch {
+      // Process may have exited, ignore
+    }
+  }
+
   /** Call from subclass write() to clear waiting state when user sends input */
   protected handleUserInput(): void {
     if (this._status === 'waiting_input') {
@@ -141,12 +182,13 @@ export abstract class BaseAdapter extends EventEmitter {
     this._detectBuffer = '';
   }
 
-  /** Call from subclass onExit to clean up timer */
+  /** Call from subclass onExit to clean up timers */
   protected clearIdleTimer(): void {
     if (this._idleTimer) {
       clearTimeout(this._idleTimer);
       this._idleTimer = null;
     }
+    this.stopCwdPolling();
   }
 
   private resetIdleTimer(): void {
