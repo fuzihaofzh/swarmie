@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { IDockviewPanelHeaderProps } from 'dockview';
 import { useSessionStore } from '../hooks/useSessions';
 import { useServerStore } from '../hooks/useServers';
@@ -35,8 +35,19 @@ function ToggleSwitch({ active }: { active: boolean }) {
 
 export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
   const [hovered, setHovered] = useState(false);
+  const tabRef = useRef<HTMLDivElement>(null);
   const sessionId = (params as { sessionId?: string }).sessionId;
   const session = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId));
+
+  // Scroll active tab into view
+  useEffect(() => {
+    const disposable = api.onDidActiveChange((e) => {
+      if (e.isActive) {
+        tabRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      }
+    });
+    return () => disposable.dispose();
+  }, [api]);
   const setSessionAutoApprove = useSessionStore((s) => s.setSessionAutoApprove);
   const servers = useServerStore((s) => s.servers);
   const { killSession } = useWsContext();
@@ -69,6 +80,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
 
   return (
     <div
+      ref={tabRef}
       className="dv-custom-tab"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
