@@ -153,16 +153,18 @@ export abstract class BaseAdapter extends EventEmitter {
 
   private async pollCwd(pid: number): Promise<void> {
     try {
+      // Find the deepest descendant process — that's the actual shell/agent
+      const leafPid = await this.findLeafChild(pid);
       let resolvedCwd: string;
       if (process.platform === 'linux') {
-        resolvedCwd = await readlink(`/proc/${pid}/cwd`);
+        resolvedCwd = await readlink(`/proc/${leafPid}/cwd`);
       } else if (process.platform === 'darwin') {
-        const { stdout } = await execFileAsync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 3000 });
+        const { stdout } = await execFileAsync('lsof', ['-a', '-p', String(leafPid), '-d', 'cwd', '-Fn'], { timeout: 3000 });
         const match = stdout.match(/\nn(.*)/);
         if (!match) return;
         resolvedCwd = match[1];
       } else {
-        return; // unsupported platform
+        return;
       }
       if (resolvedCwd && resolvedCwd !== this.cwd) {
         this.cwd = resolvedCwd;
@@ -170,6 +172,19 @@ export abstract class BaseAdapter extends EventEmitter {
       }
     } catch {
       // Process may have exited, ignore
+    }
+  }
+
+  /** Walk process tree to find the deepest child (leaf) process */
+  private async findLeafChild(pid: number): Promise<number> {
+    try {
+      const { stdout } = await execFileAsync('pgrep', ['-P', String(pid)], { timeout: 2000 });
+      const children = stdout.trim().split('\n').filter(Boolean).map(Number);
+      if (children.length === 0) return pid;
+      // Recurse into the last child (most likely the foreground process)
+      return this.findLeafChild(children[children.length - 1]);
+    } catch {
+      return pid; // no children or pgrep failed
     }
   }
 
