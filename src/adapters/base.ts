@@ -46,6 +46,8 @@ export abstract class BaseAdapter extends EventEmitter {
   private _cwdTimer: ReturnType<typeof setInterval> | null = null;
   /** Rolling buffer of ANSI-stripped text for waiting_input detection */
   private _detectBuffer: string = '';
+  /** True when cwd is being tracked via OSC sequences (e.g. SSH session) */
+  private _oscCwdActive: boolean = false;
 
   abstract get info(): AdapterInfo;
 
@@ -165,6 +167,7 @@ export abstract class BaseAdapter extends EventEmitter {
       if (changed) {
         if (newCwd) this.cwd = newCwd;
         this.hostname = host;
+        this._oscCwdActive = true;
         this.emitEvent('cwd:change', { cwd: this.cwd, hostname: this.hostname } satisfies CwdChangeData);
       }
     }
@@ -182,6 +185,7 @@ export abstract class BaseAdapter extends EventEmitter {
       if (!path.startsWith('/') && !path.startsWith('~')) continue;
       if (path !== this.cwd) {
         if (path !== '~') this.cwd = path;
+        this._oscCwdActive = true;
         this.emitEvent('cwd:change', { cwd: this.cwd, hostname: this.hostname } satisfies CwdChangeData);
       }
     }
@@ -201,8 +205,8 @@ export abstract class BaseAdapter extends EventEmitter {
   }
 
   private async pollCwd(pid: number): Promise<void> {
-    // Skip polling when SSH'd — OSC sequences handle remote cwd
-    if (this.hostname !== this._initialHostname) return;
+    // Skip polling when OSC sequences are actively tracking cwd (e.g. SSH)
+    if (this._oscCwdActive) return;
     try {
       // Find the deepest descendant process — that's the actual shell/agent
       const leafPid = await this.findLeafChild(pid);
