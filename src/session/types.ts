@@ -32,4 +32,5 @@ export interface SessionSummary {
   icon: string;
   cwd: string;
   hostname: string;
+  initialHostname: string;
 }

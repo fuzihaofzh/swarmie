@@ -74,6 +74,7 @@ export class ClaudeAdapter extends BaseAdapter {
       }
 
       this.handleActivityDetection(data);
+      this.parseOSC(data);
 
       // Always emit raw output for terminal rendering
       this.emitEvent('raw:output', {

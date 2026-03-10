@@ -21,6 +21,7 @@ export class Session extends EventEmitter {
   private _command: string[] = [];
   private _cwd: string;
   private _hostname: string;
+  private _initialHostname: string;
 
   constructor(id: string, name: string, adapter: BaseAdapter, opts?: { cwd?: string; hostname?: string }) {
     super();
@@ -29,6 +30,7 @@ export class Session extends EventEmitter {
     this.adapter = adapter;
     this._cwd = opts?.cwd ?? process.cwd();
     this._hostname = opts?.hostname ?? _hostname;
+    this._initialHostname = this._hostname;
 
     this.adapter.on('event', (event: NormalizedEvent) => {
       this.handleEvent(event);
@@ -63,6 +65,7 @@ export class Session extends EventEmitter {
       icon: this.adapter.info.icon,
       cwd: this._cwd,
       hostname: this._hostname,
+      initialHostname: this._initialHostname,
     };
   }
 
@@ -115,8 +118,9 @@ export class Session extends EventEmitter {
         break;
       }
       case 'cwd:change': {
-        const data = event.data as { cwd: string };
+        const data = event.data as { cwd: string; hostname?: string };
         this._cwd = data.cwd;
+        if (data.hostname) this._hostname = data.hostname;
         break;
       }
       case 'metadata': {

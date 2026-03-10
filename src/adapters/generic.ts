@@ -6,7 +6,6 @@ import type {
   SessionStartData,
   SessionEndData,
   ToolDetectData,
-  CwdChangeData,
 } from './types.js';
 
 const TOOL_SIGNATURES: { pattern: RegExp; tool: string; displayName: string }[] = [
@@ -14,9 +13,6 @@ const TOOL_SIGNATURES: { pattern: RegExp; tool: string; displayName: string }[] 
   { pattern: /codex/i, tool: 'codex', displayName: 'Codex' },
   { pattern: /gemini/i, tool: 'gemini', displayName: 'Gemini' },
 ];
-
-// OSC 7: \x1b]7;file://host/path BEL — shell reports cwd
-const OSC7_RE = /\x1b\]7;file:\/\/[^/]*([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
 
 /**
  * Generic adapter — runs any command via PTY.
@@ -26,7 +22,6 @@ export class GenericAdapter extends BaseAdapter {
   private ptyProcess: pty.IPty | null = null;
   private command: string;
   private _detectedTool: string | null = null;
-  private _lastCwd: string = '';
   /** Rolling buffer of stripped text for tool detection after Enter */
   private _detectBuf = '';
   private _detectActive = false;
@@ -34,7 +29,6 @@ export class GenericAdapter extends BaseAdapter {
   constructor(command: string, options: ConstructorParameters<typeof BaseAdapter>[0]) {
     super(options);
     this.command = command;
-    this._lastCwd = this.cwd;
   }
 
   get info(): AdapterInfo {
@@ -111,19 +105,6 @@ export class GenericAdapter extends BaseAdapter {
 
   kill(signal?: string): void {
     this.ptyProcess?.kill(signal);
-  }
-
-  private parseOSC(chunk: string): void {
-    let match: RegExpExecArray | null;
-    OSC7_RE.lastIndex = 0;
-    while ((match = OSC7_RE.exec(chunk)) !== null) {
-      const newCwd = decodeURIComponent(match[1]);
-      if (newCwd && newCwd !== this._lastCwd) {
-        this._lastCwd = newCwd;
-        this.cwd = newCwd;
-        this.emitEvent('cwd:change', { cwd: newCwd } satisfies CwdChangeData);
-      }
-    }
   }
 
   /** Scan stripped PTY output for tool names after user presses Enter */

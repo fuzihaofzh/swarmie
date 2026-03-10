@@ -96,6 +96,7 @@ export interface ToolDetectData {
 
 export interface CwdChangeData {
   cwd: string;
+  hostname?: string;
 }
 
 export interface MetadataData {

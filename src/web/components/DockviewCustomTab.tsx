@@ -67,6 +67,11 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
         }
       })()
     : null;
+  // If SSH detected via OSC sequences, show the SSH hostname
+  const sshHost = !isRemote && session.hostname && session.hostname !== session.initialHostname
+    ? session.hostname
+    : null;
+  const displayHost = remoteHost || sshHost;
 
   const handleShieldClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -88,7 +93,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
     >
       <ToolIcon tool={session.tool} status={session.status} />
       <span className="dv-tab-name">
-        {remoteHost ? `${remoteHost}:${shortPath(session.cwd)}` : shortPath(session.cwd)}
+        {displayHost ? `${displayHost}:${shortPath(session.cwd)}` : shortPath(session.cwd)}
       </span>
       <span
         className={`dv-tab-shield ${active || hovered ? 'visible' : ''}`}

@@ -14,6 +14,7 @@ export interface SessionSummary {
   icon: string;
   cwd: string;
   hostname: string;
+  initialHostname: string;
   autoApprove?: boolean;
   /** '' for local server, absolute URL for remote */
   serverUrl: string;
@@ -146,13 +147,12 @@ export const useSessionStore = create<SessionState>((set) => ({
         );
       }
       if (event.type === 'cwd:change') {
-        const { cwd } = event.data as { cwd: string };
-        const session = sessions.find((s) => s.id === event.sessionId);
+        const { cwd, hostname } = event.data as { cwd: string; hostname?: string };
         if (cwd && cwd !== '~') {
-          saveRecentDir({ dir: cwd, hostname: session?.hostname });
+          saveRecentDir({ dir: cwd, hostname: hostname ?? sessions.find((s) => s.id === event.sessionId)?.hostname });
         }
         sessions = sessions.map((s) =>
-          s.id === event.sessionId ? { ...s, cwd } : s,
+          s.id === event.sessionId ? { ...s, cwd, ...(hostname ? { hostname } : {}) } : s,
         );
       }
       if (event.type === 'session:end') {
@@ -183,9 +183,9 @@ export const useSessionStore = create<SessionState>((set) => ({
       }
       const cwdEvt = newEvents.findLast((e) => e.type === 'cwd:change');
       if (cwdEvt) {
-        const { cwd } = cwdEvt.data as { cwd: string };
+        const { cwd, hostname } = cwdEvt.data as { cwd: string; hostname?: string };
         sessions = sessions.map((s) =>
-          s.id === sessionId ? { ...s, cwd } : s,
+          s.id === sessionId ? { ...s, cwd, ...(hostname ? { hostname } : {}) } : s,
         );
       }
 

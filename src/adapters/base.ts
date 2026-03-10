@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { readlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { hostname as osHostname } from 'node:os';
 import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, SessionStatus, CwdChangeData } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -18,6 +19,11 @@ const WAITING_INPUT_SUBSTRINGS = [
 // Max chars to keep in the rolling stripped-text buffer for detection.
 const DETECT_BUFFER_SIZE = 1000;
 
+// OSC 7: file://hostname/path — shell reports cwd (+ hostname for SSH)
+const OSC7_RE = /\x1b\]7;file:\/\/([^/]*)(\/[^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
+// OSC 0/2: window title, often "user@host:path" or "host:path"
+const OSC_TITLE_RE = /\x1b\][02];([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
+
 export interface AdapterOptions {
   sessionId: string;
   toolArgs: string[];
@@ -30,6 +36,8 @@ export abstract class BaseAdapter extends EventEmitter {
   readonly sessionId: string;
   protected toolArgs: string[];
   protected cwd: string;
+  protected hostname: string;
+  private _initialHostname: string;
   protected cols: number;
   protected rows: number;
   protected _status: SessionStatus = 'starting';
@@ -46,6 +54,8 @@ export abstract class BaseAdapter extends EventEmitter {
     this.sessionId = options.sessionId;
     this.toolArgs = options.toolArgs;
     this.cwd = options.cwd ?? process.cwd();
+    this.hostname = osHostname();
+    this._initialHostname = this.hostname;
     this.cols = options.cols ?? (process.stdout.columns || 80);
     this.rows = options.rows ?? (process.stdout.rows || 24);
   }
@@ -138,6 +148,45 @@ export abstract class BaseAdapter extends EventEmitter {
     }
   }
 
+  /**
+   * Parse OSC escape sequences for cwd and hostname changes.
+   * OSC 7: file://hostname/path — shell reports cwd (works across SSH).
+   * OSC 0/2: window title, often "user@host:path" — fallback for SSH.
+   */
+  protected parseOSC(chunk: string): void {
+    let match: RegExpExecArray | null;
+
+    // OSC 7: authoritative cwd + hostname
+    OSC7_RE.lastIndex = 0;
+    while ((match = OSC7_RE.exec(chunk)) !== null) {
+      const host = match[1] || this.hostname;
+      const newCwd = decodeURIComponent(match[2]);
+      const changed = (newCwd && newCwd !== this.cwd) || (host !== this.hostname);
+      if (changed) {
+        if (newCwd) this.cwd = newCwd;
+        this.hostname = host;
+        this.emitEvent('cwd:change', { cwd: this.cwd, hostname: this.hostname } satisfies CwdChangeData);
+      }
+    }
+
+    // OSC 0/2: fallback — only extract cwd path, not hostname
+    // (hostname in title can be unreliable, e.g. conda sets it to arch name)
+    OSC_TITLE_RE.lastIndex = 0;
+    while ((match = OSC_TITLE_RE.exec(chunk)) !== null) {
+      const title = match[1].trim();
+      // Match "user@host:path" or "host:path"
+      const titleMatch = title.match(/^(?:[^@]+@)?([^:]+):(.+)$/);
+      if (!titleMatch) continue;
+      const path = titleMatch[2].trim();
+      // Only use if path looks absolute
+      if (!path.startsWith('/') && !path.startsWith('~')) continue;
+      if (path !== this.cwd) {
+        if (path !== '~') this.cwd = path;
+        this.emitEvent('cwd:change', { cwd: this.cwd, hostname: this.hostname } satisfies CwdChangeData);
+      }
+    }
+  }
+
   /** Start polling the cwd of a child process by PID */
   protected startCwdPolling(pid: number): void {
     this.stopCwdPolling();
@@ -152,6 +201,8 @@ export abstract class BaseAdapter extends EventEmitter {
   }
 
   private async pollCwd(pid: number): Promise<void> {
+    // Skip polling when SSH'd — OSC sequences handle remote cwd
+    if (this.hostname !== this._initialHostname) return;
     try {
       // Find the deepest descendant process — that's the actual shell/agent
       const leafPid = await this.findLeafChild(pid);
@@ -168,7 +219,7 @@ export abstract class BaseAdapter extends EventEmitter {
       }
       if (resolvedCwd && resolvedCwd !== this.cwd) {
         this.cwd = resolvedCwd;
-        this.emitEvent('cwd:change', { cwd: resolvedCwd } satisfies CwdChangeData);
+        this.emitEvent('cwd:change', { cwd: resolvedCwd, hostname: this.hostname } satisfies CwdChangeData);
       }
     } catch {
       // Process may have exited, ignore

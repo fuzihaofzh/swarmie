@@ -48,6 +48,7 @@ export class CodexAdapter extends BaseAdapter {
 
     this.ptyProcess.onData((data: string) => {
       this.handleActivityDetection(data);
+      this.parseOSC(data);
       this.emitEvent('raw:output', {
         data: Buffer.from(data).toString('base64'),
       } satisfies RawOutputData);
