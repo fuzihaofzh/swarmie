@@ -41,6 +41,8 @@ interface SessionState {
   addEventBatch: (sessionId: string, events: NormalizedEvent[]) => void;
   updateSessionStatus: (sessionId: string, status: string) => void;
   setSessionAutoApprove: (sessionId: string, value: boolean) => void;
+  /** Update auto-approve from server broadcast (no sync back) */
+  _setAutoApproveLocal: (sessionId: string, value: boolean) => void;
   /** Replace all sessions from a given server */
   setServerSessions: (serverUrl: string, sessions: SessionSummary[]) => void;
   /** Remove all sessions for a disconnected server */
@@ -218,6 +220,15 @@ export const useSessionStore = create<SessionState>((set) => ({
       return { sessions };
     });
   },
+
+  _setAutoApproveLocal: (sessionId, value) =>
+    set((state) => {
+      const sessions = state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, autoApprove: value } : s,
+      );
+      saveAutoApproveMap(sessions);
+      return { sessions };
+    }),
 
   setServerSessions: (serverUrl, incoming) =>
     set((state) => {

@@ -222,7 +222,8 @@ export class ServerConnection {
         store.removeSession(msg.sessionId as string);
         break;
       case 'session:autoApprove':
-        store.setSessionAutoApprove(msg.sessionId as string, !!msg.value);
+        // Update local state only — don't sync back to server
+        store._setAutoApproveLocal(msg.sessionId as string, !!msg.value);
         break;
       case 'server:shutdown':
         if (this.isLocal) {
