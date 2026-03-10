@@ -33,4 +33,5 @@ export interface SessionSummary {
   cwd: string;
   hostname: string;
   initialHostname: string;
+  autoApprove?: boolean;
 }

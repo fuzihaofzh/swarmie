@@ -15,6 +15,7 @@ export class Session extends EventEmitter {
   readonly adapter: BaseAdapter;
   /** Local sessions have their PTY size controlled by the CLI terminal, not web */
   isLocal = false;
+  autoApprove = false;
   private events: NormalizedEvent[] = [];
   private _endTime?: number;
   private _metadata: SessionInfo['metadata'] = {};
@@ -66,6 +67,7 @@ export class Session extends EventEmitter {
       cwd: this._cwd,
       hostname: this._hostname,
       initialHostname: this._initialHostname,
+      autoApprove: this.autoApprove || undefined,
     };
   }
 

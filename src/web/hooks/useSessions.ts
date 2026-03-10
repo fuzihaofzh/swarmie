@@ -69,6 +69,12 @@ export function registerAutoApproveSend(fn: ((sessionId: string) => void) | null
   autoApproveSend = fn;
 }
 
+/** Module-level callback to sync auto-approve state to server */
+let autoApproveSync: ((sessionId: string, value: boolean) => void) | null = null;
+export function registerAutoApproveSync(fn: ((sessionId: string, value: boolean) => void) | null) {
+  autoApproveSync = fn;
+}
+
 /** Stable selector for session events — returns same ref when empty */
 export function useSessionEvents(sessionId: string): NormalizedEvent[] {
   return useSessionStore((state) => state.events[sessionId] ?? EMPTY_EVENTS);
@@ -85,7 +91,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       const merged = sessions.map((s) => ({
         ...s,
         serverUrl: s.serverUrl ?? '',
-        ...(saved[s.id] ? { autoApprove: true } : {}),
+        autoApprove: s.autoApprove || saved[s.id] || false,
       }));
       const activeSessionId = state.activeSessionId ?? merged[0]?.id ?? null;
       return { sessions: merged, activeSessionId };
@@ -96,9 +102,12 @@ export const useSessionStore = create<SessionState>((set) => ({
       const exists = state.sessions.some((s) => s.id === session.id);
       if (exists) return state;
       const saved = loadAutoApproveMap();
-      const tagged = { ...session, serverUrl: session.serverUrl ?? '' };
-      const merged = saved[session.id] ? { ...tagged, autoApprove: true } : tagged;
-      const sessions = [...state.sessions, merged];
+      const tagged = {
+        ...session,
+        serverUrl: session.serverUrl ?? '',
+        autoApprove: session.autoApprove || saved[session.id] || false,
+      };
+      const sessions = [...state.sessions, tagged];
       const activeSessionId = state.activeSessionId ?? session.id;
       return { sessions, activeSessionId };
     }),
@@ -199,14 +208,16 @@ export const useSessionStore = create<SessionState>((set) => ({
       ),
     })),
 
-  setSessionAutoApprove: (sessionId, value) =>
+  setSessionAutoApprove: (sessionId, value) => {
+    autoApproveSync?.(sessionId, value);
     set((state) => {
       const sessions = state.sessions.map((s) =>
         s.id === sessionId ? { ...s, autoApprove: value } : s,
       );
       saveAutoApproveMap(sessions);
       return { sessions };
-    }),
+    });
+  },
 
   setServerSessions: (serverUrl, incoming) =>
     set((state) => {

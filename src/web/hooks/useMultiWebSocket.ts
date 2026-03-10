@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { ServerConnection, registerAutoApproveForConnections } from './useWebSocket';
 import { useServerStore, LOCAL_SERVER } from './useServers';
-import { useSessionStore, registerAutoApproveSend } from './useSessions';
+import { useSessionStore, registerAutoApproveSend, registerAutoApproveSync } from './useSessions';
 
 export function useMultiWebSocket() {
   const connectionsRef = useRef<Map<string, ServerConnection>>(new Map());
@@ -25,6 +25,11 @@ export function useMultiWebSocket() {
     // Register auto-approve routing
     registerAutoApproveForConnections(getConnectionForSession);
 
+    // Register auto-approve sync to server
+    registerAutoApproveSync((sessionId, value) => {
+      getConnectionForSession(sessionId)?.sendAutoApprove(sessionId, value);
+    });
+
     // Reconnect all connections when page becomes visible again
     const onVisibility = () => {
       if (!document.hidden) {
@@ -38,6 +43,7 @@ export function useMultiWebSocket() {
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
       registerAutoApproveSend(null);
+      registerAutoApproveSync(null);
       for (const conn of connectionsRef.current.values()) {
         conn.disconnect();
       }

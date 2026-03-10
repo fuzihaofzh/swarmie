@@ -116,6 +116,10 @@ export class ServerConnection {
     this.send({ type: 'redraw', sessionId });
   }
 
+  sendAutoApprove(sessionId: string, value: boolean): void {
+    this.send({ type: 'set:autoApprove', sessionId, value });
+  }
+
   async createSession(opts: {
     tool?: string;
     args?: string[];
@@ -216,6 +220,9 @@ export class ServerConnection {
       case 'session:removed':
         clearTerminalBuffer(msg.sessionId as string);
         store.removeSession(msg.sessionId as string);
+        break;
+      case 'session:autoApprove':
+        store.setSessionAutoApprove(msg.sessionId as string, !!msg.value);
         break;
       case 'server:shutdown':
         if (this.isLocal) {

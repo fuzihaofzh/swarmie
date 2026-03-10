@@ -69,7 +69,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): {
 
         // Browser client messages
         ensureSessionList();
-        handleMessage(socket, msg, manager, subscriptions);
+        handleMessage(socket, msg, manager, subscriptions, clients);
       } catch {
         // Ignore malformed messages
       }
@@ -130,6 +130,7 @@ function handleMessage(
   msg: WSMessage,
   manager: SessionManager,
   subscriptions: Map<WebSocket, Set<string>>,
+  clients: Set<WebSocket>,
 ): void {
   const subs = subscriptions.get(socket);
   if (!subs) return;
@@ -190,6 +191,19 @@ function handleMessage(
       if (sessionId) {
         const session = manager.getSession(sessionId);
         session?.redraw();
+      }
+      break;
+    }
+    case 'set:autoApprove': {
+      const sessionId = msg.sessionId as string;
+      const value = !!msg.value;
+      if (sessionId) {
+        const session = manager.getSession(sessionId);
+        if (session) {
+          session.autoApprove = value;
+          // Broadcast to all clients so all devices stay in sync
+          broadcast(clients, { type: 'session:autoApprove', sessionId, value });
+        }
       }
       break;
     }
