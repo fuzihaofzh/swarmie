@@ -101,6 +101,8 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
   if (!open) return null;
 
   const mruSessions = getMRUSessions();
+  // Keep mruListRef in sync with the sorted display order
+  mruListRef.current = mruSessions.map((s) => s.id);
 
   return (
     <div className="tab-switcher-overlay" onClick={() => setOpen(false)}>
