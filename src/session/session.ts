@@ -127,9 +127,11 @@ export class Session extends EventEmitter {
       }
       case 'status:change': {
         const data = event.data as { from: string; to: string };
-        if (data.to === 'waiting_input' && this.autoApprove) {
-          // Auto-approve: send Enter to confirm the prompt
-          queueMicrotask(() => this.write('\r'));
+        if (data.to === 'waiting_input') {
+          console.log(`[${new Date().toISOString()}] [AUTO-APPROVE] session=${this.id} autoApprove=${this.autoApprove}`);
+          if (this.autoApprove) {
+            queueMicrotask(() => this.write('\r'));
+          }
         }
         break;
       }
