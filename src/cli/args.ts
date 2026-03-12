@@ -1,4 +1,11 @@
 import { Command } from 'commander';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(resolve(__dirname, '..', '..', '..', 'package.json'), 'utf-8'));
+const version: string = pkg.version;
 
 export interface SwarmieOptions {
   port: number;
@@ -27,7 +34,7 @@ export function createProgram(): Command {
   program
     .name('swarmie')
     .description('AI CLI tool aggregator — unified dashboard for Claude Code, Codex, Gemini CLI')
-    .version('0.1.0')
+    .version(version)
     .argument('[tool]', `command to launch (built-in: ${KNOWN_TOOLS.join(', ')}, or any command)`)
     .option('--port <number>', 'Web dashboard port', '3200')
     .option('--host <address>', 'Web dashboard listen address', '127.0.0.1')
