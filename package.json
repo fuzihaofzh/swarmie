@@ -1,14 +1,14 @@
 {
   "name": "swarmie",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "AI CLI tool aggregator — wrap Claude Code, Codex, Gemini CLI with a unified web dashboard",
   "type": "module",
   "bin": {
     "swarmie": "./dist/bin/swarmie.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && vite build",
-    "build:server": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && chmod +x dist/bin/*.js && vite build",
+    "build:server": "tsc -p tsconfig.json && chmod +x dist/bin/*.js",
     "build:web": "vite build",
     "dev": "tsc -p tsconfig.json --watch",
     "test": "vitest run",
