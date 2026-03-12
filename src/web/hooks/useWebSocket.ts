@@ -1,4 +1,4 @@
-import { useSessionStore, registerAutoApproveSend, type SessionSummary, type NormalizedEvent } from './useSessions';
+import { useSessionStore, type SessionSummary, type NormalizedEvent } from './useSessions';
 import { writeToTerminal, clearTerminalBuffer } from '../terminalBus';
 import { useServerStore, LOCAL_SERVER } from './useServers';
 
@@ -295,14 +295,4 @@ export class ServerConnection {
       }
     }
   }
-}
-
-/** Register the auto-approve callback that routes through the correct ServerConnection */
-export function registerAutoApproveForConnections(
-  getConnection: (sessionId: string) => ServerConnection | undefined,
-): void {
-  registerAutoApproveSend((sessionId) => {
-    const conn = getConnection(sessionId);
-    conn?.sendInput(sessionId, '\r');
-  });
 }

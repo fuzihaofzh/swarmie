@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { ServerConnection, registerAutoApproveForConnections } from './useWebSocket';
+import { ServerConnection } from './useWebSocket';
 import { useServerStore, LOCAL_SERVER } from './useServers';
-import { useSessionStore, registerAutoApproveSend, registerAutoApproveSync } from './useSessions';
+import { useSessionStore, registerAutoApproveSync } from './useSessions';
 
 export function useMultiWebSocket() {
   const connectionsRef = useRef<Map<string, ServerConnection>>(new Map());
@@ -22,9 +22,6 @@ export function useMultiWebSocket() {
     connectionsRef.current.set(LOCAL_SERVER, local);
     local.connect();
 
-    // Register auto-approve routing
-    registerAutoApproveForConnections(getConnectionForSession);
-
     // Register auto-approve sync to server
     registerAutoApproveSync((sessionId, value) => {
       getConnectionForSession(sessionId)?.sendAutoApprove(sessionId, value);
@@ -42,7 +39,6 @@ export function useMultiWebSocket() {
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
-      registerAutoApproveSend(null);
       registerAutoApproveSync(null);
       for (const conn of connectionsRef.current.values()) {
         conn.disconnect();

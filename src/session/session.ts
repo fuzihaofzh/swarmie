@@ -125,6 +125,14 @@ export class Session extends EventEmitter {
         if (data.hostname) this._hostname = data.hostname;
         break;
       }
+      case 'status:change': {
+        const data = event.data as { from: string; to: string };
+        if (data.to === 'waiting_input' && this.autoApprove) {
+          // Auto-approve: send Enter to confirm the prompt
+          queueMicrotask(() => this.write('\r'));
+        }
+        break;
+      }
       case 'metadata': {
         const meta = event.data as MetadataData;
         if (meta.model) this._metadata.model = meta.model;

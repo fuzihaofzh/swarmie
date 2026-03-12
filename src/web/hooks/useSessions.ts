@@ -65,12 +65,6 @@ function saveAutoApproveMap(sessions: SessionSummary[]) {
   localStorage.setItem(AUTO_APPROVE_KEY, JSON.stringify(map));
 }
 
-/** Module-level callback set by useWebSocket to send auto-approve input */
-let autoApproveSend: ((sessionId: string) => void) | null = null;
-export function registerAutoApproveSend(fn: ((sessionId: string) => void) | null) {
-  autoApproveSend = fn;
-}
-
 /** Module-level callback to sync auto-approve state to server */
 let autoApproveSync: ((sessionId: string, value: boolean) => void) | null = null;
 export function registerAutoApproveSync(fn: ((sessionId: string, value: boolean) => void) | null) {
@@ -143,10 +137,8 @@ export const useSessionStore = create<SessionState>((set) => ({
         );
         if (newStatus === 'waiting_input') {
           const sess = sessions.find((s) => s.id === event.sessionId);
-          if (sess?.autoApprove && autoApproveSend) {
-            const sid = event.sessionId;
-            queueMicrotask(() => autoApproveSend?.(sid));
-          } else if (useUIStore.getState().bellSound) {
+          // Auto-approve is now handled server-side; frontend only plays bell
+          if (!sess?.autoApprove && useUIStore.getState().bellSound) {
             playBellSound();
           }
         }
