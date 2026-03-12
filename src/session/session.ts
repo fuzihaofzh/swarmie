@@ -127,15 +127,8 @@ export class Session extends EventEmitter {
       }
       case 'status:change': {
         const data = event.data as { from: string; to: string };
-        if (data.to === 'waiting_input') {
-          console.log(`[${new Date().toISOString()}] [AUTO-APPROVE] session=${this.id} autoApprove=${this.autoApprove}`);
-          if (this.autoApprove) {
-            setTimeout(() => {
-              // 1s delay to ensure prompt is ready to accept input
-              console.log(`[${new Date().toISOString()}] [AUTO-APPROVE] sending \\r to session=${this.id}`);
-              this.write('\r');
-            }, 1000);
-          }
+        if (data.to === 'waiting_input' && this.autoApprove) {
+          setTimeout(() => this.write('\r'), 1000);
         }
         break;
       }
