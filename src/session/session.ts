@@ -130,7 +130,11 @@ export class Session extends EventEmitter {
         if (data.to === 'waiting_input') {
           console.log(`[${new Date().toISOString()}] [AUTO-APPROVE] session=${this.id} autoApprove=${this.autoApprove}`);
           if (this.autoApprove) {
-            queueMicrotask(() => this.write('\r'));
+            setTimeout(() => {
+              // 1s delay to ensure prompt is ready to accept input
+              console.log(`[${new Date().toISOString()}] [AUTO-APPROVE] sending \\r to session=${this.id}`);
+              this.write('\r');
+            }, 1000);
           }
         }
         break;
