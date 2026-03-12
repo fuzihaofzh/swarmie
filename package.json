@@ -1,6 +1,6 @@
 {
   "name": "swarmie",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "AI CLI tool aggregator — wrap Claude Code, Codex, Gemini CLI with a unified web dashboard",
   "type": "module",
   "bin": {
