@@ -8,6 +8,15 @@ import { ToolIcon } from './ToolIcon';
 const NEW_SESSION_PANEL_ID = '__new_session__';
 
 function shortPath(p: string): string {
+  if (p === '~' || p === '/') return p;
+  // Show only the last directory name
+  const name = p.endsWith('/') ? p.slice(0, -1) : p;
+  const lastSlash = name.lastIndexOf('/');
+  if (lastSlash === -1) return name;
+  return name.slice(lastSlash + 1) || p;
+}
+
+function _shortPathFull(p: string): string {
   // macOS: /Users/name/... → ~/...
   // Linux: /home/name/... → ~/...
   for (const prefix of ['/Users/', '/home/']) {
