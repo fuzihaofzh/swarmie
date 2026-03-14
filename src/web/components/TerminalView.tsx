@@ -77,7 +77,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         customGlyphs: true,
         rescaleOverlappingGlyphs: true,
         macOptionIsMeta: false,
-        scrollOnOutput: true,
+        scrollOnOutput: false,
       });
 
       const fitAddon = new FitAddon();
@@ -256,14 +256,33 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     const term = termRef.current;
     if (!term) return;
 
+    // Track whether user has scrolled away from bottom
+    const userScrolledUp = { current: false };
+
+    // Detect user scroll via wheel events on the terminal container
+    const container = term.element?.parentElement;
+    const onWheel = () => {
+      requestAnimationFrame(() => {
+        const buf = term.buffer.active;
+        userScrolledUp.current = buf.viewportY < buf.baseY;
+      });
+    };
+    container?.addEventListener('wheel', onWheel, { passive: true });
+
     registerTerminalWriter(sessionId, (b64Data: string) => {
       const binary = atob(b64Data);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);
       }
-      term.write(bytes);
+      term.write(bytes, () => {
+        if (!userScrolledUp.current) {
+          term.scrollToBottom();
+        }
+      });
     });
+
+    const cleanupScroll = () => container?.removeEventListener('wheel', onWheel);
 
     // After (re)connecting, trigger a SIGWINCH on the PTY (at its current size)
     // so ink-based apps (Claude Code) redraw their UI on the fresh terminal.
@@ -274,6 +293,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     }, 200);
 
     return () => {
+      cleanupScroll();
       unregisterTerminalWriter(sessionId);
     };
   }, [sessionId, termReady]);
