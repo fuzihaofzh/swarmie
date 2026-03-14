@@ -7,6 +7,7 @@ import type { SessionInfo, SessionSummary } from './types.js';
 const _hostname = osHostname();
 
 const MAX_RECENT_EVENTS = 1000;
+const MAX_RAW_BYTES = 512 * 1024; // 512KB cap for raw terminal output per session
 
 export class Session extends EventEmitter {
   readonly id: string;
@@ -17,6 +18,8 @@ export class Session extends EventEmitter {
   isLocal = false;
   autoApprove = false;
   private events: NormalizedEvent[] = [];
+  private rawEvents: NormalizedEvent[] = [];
+  private rawBytes = 0;
   private _endTime?: number;
   private _metadata: SessionInfo['metadata'] = {};
   private _command: string[] = [];
@@ -97,15 +100,28 @@ export class Session extends EventEmitter {
   }
 
   getRecentEvents(): NormalizedEvent[] {
-    return this.events.slice(-MAX_RECENT_EVENTS);
+    const structured = this.events.slice(-MAX_RECENT_EVENTS);
+    return [...this.rawEvents, ...structured].sort((a, b) => a.timestamp - b.timestamp);
   }
 
   private handleEvent(event: NormalizedEvent): void {
-    this.events.push(event);
+    if (event.type === 'raw:output') {
+      const b64 = (event.data as { data: string }).data;
+      const size = Math.ceil(b64.length * 3 / 4);
+      this.rawEvents.push(event);
+      this.rawBytes += size;
+      while (this.rawBytes > MAX_RAW_BYTES && this.rawEvents.length > 0) {
+        const old = this.rawEvents.shift()!;
+        const oldB64 = (old.data as { data: string }).data;
+        this.rawBytes -= Math.ceil(oldB64.length * 3 / 4);
+      }
+    } else {
+      this.events.push(event);
 
-    // Trim old events to prevent memory growth
-    if (this.events.length > MAX_RECENT_EVENTS * 2) {
-      this.events = this.events.slice(-MAX_RECENT_EVENTS);
+      // Trim old events to prevent memory growth
+      if (this.events.length > MAX_RECENT_EVENTS * 2) {
+        this.events = this.events.slice(-MAX_RECENT_EVENTS);
+      }
     }
 
     switch (event.type) {

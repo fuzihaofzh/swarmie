@@ -226,6 +226,25 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
     };
   });
 
+  // Buffer stats per session
+  app.get('/api/stats', async () => {
+    return manager.getAllSessions().map((s) => {
+      const events = s.getRecentEvents();
+      let rawBytes = 0;
+      let rawCount = 0;
+      let structuredCount = 0;
+      for (const e of events) {
+        if (e.type === 'raw:output') {
+          rawCount++;
+          rawBytes += Math.ceil(((e.data as { data: string }).data.length) * 3 / 4);
+        } else {
+          structuredCount++;
+        }
+      }
+      return { id: s.id, name: s.name, rawCount, rawBytes, structuredCount, totalEvents: events.length };
+    });
+  });
+
   // Debug endpoint - shows server environment for troubleshooting
   app.get('/api/debug', async () => {
     const { execSync } = await import('node:child_process');
