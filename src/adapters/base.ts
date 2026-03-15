@@ -247,9 +247,10 @@ export abstract class BaseAdapter extends EventEmitter {
   protected handleUserInput(): void {
     if (this._status === 'waiting_input') {
       this.setStatus('running');
+      // Only clear buffer on state transition so new prompt text
+      // arriving concurrently isn't lost
+      this._detectBuffer = '';
     }
-    // Clear detect buffer so old prompts don't re-trigger
-    this._detectBuffer = '';
   }
 
   /** Call from subclass onExit to clean up timers */
