@@ -198,7 +198,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     };
   }, []);
 
-  // Fit, scroll, and focus when tab becomes active
+  // Fit, scroll, and focus when tab becomes active or terminal initializes
   useEffect(() => {
     if (!isActive) return;
     const term = termRef.current;
@@ -212,7 +212,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
       term.scrollToBottom();
       term.focus();
     });
-  }, [isActive]);
+  }, [isActive, termReady]);
 
   // Update terminal when theme/font changes
   useEffect(() => {

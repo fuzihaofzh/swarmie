@@ -46,6 +46,8 @@ export abstract class BaseAdapter extends EventEmitter {
   private _cwdTimer: ReturnType<typeof setInterval> | null = null;
   /** Rolling buffer of ANSI-stripped text for waiting_input detection */
   private _detectBuffer: string = '';
+  /** Expose detect buffer for debugging */
+  get detectBuffer(): string { return this._detectBuffer; }
   /** True when cwd is being tracked via OSC sequences (e.g. SSH session) */
   private _oscCwdActive: boolean = false;
 

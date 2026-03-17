@@ -245,6 +245,46 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
     });
   });
 
+  // Debug: auto-approve state for all sessions
+  app.get('/api/debug/auto-approve', async () => {
+    return manager.getAllSessions().map((s) => {
+      const events = s.getRecentEvents();
+      const statusEvents = events.filter((e) => e.type === 'status:change');
+      // Last few raw outputs decoded to text for context
+      const rawEvents = events.filter((e) => e.type === 'raw:output');
+      const recentRaw = rawEvents.slice(-5).map((e) => {
+        const b64 = (e.data as { data: string }).data;
+        try {
+          const bytes = Buffer.from(b64, 'base64');
+          // Strip ANSI for readability
+          const text = bytes.toString('utf-8')
+            .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
+            .replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, '')
+            .replace(/\x1b[^\[].?/g, '')
+            .replace(/[\x00-\x1f]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          return { time: new Date(e.timestamp).toISOString(), text: text.slice(-200) };
+        } catch {
+          return { time: new Date(e.timestamp).toISOString(), text: '(decode error)' };
+        }
+      });
+      return {
+        id: s.id,
+        name: s.name,
+        status: s.status,
+        autoApprove: s.autoApprove,
+        isLocal: s.isLocal,
+        detectBuffer: s.adapter.detectBuffer.slice(-500),
+        recentStatusChanges: statusEvents.slice(-5).map((e) => ({
+          ...e.data,
+          time: new Date(e.timestamp).toISOString(),
+        })),
+        recentOutput: recentRaw,
+      };
+    });
+  });
+
   // Debug endpoint - shows server environment for troubleshooting
   app.get('/api/debug', async () => {
     const { execSync } = await import('node:child_process');

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { useUIStore } from './useUI';
 import { playBellSound } from '../bellSound';
-import { saveRecentDir } from '../recentDirs';
+import { saveRecentDir, setLocalHostname } from '../recentDirs';
 
 export interface SessionSummary {
   id: string;
@@ -83,6 +83,8 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   setSessions: (sessions) =>
     set((state) => {
+      const local = sessions.find((s) => !s.serverUrl || s.serverUrl === '');
+      if (local?.initialHostname) setLocalHostname(local.initialHostname);
       const saved = loadAutoApproveMap();
       const merged = sessions.map((s) => ({
         ...s,
