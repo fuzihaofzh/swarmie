@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const WAITING_INPUT_SUBSTRINGS = [
   'Do you want to',
   'Esc to cancel',
+  'Tab to amend',
   'proceed?',
   'Yes, allow',
   '(y/n)',
