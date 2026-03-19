@@ -7,18 +7,18 @@ import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, Sess
 
 const execFileAsync = promisify(execFile);
 
-// Plain substrings that indicate the tool is waiting for user input.
-// Keep them SHORT — Ink renders with cursor positioning so long phrases
-// may arrive fragmented with animation chars in between.
-const WAITING_INPUT_SUBSTRINGS = [
-  'Do you want to',
-  'Esc to cancel',
-  'Tab to amend',
-  'proceed?',
-  'Yes, allow',
-  '(y/n)',
-  '(Y/n)',
-  '(yes/no)',
+// Regexes that indicate the tool is waiting for user input.
+// Use .{0,N} between words to tolerate Ink's cursor-based rendering
+// which may insert unrelated characters between words of a single phrase.
+const WAITING_INPUT_PATTERNS = [
+  /Do.{0,5}you.{0,5}want.{0,5}to/,
+  /Esc.{0,5}to.{0,5}cancel/,
+  /Tab.{0,5}to.{0,5}amend/,
+  /proceed\?/,
+  /Yes,.{0,5}allow/,
+  /\(y\/n\)/,
+  /\(Y\/n\)/,
+  /\(yes\/no\)/,
 ];
 
 // Characters that are purely decorative / animation and should not
@@ -143,8 +143,8 @@ export abstract class BaseAdapter extends EventEmitter {
 
     // Check for waiting-for-input prompts (from any active state).
     if (this._status !== 'waiting_input' && this._status !== 'completed' && this._status !== 'error') {
-      for (const needle of WAITING_INPUT_SUBSTRINGS) {
-        if (this._detectBuffer.includes(needle)) {
+      for (const pattern of WAITING_INPUT_PATTERNS) {
+        if (pattern.test(this._detectBuffer)) {
           this.setStatus('waiting_input');
           this.clearIdleTimer();
           this._detectBuffer = ''; // Reset so we don't re-trigger
