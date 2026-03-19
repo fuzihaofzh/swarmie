@@ -8,13 +8,21 @@ import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, Sess
 const execFileAsync = promisify(execFile);
 
 // Plain substrings that indicate the tool is waiting for user input.
+// Keep them SHORT — Ink renders with cursor positioning so long phrases
+// may arrive fragmented with animation chars in between.
 const WAITING_INPUT_SUBSTRINGS = [
   'Do you want to',
   'Esc to cancel',
+  'proceed?',
+  'Yes, allow',
   '(y/n)',
   '(Y/n)',
   '(yes/no)',
 ];
+
+// Characters that are purely decorative / animation and should not
+// pollute the detect buffer (Ink thinking spinners, bullet chars, etc.)
+const ANIMATION_CHARS = /[⏺✶✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆✢✣✤✥✦✧✩✪✫✬✭✮✯✰✱✲✳✴✵·•●○◌◎◐◑◒◓◔◕⊙⊚⊛⊜⊝★☆]/g;
 
 // Max chars to keep in the rolling stripped-text buffer for detection.
 const DETECT_BUFFER_SIZE = 1000;
@@ -123,6 +131,7 @@ export abstract class BaseAdapter extends EventEmitter {
       .replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, ' ')         // CSI
       .replace(/\x1b[^\[].?/g, ' ')                      // other ESC
       .replace(/[\x00-\x1f]/g, ' ')                      // control chars
+      .replace(ANIMATION_CHARS, ' ')                      // thinking spinners
       .replace(/\s+/g, ' ');                              // normalize whitespace
 
     // Append to rolling buffer, trim to max size
