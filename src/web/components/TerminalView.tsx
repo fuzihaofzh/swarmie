@@ -9,6 +9,10 @@ import { themes } from '../themes';
 import { registerTerminalWriter, unregisterTerminalWriter } from '../terminalBus';
 import { MobileToolbar } from './MobileToolbar';
 import { useKeybindingStore, matchesBinding } from '../hooks/useKeybindings';
+import {
+  shouldAutoFocusTerminal,
+  shouldRestoreTerminalFocusAfterSearchClose,
+} from '../focusPolicy';
 
 interface TerminalViewProps {
   sessionId: string;
@@ -28,6 +32,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const isActiveRef = useRef(isActive);
+  const prevSearchOpenRef = useRef(searchOpen);
 
   const themeName = useUIStore((s) => s.theme);
   const fontSize = useUIStore((s) => s.fontSize);
@@ -188,6 +193,15 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  const getFocusPolicyEnv = useCallback(() => {
+    return {
+      userAgent: navigator.userAgent,
+      viewportWidth: window.innerWidth,
+      hasTouchStart: 'ontouchstart' in window,
+      maxTouchPoints: navigator.maxTouchPoints,
+    };
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -204,15 +218,18 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     const term = termRef.current;
     const fitAddon = fitRef.current;
     if (!term) return;
+    const autoFocus = shouldAutoFocusTerminal(getFocusPolicyEnv());
     requestAnimationFrame(() => {
       try {
         fitAddon?.fit();
         onResize?.(term.cols, term.rows);
       } catch { /* ignore */ }
       term.scrollToBottom();
-      term.focus();
+      if (autoFocus) {
+        term.focus();
+      }
     });
-  }, [isActive, termReady]);
+  }, [isActive, getFocusPolicyEnv]);
 
   // Update terminal when theme/font changes
   useEffect(() => {
@@ -231,11 +248,17 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     if (searchOpen) {
       requestAnimationFrame(() => searchInputRef.current?.focus());
     } else {
-      setSearchQuery('');
-      searchRef.current?.clearDecorations();
-      termRef.current?.focus();
+      const wasOpen = prevSearchOpenRef.current;
+      if (wasOpen) {
+        setSearchQuery('');
+        searchRef.current?.clearDecorations();
+        if (shouldRestoreTerminalFocusAfterSearchClose(getFocusPolicyEnv())) {
+          termRef.current?.focus();
+        }
+      }
     }
-  }, [searchOpen]);
+    prevSearchOpenRef.current = searchOpen;
+  }, [searchOpen, getFocusPolicyEnv]);
 
   const handleSearch = useCallback((query: string, direction: 'next' | 'prev' = 'next') => {
     if (!searchRef.current || !query) return;

@@ -1,13 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { shouldShowMobileToolbar } from '../focusPolicy';
 
-function isMobileDevice(): boolean {
-  return (
-    'ontouchstart' in window ||
-    navigator.maxTouchPoints > 0 ||
-    /Mobile|Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(
-      navigator.userAgent,
-    )
-  );
+function getFocusPolicyEnv() {
+  return {
+    userAgent: navigator.userAgent,
+    viewportWidth: window.innerWidth,
+    hasTouchStart: 'ontouchstart' in window,
+    maxTouchPoints: navigator.maxTouchPoints,
+  };
 }
 
 const KEY_MAP: Record<string, string> = {
@@ -54,9 +54,7 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
 
   useEffect(() => {
     const check = () => {
-      const isTouch = isMobileDevice();
-      const isSmall = window.innerWidth < 768;
-      setVisible(isTouch || isSmall);
+      setVisible(shouldShowMobileToolbar(getFocusPolicyEnv()));
     };
     check();
     window.addEventListener('resize', check);
@@ -65,7 +63,7 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
 
   // Handle native keyboard pushing the viewport up
   useEffect(() => {
-    if (!isMobileDevice() || !window.visualViewport) return;
+    if (!shouldShowMobileToolbar(getFocusPolicyEnv()) || !window.visualViewport) return;
 
     const vv = window.visualViewport;
     const onResize = () => {
