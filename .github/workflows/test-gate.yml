@@ -1,0 +1,40 @@
+name: Test Gate CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.17.1'
+          cache: npm
+
+      - name: Freeze npm
+        run: npm i -g npm@10.9.2
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run gate commands
+        run: bash scripts/ci-test-gate.sh
+
+      - name: Upload gate logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-gate-logs
+          path: artifacts/test-gate/*.log
+          if-no-files-found: warn

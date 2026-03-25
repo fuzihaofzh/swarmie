@@ -120,6 +120,14 @@ npm run build          # TypeScript + Vite
 npm test               # Vitest
 ```
 
+CI gate entry for multi-agent verification:
+
+```bash
+bash scripts/ci-test-gate.sh
+```
+
+See `docs/test-gate-ci.md` for reusable test-agent evidence workflow.
+
 ## License
 
 MIT
