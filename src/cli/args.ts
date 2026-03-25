@@ -1,10 +1,26 @@
 import { Command } from 'commander';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(resolve(__dirname, '..', '..', '..', 'package.json'), 'utf-8'));
+function findPackageJson(startDir: string): string {
+  let dir = startDir;
+  while (true) {
+    const candidate = resolve(dir, 'package.json');
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      throw new Error(`Unable to locate package.json from ${startDir}`);
+    }
+    dir = parent;
+  }
+}
+
+const pkgPath = findPackageJson(__dirname);
+const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
 const version: string = pkg.version;
 
 export interface SwarmieOptions {

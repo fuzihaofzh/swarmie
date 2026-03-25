@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
+import type { AddressInfo } from 'node:net';
 import type { SessionManager } from '../session/manager.js';
 import { setupRoutes } from './routes.js';
 import { setupWebSocket } from './websocket.js';
@@ -39,8 +40,11 @@ export async function createServer(
 
   const host = options.host ?? '127.0.0.1';
   await app.listen({ port: options.port, host });
-  const displayHost = host === '0.0.0.0' ? '0.0.0.0' : host;
-  const address = `http://${displayHost}:${options.port}`;
+  const bound = app.server.address() as AddressInfo | null;
+  const boundHost = bound?.address ?? host;
+  const boundPort = bound?.port ?? options.port;
+  const displayHost = boundHost.includes(':') ? `[${boundHost}]` : boundHost;
+  const address = `http://${displayHost}:${boundPort}`;
 
   return {
     address,

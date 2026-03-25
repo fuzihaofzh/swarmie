@@ -122,7 +122,6 @@ async function startAsCoordinator(
     const session = manager.getSession(event.sessionId);
     if (session) {
       // Push event into the remote adapter
-      const info = session.info;
       // Get the underlying adapter — we know it's a RemoteAdapter for IPC sessions
       // For simplicity, re-emit via the session manager
       const remoteAdapter = getRemoteAdapter(manager, event.sessionId);
