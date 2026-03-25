@@ -1,5 +1,5 @@
 import { readdirSync, statSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve, dirname, relative, isAbsolute } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { execFile } from 'node:child_process';
 import type { FastifyInstance } from 'fastify';
@@ -8,6 +8,41 @@ import { loadRecording } from '../session/replayer.js';
 import { loadConfig } from '../cli/config.js';
 import { createAdapter, getAdapterNames } from '../adapters/registry.js';
 import { nanoid } from 'nanoid';
+import { logObservabilityEvent, resolveRequestId } from './observability.js';
+
+function resolveRecordingFilePath(recordDir: string, rawFilename: string): string | null {
+  if (!rawFilename || rawFilename.includes('\0')) {
+    return null;
+  }
+
+  const normalizedFilename = rawFilename.replace(/\\/g, '/');
+
+  // Reject partially decoded traversal payloads (for example: ..%2Ffoo from double encoding).
+  if (/%2e|%2f|%5c/i.test(normalizedFilename)) {
+    return null;
+  }
+
+  if (normalizedFilename.startsWith('/') || /^[a-zA-Z]:\//.test(normalizedFilename)) {
+    return null;
+  }
+
+  if (normalizedFilename.includes('/')) {
+    return null;
+  }
+
+  if (normalizedFilename === '.' || normalizedFilename === '..') {
+    return null;
+  }
+
+  const baseDir = resolve(recordDir);
+  const resolvedPath = resolve(baseDir, normalizedFilename);
+  const rel = relative(baseDir, resolvedPath);
+  if (!rel || rel === '.' || rel.startsWith('..') || isAbsolute(rel)) {
+    return null;
+  }
+
+  return resolvedPath;
+}
 
 export function setupRoutes(app: FastifyInstance, manager: SessionManager): void {
   // List all sessions
@@ -17,9 +52,15 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
 
   // Get session detail
   app.get<{ Params: { id: string } }>('/api/sessions/:id', async (request, reply) => {
+    const requestId = resolveRequestId(request);
     const session = manager.getSession(request.params.id);
     if (!session) {
-      return reply.status(404).send({ error: 'Session not found' });
+      return reply.status(404).send({
+        error: 'Session not found',
+        request_id: requestId,
+        session_id: request.params.id,
+        error_code: 'SESSION_NOT_FOUND',
+      });
     }
     return session.info;
   });
@@ -28,9 +69,15 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
   app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
     '/api/sessions/:id/events',
     async (request, reply) => {
+      const requestId = resolveRequestId(request);
       const session = manager.getSession(request.params.id);
       if (!session) {
-        return reply.status(404).send({ error: 'Session not found' });
+        return reply.status(404).send({
+          error: 'Session not found',
+          request_id: requestId,
+          session_id: request.params.id,
+          error_code: 'SESSION_NOT_FOUND',
+        });
       }
       const limit = request.query.limit ? parseInt(request.query.limit, 10) : undefined;
       const events = session.getRecentEvents();
@@ -42,9 +89,15 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
   app.post<{ Params: { id: string }; Body: { data: string } }>(
     '/api/sessions/:id/input',
     async (request, reply) => {
+      const requestId = resolveRequestId(request);
       const session = manager.getSession(request.params.id);
       if (!session) {
-        return reply.status(404).send({ error: 'Session not found' });
+        return reply.status(404).send({
+          error: 'Session not found',
+          request_id: requestId,
+          session_id: request.params.id,
+          error_code: 'SESSION_NOT_FOUND',
+        });
       }
       session.write(request.body.data);
       return { ok: true };
@@ -55,9 +108,15 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
   app.post<{ Params: { id: string }; Body: { cols: number; rows: number } }>(
     '/api/sessions/:id/resize',
     async (request, reply) => {
+      const requestId = resolveRequestId(request);
       const session = manager.getSession(request.params.id);
       if (!session) {
-        return reply.status(404).send({ error: 'Session not found' });
+        return reply.status(404).send({
+          error: 'Session not found',
+          request_id: requestId,
+          session_id: request.params.id,
+          error_code: 'SESSION_NOT_FOUND',
+        });
       }
       session.resize(request.body.cols, request.body.rows);
       return { ok: true };
@@ -66,12 +125,29 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
 
   // Kill session
   app.post<{ Params: { id: string } }>('/api/sessions/:id/kill', async (request, reply) => {
+    const requestId = resolveRequestId(request);
     const session = manager.getSession(request.params.id);
     if (!session) {
-      return reply.status(404).send({ error: 'Session not found' });
+      logObservabilityEvent('session.kill.failed', {
+        level: 'warn',
+        requestId,
+        sessionId: request.params.id,
+        errorCode: 'SESSION_NOT_FOUND',
+      });
+      return reply.status(404).send({
+        error: 'Session not found',
+        request_id: requestId,
+        session_id: request.params.id,
+        error_code: 'SESSION_NOT_FOUND',
+      });
     }
     session.kill();
     manager.removeSession(request.params.id);
+    logObservabilityEvent('session.kill.success', {
+      requestId,
+      sessionId: request.params.id,
+      errorCode: null,
+    });
     return { ok: true };
   });
 
@@ -92,11 +168,14 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
   // Load a recording
   app.get<{ Params: { filename: string } }>('/api/recordings/:filename', async (request, reply) => {
     const config = loadConfig();
-    const filePath = join(config.recordDir, request.params.filename);
+    const filePath = resolveRecordingFilePath(config.recordDir, request.params.filename);
+    if (!filePath) {
+      return reply.status(404).send({ error: 'Recording not found' });
+    }
     try {
       const recording = loadRecording(filePath);
       return recording;
-    } catch (err) {
+    } catch {
       return reply.status(404).send({ error: 'Recording not found' });
     }
   });
@@ -112,30 +191,60 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
       rows?: number;
     };
   }>('/api/sessions', async (request, reply) => {
+    const requestId = resolveRequestId(request);
     const { tool: rawTool, args, cwd, sessionName, cols, rows } = request.body;
     const tool = rawTool || process.env.SHELL || 'bash';
+    const sessionCwd = cwd || homedir();
 
     const sessionId = nanoid(12);
     const name = sessionName || `${tool}-${sessionId.slice(0, 6)}`;
 
     try {
+      const cwdStat = statSync(sessionCwd);
+      if (!cwdStat.isDirectory()) {
+        throw new Error(`Working directory is not a directory: ${sessionCwd}`);
+      }
+
       const adapter = createAdapter(tool, {
         sessionId,
         toolArgs: args ?? [],
         cols: cols ?? 120,
         rows: rows ?? 30,
-        cwd: cwd || homedir(),
+        cwd: sessionCwd,
       });
 
-      const session = manager.addSession(sessionId, name, adapter, { cwd: cwd || homedir() });
+      const session = manager.addSession(sessionId, name, adapter, { cwd: sessionCwd });
       session.isLocal = false;
       session.start();
 
+      logObservabilityEvent('session.create.success', {
+        requestId,
+        sessionId,
+        errorCode: null,
+        details: { tool },
+      });
+
       return { id: sessionId, name, tool, status: session.status };
     } catch (err) {
-      console.error(`[swarmie] Failed to create session: tool=${tool}, cwd=${cwd}, PATH=${process.env.PATH}`);
-      console.error(err);
-      return reply.status(500).send({ error: String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      logObservabilityEvent('session.create.failed', {
+        level: 'error',
+        requestId,
+        sessionId,
+        errorCode: 'ADAPTER_START_FAILED',
+        details: {
+          tool,
+          cwd: sessionCwd,
+          path: process.env.PATH ?? null,
+          error: message,
+        },
+      });
+      return reply.status(500).send({
+        error: message,
+        request_id: requestId,
+        session_id: sessionId,
+        error_code: 'ADAPTER_START_FAILED',
+      });
     }
   });
 

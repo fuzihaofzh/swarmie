@@ -37,11 +37,8 @@ export class ServerConnection {
     let wsUrl = this.isLocal
       ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
       : `${this.serverUrl.replace(/^http/, 'ws')}/ws`;
-    if (this.token && !this.isLocal) {
-      wsUrl += `?token=${encodeURIComponent(this.token)}`;
-    }
-
-    const ws = new WebSocket(wsUrl);
+    const protocols = this.token && !this.isLocal ? [`swarmie-token.${this.token}`] : undefined;
+    const ws = protocols ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl);
     this.ws = ws;
 
     ws.onopen = () => {

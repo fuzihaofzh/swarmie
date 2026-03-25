@@ -5,11 +5,22 @@ import type { NormalizedEvent } from '../adapters/types.js';
 import type { SessionSummary } from '../session/types.js';
 import { RemoteAdapter } from '../adapters/remote.js';
 import type { BaseAdapter } from '../adapters/base.js';
+import { logObservabilityEvent, resolveRequestId } from './observability.js';
 
 interface WSMessage {
   type: string;
   [key: string]: unknown;
 }
+
+const BROWSER_MESSAGE_TYPES = new Set([
+  'subscribe',
+  'subscribe:all',
+  'unsubscribe',
+  'input',
+  'resize',
+  'redraw',
+  'set:autoApprove',
+]);
 
 /** Tracks a CLI client connected via WebSocket for remote session registration */
 interface RemoteCLIClient {
@@ -20,13 +31,24 @@ interface RemoteCLIClient {
 export function setupWebSocket(app: FastifyInstance, manager: SessionManager): { broadcastShutdown: () => void } {
   const clients = new Set<WebSocket>();
   const subscriptions = new Map<WebSocket, Set<string>>(); // ws -> set of sessionIds
+  const socketRequestIds = new Map<WebSocket, string>();
 
   /** Remote CLI clients indexed by sessionId */
   const remoteClients = new Map<string, RemoteCLIClient>();
 
-  app.get('/ws', { websocket: true }, (socket) => {
+  app.get('/ws', { websocket: true }, (socket, request) => {
+    const requestId = resolveRequestId(request);
     clients.add(socket);
     subscriptions.set(socket, new Set());
+    socketRequestIds.set(socket, requestId);
+    logObservabilityEvent('ws.connect', {
+      requestId,
+      sessionId: null,
+      errorCode: null,
+      details: {
+        path: request.url,
+      },
+    });
 
     // Don't send session list yet — if this is a CLI remote client,
     // it will send a 'register' message. If it's a browser, it will
@@ -46,44 +68,83 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): {
     const listTimer = setTimeout(ensureSessionList, 50);
 
     socket.on('message', (raw: Buffer | string) => {
+      const socketRequestId = socketRequestIds.get(socket) ?? requestId;
+      let parsed: unknown;
       try {
-        const msg = JSON.parse(raw.toString()) as WSMessage;
-
-        // Handle CLI remote registration
-        if (msg.type === 'register') {
-          clearTimeout(listTimer);
-          sentSessionList = true; // CLI clients don't need the session list
-          handleRemoteRegister(socket, msg, manager, remoteClients);
-          return;
-        }
-        if (msg.type === 'event') {
-          handleRemoteEvent(msg, manager, remoteClients);
-          return;
-        }
-        if (msg.type === 'unregister') {
-          // CLI client gracefully disconnecting — don't mark as disconnected
-          const sessionId = msg.sessionId as string;
-          remoteClients.delete(sessionId);
-          return;
-        }
-
-        // Browser client messages
-        ensureSessionList();
-        handleMessage(socket, msg, manager, subscriptions, clients);
+        parsed = JSON.parse(raw.toString()) as unknown;
       } catch {
-        // Ignore malformed messages
+        logObservabilityEvent('ws.invalid_message', {
+          level: 'warn',
+          requestId: socketRequestId,
+          sessionId: null,
+          errorCode: 'WS_INVALID_MESSAGE',
+          details: { reason: 'json_parse_failed' },
+        });
+        return;
       }
+
+      if (!isWSMessage(parsed)) {
+        logObservabilityEvent('ws.invalid_message', {
+          level: 'warn',
+          requestId: socketRequestId,
+          sessionId: null,
+          errorCode: 'WS_INVALID_MESSAGE',
+          details: { reason: 'invalid_shape' },
+        });
+        return;
+      }
+
+      const msg = parsed;
+
+      // Handle CLI remote registration
+      if (msg.type === 'register') {
+        clearTimeout(listTimer);
+        sentSessionList = true; // CLI clients don't need the session list
+        handleRemoteRegister(socket, msg, manager, remoteClients);
+        return;
+      }
+      if (msg.type === 'event') {
+        handleRemoteEvent(msg, manager, remoteClients);
+        return;
+      }
+      if (msg.type === 'unregister') {
+        // CLI client gracefully disconnecting — don't mark as disconnected
+        const sessionId = msg.sessionId as string;
+        remoteClients.delete(sessionId);
+        return;
+      }
+
+      if (!BROWSER_MESSAGE_TYPES.has(msg.type)) {
+        logObservabilityEvent('ws.invalid_message', {
+          level: 'warn',
+          requestId: socketRequestId,
+          sessionId: null,
+          errorCode: 'WS_INVALID_MESSAGE',
+          details: { reason: 'unsupported_type', type: msg.type },
+        });
+        return;
+      }
+
+      // Browser client messages
+      ensureSessionList();
+      handleMessage(socket, msg, manager, subscriptions, clients);
     });
 
     socket.on('close', () => {
       clearTimeout(listTimer);
       clients.delete(socket);
       subscriptions.delete(socket);
+      const socketRequestId = socketRequestIds.get(socket) ?? requestId;
+      socketRequestIds.delete(socket);
 
       // Check if this was a remote CLI client and mark session as disconnected
+      let disconnectedSessionId: string | null = null;
+      let disconnectErrorCode: string | null = null;
       for (const [sessionId, client] of remoteClients) {
         if (client.ws === socket) {
           remoteClients.delete(sessionId);
+          disconnectedSessionId = sessionId;
+          disconnectErrorCode = 'WS_CLIENT_DISCONNECTED';
           const session = manager.getSession(sessionId);
           if (session && !['completed', 'error'].includes(session.status)) {
             const remoteAdapter = getRemoteAdapter(manager, sessionId);
@@ -96,6 +157,11 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): {
           }
         }
       }
+      logObservabilityEvent('ws.disconnect', {
+        requestId: socketRequestId,
+        sessionId: disconnectedSessionId,
+        errorCode: disconnectErrorCode,
+      });
     });
   });
 
@@ -233,7 +299,6 @@ function handleRemoteRegister(
 ): void {
   const sessionId = msg.sessionId as string;
   const name = msg.name as string;
-  const tool = msg.tool as string;
   const adapterInfo = msg.adapterInfo as BaseAdapter['info'];
   const cwd = (msg.cwd as string) || process.cwd();
   const hostname = (msg.hostname as string) || 'remote';
@@ -295,4 +360,9 @@ function getRemoteAdapter(manager: SessionManager, sessionId: string): RemoteAda
   const adapter = session.adapter;
   if (adapter instanceof RemoteAdapter) return adapter;
   return null;
+}
+
+function isWSMessage(value: unknown): value is WSMessage {
+  if (!value || typeof value !== 'object') return false;
+  return typeof (value as { type?: unknown }).type === 'string';
 }

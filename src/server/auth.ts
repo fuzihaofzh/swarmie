@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { loadConfig, saveConfig } from '../cli/config.js';
+import { logObservabilityEvent, resolveRequestId } from './observability.js';
 
 const COOKIE_NAME = 'swarmie-auth';
+const WS_TOKEN_PROTOCOL_PREFIX = 'swarmie-token.';
 
 function hashPassword(pwd: string): string {
   return createHash('sha256').update(pwd).digest('hex');
@@ -19,6 +21,17 @@ function parseCookies(header: string | undefined): Record<string, string> {
     cookies[key] = value;
   }
   return cookies;
+}
+
+function parseWebSocketProtocolToken(header: string | string[] | undefined): string | null {
+  if (!header) return null;
+  const raw = Array.isArray(header) ? header.join(',') : header;
+  for (const protocol of raw.split(',').map((part) => part.trim())) {
+    if (protocol.startsWith(WS_TOKEN_PROTOCOL_PREFIX)) {
+      return protocol.slice(WS_TOKEN_PROTOCOL_PREFIX.length);
+    }
+  }
+  return null;
 }
 
 const PAGE_STYLE = `
@@ -283,8 +296,14 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
 
   // Login endpoint
   app.post('/api/auth', async (request: FastifyRequest, reply: FastifyReply) => {
+    const requestId = resolveRequestId(request);
     if (!passwordHash) {
-      reply.status(400).send({ error: 'No password configured' });
+      reply.status(400).send({
+        error: 'No password configured',
+        request_id: requestId,
+        session_id: null,
+        error_code: 'AUTH_PASSWORD_NOT_CONFIGURED',
+      });
       return;
     }
     const body = request.body as { password?: string } | null;
@@ -293,7 +312,18 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
         .header('Set-Cookie', `${COOKIE_NAME}=${passwordHash}; HttpOnly; Path=/; SameSite=Lax`)
         .send({ ok: true, token: passwordHash });
     } else {
-      reply.status(401).send({ error: 'Invalid password' });
+      logObservabilityEvent('auth.login.failed', {
+        level: 'warn',
+        requestId,
+        sessionId: null,
+        errorCode: 'AUTH_INVALID_PASSWORD',
+      });
+      reply.status(401).send({
+        error: 'Invalid password',
+        request_id: requestId,
+        session_id: null,
+        error_code: 'AUTH_INVALID_PASSWORD',
+      });
     }
   });
 
@@ -330,6 +360,7 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
 
   // Auth check hook
   app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
+    const requestId = resolveRequestId(request);
     const url = request.url;
 
     // Always allow auth-related routes and CORS preflight
@@ -340,7 +371,19 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
     // No password configured yet → redirect to setup
     if (!passwordHash) {
       if (url.startsWith('/api/') || url.startsWith('/ws')) {
-        reply.status(401).send({ error: 'Password not configured. Visit /setup first.' });
+        logObservabilityEvent('auth.failed', {
+          level: 'warn',
+          requestId,
+          sessionId: null,
+          errorCode: 'AUTH_PASSWORD_NOT_CONFIGURED',
+          details: { path: url, method: request.method },
+        });
+        reply.status(401).send({
+          error: 'Password not configured. Visit /setup first.',
+          request_id: requestId,
+          session_id: null,
+          error_code: 'AUTH_PASSWORD_NOT_CONFIGURED',
+        });
       } else {
         reply.redirect('/setup');
       }
@@ -361,15 +404,29 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
       return;
     }
 
-    // Check query token (for WebSocket connections which can't set headers)
-    const queryToken = (request.query as Record<string, string>)?.token;
-    if (queryToken && queryToken === passwordHash) {
-      return;
+    // Check WebSocket sub-protocol token (non-URL transport)
+    if (url.startsWith('/ws')) {
+      const protocolToken = parseWebSocketProtocolToken(request.headers['sec-websocket-protocol']);
+      if (protocolToken === passwordHash) {
+        return;
+      }
     }
 
     // Unauthenticated
     if (url.startsWith('/api/') || url.startsWith('/ws')) {
-      reply.status(401).send({ error: 'Unauthorized' });
+      logObservabilityEvent('auth.failed', {
+        level: 'warn',
+        requestId,
+        sessionId: null,
+        errorCode: 'AUTH_UNAUTHORIZED',
+        details: { path: url, method: request.method },
+      });
+      reply.status(401).send({
+        error: 'Unauthorized',
+        request_id: requestId,
+        session_id: null,
+        error_code: 'AUTH_UNAUTHORIZED',
+      });
     } else {
       reply.redirect('/login');
     }
