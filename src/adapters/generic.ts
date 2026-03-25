@@ -14,6 +14,19 @@ const TOOL_SIGNATURES: { pattern: RegExp; tool: string; displayName: string }[] 
   { pattern: /gemini/i, tool: 'gemini', displayName: 'Gemini' },
 ];
 
+const ESC_CHAR = String.fromCharCode(0x1b);
+const BEL_CHAR = String.fromCharCode(0x07);
+const NUL_CHAR = String.fromCharCode(0x00);
+const US_CHAR = String.fromCharCode(0x1f);
+const OSC_PAYLOAD_RE = new RegExp(
+  `${ESC_CHAR}\\]\\d+;([^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
+  'g',
+);
+const OSC_ANY_RE = new RegExp(`${ESC_CHAR}\\].*?(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`, 'g');
+const CSI_RE = new RegExp(`${ESC_CHAR}\\[[0-9;?]*[A-Za-z~]`, 'g');
+const ESC_OTHER_RE = new RegExp(`${ESC_CHAR}[^\\[].?`, 'g');
+const CONTROL_CHARS_RE = new RegExp(`[${NUL_CHAR}-${US_CHAR}]`, 'g');
+
 /**
  * Generic adapter — runs any command via PTY.
  * Used when the tool name doesn't match a registered adapter.
@@ -115,18 +128,18 @@ export class GenericAdapter extends BaseAdapter {
     const allText: string[] = [];
 
     // Extract OSC payload text (titles etc.)
-    const oscPayloadRe = /\x1b\]\d+;([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
     let m: RegExpExecArray | null;
-    while ((m = oscPayloadRe.exec(chunk)) !== null) {
+    OSC_PAYLOAD_RE.lastIndex = 0;
+    while ((m = OSC_PAYLOAD_RE.exec(chunk)) !== null) {
       allText.push(m[1]);
     }
 
     // Strip ANSI/control to get visible text
     const stripped = chunk
-      .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
-      .replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, '')
-      .replace(/\x1b[^\[].?/g, '')
-      .replace(/[\x00-\x1f]/g, ' ');
+      .replace(OSC_ANY_RE, '')
+      .replace(CSI_RE, '')
+      .replace(ESC_OTHER_RE, '')
+      .replace(CONTROL_CHARS_RE, ' ');
     allText.push(stripped);
 
     this._detectBuf += allText.join(' ');

@@ -28,10 +28,25 @@ const ANIMATION_CHARS = /[⏺✶✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆✢
 // Max chars to keep in the rolling stripped-text buffer for detection.
 const DETECT_BUFFER_SIZE = 1000;
 
+const ESC_CHAR = String.fromCharCode(0x1b);
+const BEL_CHAR = String.fromCharCode(0x07);
+const NUL_CHAR = String.fromCharCode(0x00);
+const US_CHAR = String.fromCharCode(0x1f);
+
 // OSC 7: file://hostname/path — shell reports cwd (+ hostname for SSH)
-const OSC7_RE = /\x1b\]7;file:\/\/([^/]*)(\/[^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
+const OSC7_RE = new RegExp(
+  `${ESC_CHAR}\\]7;file://([^/]*)(/[^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
+  'g',
+);
 // OSC 0/2: window title, often "user@host:path" or "host:path"
-const OSC_TITLE_RE = /\x1b\][02];([^\x07\x1b]*?)(?:\x07|\x1b\\)/g;
+const OSC_TITLE_RE = new RegExp(
+  `${ESC_CHAR}\\][02];([^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
+  'g',
+);
+const OSC_ANY_RE = new RegExp(`${ESC_CHAR}\\].*?(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`, 'g');
+const CSI_RE = new RegExp(`${ESC_CHAR}\\[[0-9;?]*[A-Za-z~]`, 'g');
+const ESC_OTHER_RE = new RegExp(`${ESC_CHAR}[^\\[].?`, 'g');
+const CONTROL_CHARS_RE = new RegExp(`[${NUL_CHAR}-${US_CHAR}]`, 'g');
 
 export interface AdapterOptions {
   sessionId: string;
@@ -128,10 +143,10 @@ export abstract class BaseAdapter extends EventEmitter {
     // Ink renders text with cursor positioning between words, so a single
     // prompt may arrive as many small chunks with embedded escape sequences.
     const stripped = chunk
-      .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, ' ')       // OSC
-      .replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, ' ')         // CSI
-      .replace(/\x1b[^\[].?/g, ' ')                      // other ESC
-      .replace(/[\x00-\x1f]/g, ' ')                      // control chars
+      .replace(OSC_ANY_RE, ' ')                          // OSC
+      .replace(CSI_RE, ' ')                              // CSI
+      .replace(ESC_OTHER_RE, ' ')                        // other ESC
+      .replace(CONTROL_CHARS_RE, ' ')                    // control chars
       .replace(ANIMATION_CHARS, ' ')                      // thinking spinners
       .replace(/\s+/g, ' ');                              // normalize whitespace
 

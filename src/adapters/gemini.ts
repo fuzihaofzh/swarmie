@@ -1,5 +1,5 @@
 import * as pty from 'node-pty';
-import { BaseAdapter, type AdapterOptions } from './base.js';
+import { BaseAdapter } from './base.js';
 import type {
   AdapterInfo,
   RawOutputData,
