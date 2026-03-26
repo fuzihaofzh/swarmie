@@ -113,6 +113,10 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): {
         remoteClients.delete(sessionId);
         return;
       }
+      if (msg.type === 'ping') {
+        // Browser keepalive — no-op, just prevents the connection from going idle
+        return;
+      }
 
       if (!BROWSER_MESSAGE_TYPES.has(msg.type)) {
         logObservabilityEvent('ws.invalid_message', {
