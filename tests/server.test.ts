@@ -113,6 +113,15 @@ describe('REST API', () => {
     expect(body.sessions).toBe(1);
   });
 
+  it('GET / returns 302 with a helpful HTML body when unauthenticated', async () => {
+    const res = await fetch(`${baseUrl}/`, { redirect: 'manual' });
+    const body = await res.text();
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/login');
+    expect(body).toContain('Redirecting to');
+    expect(body).toContain('/login');
+  });
+
   it('GET /api/sessions returns session list', async () => {
     const res = await fetch(`${baseUrl}/api/sessions`, { headers: authHeaders() });
     const body = await res.json() as Array<{ id: string }>;

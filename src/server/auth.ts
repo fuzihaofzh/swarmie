@@ -230,6 +230,25 @@ const CHANGE_PASSWORD_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+function sendHtmlRedirect(reply: FastifyReply, location: '/login' | '/setup'): void {
+  reply
+    .code(302)
+    .header('Location', location)
+    .type('text/html; charset=utf-8')
+    .send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="0; url=${location}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Redirecting</title>
+</head>
+<body>
+  <p>Redirecting to <a href="${location}">${location}</a>.</p>
+</body>
+</html>`);
+}
+
 /**
  * Set up auth for the web dashboard.
  *
@@ -255,7 +274,7 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
   // Setup page (only when no password is configured yet)
   app.get('/setup', async (_request: FastifyRequest, reply: FastifyReply) => {
     if (passwordHash) {
-      reply.redirect('/login');
+      sendHtmlRedirect(reply, '/login');
       return;
     }
     reply.type('text/html').send(SETUP_HTML);
@@ -288,7 +307,7 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
   // Login page
   app.get('/login', async (_request: FastifyRequest, reply: FastifyReply) => {
     if (!passwordHash) {
-      reply.redirect('/setup');
+      sendHtmlRedirect(reply, '/setup');
       return;
     }
     reply.type('text/html').send(LOGIN_HTML);
@@ -385,7 +404,7 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
           error_code: 'AUTH_PASSWORD_NOT_CONFIGURED',
         });
       } else {
-        reply.redirect('/setup');
+        sendHtmlRedirect(reply, '/setup');
       }
       return;
     }
@@ -428,7 +447,7 @@ export function setupAuth(app: FastifyInstance, cliPassword?: string): void {
         error_code: 'AUTH_UNAUTHORIZED',
       });
     } else {
-      reply.redirect('/login');
+      sendHtmlRedirect(reply, '/login');
     }
   });
 }
