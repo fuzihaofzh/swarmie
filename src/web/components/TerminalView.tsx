@@ -212,7 +212,9 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     };
   }, []);
 
-  // Fit, scroll, and focus when tab becomes active or terminal initializes
+  // Fit, scroll, and focus when tab becomes active or terminal initializes.
+  // New panels can become active before xterm is ready, so termReady must
+  // retrigger this path after termRef has been assigned.
   useEffect(() => {
     if (!isActive) return;
     const term = termRef.current;
@@ -229,7 +231,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         term.focus();
       }
     });
-  }, [isActive, getFocusPolicyEnv]);
+  }, [isActive, termReady, getFocusPolicyEnv]);
 
   // Update terminal when theme/font changes
   useEffect(() => {

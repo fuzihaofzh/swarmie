@@ -234,4 +234,28 @@ describe('WebSocket observability', () => {
       errorSpy.mockRestore();
     }
   });
+
+  it('accepts dashboard ping heartbeats without invalid-message logs', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const ws = trackSocket(new WebSocket(wsUrl, [WS_PROTOCOL]));
+      await waitForSocketOpen(ws);
+
+      ws.send(JSON.stringify({ type: 'subscribe:all' }));
+      ws.send(JSON.stringify({ type: 'ping' }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      ws.close();
+      await new Promise<void>((resolve) => {
+        ws.once('close', () => resolve());
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const logs = parseObservabilityLogs(errorSpy.mock.calls as unknown[][]);
+      const invalidLogs = logs.filter((log) => log.event === 'ws.invalid_message');
+      expect(invalidLogs).toHaveLength(0);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });

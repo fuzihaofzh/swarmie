@@ -11,14 +11,15 @@ const execFileAsync = promisify(execFile);
 // Use .{0,N} between words to tolerate Ink's cursor-based rendering
 // which may insert unrelated characters between words of a single phrase.
 const WAITING_INPUT_PATTERNS = [
-  /Do.{0,5}you.{0,5}want.{0,5}to/,
-  /Esc.{0,5}to.{0,5}cancel/,
-  /Tab.{0,5}to.{0,5}amend/,
-  /proceed\?/,
-  /Yes,.{0,5}allow/,
-  /\(y\/n\)/,
-  /\(Y\/n\)/,
-  /\(yes\/no\)/,
+  /Do.{0,10}you.{0,10}want.{0,10}to/i,
+  /Esc.{0,10}to.{0,10}cancel/i,
+  /Tab.{0,10}to.{0,10}amend/i,
+  /proceed\?/i,
+  /Yes,.{0,10}allow/i,
+  /Yes,.{0,20}proceed.{0,10}\(y\)/i,
+  /Press.{0,10}enter.{0,10}to.{0,10}confirm/i,
+  /\(y\/n\)/i,
+  /\(yes\/no\)/i,
 ];
 
 // Characters that are purely decorative / animation and should not
@@ -44,9 +45,11 @@ const OSC_TITLE_RE = new RegExp(
   'g',
 );
 const OSC_ANY_RE = new RegExp(`${ESC_CHAR}\\].*?(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`, 'g');
-const CSI_RE = new RegExp(`${ESC_CHAR}\\[[0-9;?]*[A-Za-z~]`, 'g');
+const CSI_RE = new RegExp(`${ESC_CHAR}\\[[0-9;:?]*[A-Za-z~]`, 'g');
 const ESC_OTHER_RE = new RegExp(`${ESC_CHAR}[^\\[].?`, 'g');
 const CONTROL_CHARS_RE = new RegExp(`[${NUL_CHAR}-${US_CHAR}]`, 'g');
+const CSI_FRAGMENT_RE = /\[(?:\??\d{1,3}[A-Za-z~]|(?:\d{1,3}[;:?]){1,16}\d{0,3}(?:[A-Za-z~])?)/g;
+const SGR_TAIL_FRAGMENT_RE = /(?:^|\s)(?:\d{1,3}[;:]){2,}\d{1,3}m/g;
 
 export interface AdapterOptions {
   sessionId: string;
@@ -147,6 +150,8 @@ export abstract class BaseAdapter extends EventEmitter {
       .replace(CSI_RE, ' ')                              // CSI
       .replace(ESC_OTHER_RE, ' ')                        // other ESC
       .replace(CONTROL_CHARS_RE, ' ')                    // control chars
+      .replace(CSI_FRAGMENT_RE, ' ')                     // CSI fragments split across PTY chunks
+      .replace(SGR_TAIL_FRAGMENT_RE, ' ')                // truecolor SGR tails split across chunks
       .replace(ANIMATION_CHARS, ' ')                      // thinking spinners
       .replace(/\s+/g, ' ');                              // normalize whitespace
 
