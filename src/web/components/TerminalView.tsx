@@ -22,6 +22,43 @@ interface TerminalViewProps {
   onRedraw?: () => void;
 }
 
+const MAX_TERMINAL_WRITE_BYTES_PER_FRAME = 256 * 1024;
+
+function estimateBase64Bytes(b64Data: string): number {
+  return Math.ceil((b64Data.length * 3) / 4);
+}
+
+function decodeBase64Chunks(chunks: string[]): Uint8Array {
+  if (chunks.length === 1) {
+    const binary = atob(chunks[0]);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  const parts: Uint8Array[] = [];
+  let totalLen = 0;
+  for (const b64Data of chunks) {
+    const binary = atob(b64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    parts.push(bytes);
+    totalLen += bytes.length;
+  }
+
+  const merged = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const part of parts) {
+    merged.set(part, offset);
+    offset += part.length;
+  }
+  return merged;
+}
+
 export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw }: TerminalViewProps) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -294,20 +331,65 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     };
     container?.addEventListener('wheel', onWheel, { passive: true });
 
-    registerTerminalWriter(sessionId, (b64Data: string) => {
-      const binary = atob(b64Data);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      term.write(bytes, () => {
-        if (!userScrolledUp.current) {
-          term.scrollToBottom();
+    const pendingChunks: string[] = [];
+    const pendingBytes = { current: 0 };
+    let flushFrame: number | null = null;
+    let writeInFlight = false;
+    let disposed = false;
+
+    const scheduleFlush = () => {
+      if (disposed) return;
+      if (flushFrame !== null) return;
+      flushFrame = requestAnimationFrame(() => {
+        flushFrame = null;
+        if (disposed) return;
+        if (writeInFlight) return;
+        if (pendingChunks.length === 0) return;
+
+        const batch: string[] = [];
+        let batchBytes = 0;
+        while (
+          pendingChunks.length > 0 &&
+          (batch.length === 0 || batchBytes < MAX_TERMINAL_WRITE_BYTES_PER_FRAME)
+        ) {
+          const chunk = pendingChunks.shift();
+          if (!chunk) break;
+          const chunkBytes = estimateBase64Bytes(chunk);
+          pendingBytes.current -= chunkBytes;
+          batch.push(chunk);
+          batchBytes += chunkBytes;
         }
+
+        writeInFlight = true;
+        term.write(decodeBase64Chunks(batch), () => {
+          if (disposed) return;
+          if (!userScrolledUp.current) {
+            term.scrollToBottom();
+          }
+          writeInFlight = false;
+          if (pendingChunks.length > 0) {
+            scheduleFlush();
+          }
+        });
       });
+    };
+
+    registerTerminalWriter(sessionId, (b64Data: string) => {
+      if (disposed) return;
+      pendingChunks.push(b64Data);
+      pendingBytes.current += estimateBase64Bytes(b64Data);
+      scheduleFlush();
     });
 
     const cleanupScroll = () => container?.removeEventListener('wheel', onWheel);
+    const cleanupFlush = () => {
+      if (flushFrame !== null) {
+        cancelAnimationFrame(flushFrame);
+        flushFrame = null;
+      }
+      pendingChunks.length = 0;
+      pendingBytes.current = 0;
+    };
 
     // After (re)connecting, trigger a SIGWINCH on the PTY (at its current size)
     // so ink-based apps (Claude Code) redraw their UI on the fresh terminal.
@@ -318,6 +400,8 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     }, 200);
 
     return () => {
+      disposed = true;
+      cleanupFlush();
       cleanupScroll();
       unregisterTerminalWriter(sessionId);
     };

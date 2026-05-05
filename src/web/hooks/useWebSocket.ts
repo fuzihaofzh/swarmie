@@ -7,6 +7,41 @@ type WSMessage = {
   [key: string]: unknown;
 };
 
+function decodeBase64Chunk(b64Data: string): Uint8Array {
+  const binary = atob(b64Data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function mergeBase64Chunks(chunks: string[]): string {
+  if (chunks.length === 1) return chunks[0];
+
+  const parts: Uint8Array[] = [];
+  let totalLen = 0;
+  for (const chunk of chunks) {
+    const bytes = decodeBase64Chunk(chunk);
+    parts.push(bytes);
+    totalLen += bytes.length;
+  }
+
+  const merged = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const part of parts) {
+    merged.set(part, offset);
+    offset += part.length;
+  }
+
+  const stringParts: string[] = [];
+  const stringChunkSize = 0x8000;
+  for (let i = 0; i < merged.length; i += stringChunkSize) {
+    stringParts.push(String.fromCharCode(...merged.subarray(i, i + stringChunkSize)));
+  }
+  return btoa(stringParts.join(''));
+}
+
 /**
  * Manages a single WebSocket + REST connection to one swarmie server.
  */
@@ -266,24 +301,7 @@ export class ServerConnection {
           }
         }
         if (rawChunks.length > 0) {
-          const parts: Uint8Array[] = [];
-          let totalLen = 0;
-          for (const b64 of rawChunks) {
-            const binary = atob(b64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            parts.push(bytes);
-            totalLen += bytes.length;
-          }
-          const merged = new Uint8Array(totalLen);
-          let offset = 0;
-          for (const p of parts) {
-            merged.set(p, offset);
-            offset += p.length;
-          }
-          let bin = '';
-          for (let i = 0; i < merged.length; i++) bin += String.fromCharCode(merged[i]);
-          writeToTerminal(sid, btoa(bin));
+          writeToTerminal(sid, mergeBase64Chunks(rawChunks));
         }
         if (structured.length > 0) {
           store.addEventBatch(sid, structured);

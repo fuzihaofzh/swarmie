@@ -8,16 +8,39 @@
 
 type Writer = (b64Data: string) => void;
 
+const MAX_BUFFERED_BYTES_PER_SESSION = 512 * 1024;
+
 const writers = new Map<string, Writer>();
-const buffers = new Map<string, string[]>();
+const buffers = new Map<string, { chunks: string[]; bytes: number }>();
+
+function estimateBase64Bytes(b64Data: string): number {
+  return Math.ceil((b64Data.length * 3) / 4);
+}
+
+function appendBufferedChunk(sessionId: string, b64Data: string): void {
+  let buffer = buffers.get(sessionId);
+  if (!buffer) {
+    buffer = { chunks: [], bytes: 0 };
+    buffers.set(sessionId, buffer);
+  }
+
+  buffer.chunks.push(b64Data);
+  buffer.bytes += estimateBase64Bytes(b64Data);
+
+  while (buffer.bytes > MAX_BUFFERED_BYTES_PER_SESSION && buffer.chunks.length > 1) {
+    const removed = buffer.chunks.shift();
+    if (!removed) break;
+    buffer.bytes -= estimateBase64Bytes(removed);
+  }
+}
 
 export function registerTerminalWriter(sessionId: string, writer: Writer): void {
   writers.set(sessionId, writer);
 
   // Flush any buffered data that arrived before the writer was ready
-  const buf = buffers.get(sessionId);
-  if (buf && buf.length > 0) {
-    for (const b64 of buf) {
+  const buffer = buffers.get(sessionId);
+  if (buffer && buffer.chunks.length > 0) {
+    for (const b64 of buffer.chunks) {
       writer(b64);
     }
     buffers.delete(sessionId);
@@ -37,13 +60,8 @@ export function writeToTerminal(sessionId: string, b64Data: string): boolean {
     return true;
   }
 
-  // No writer yet — buffer the data
-  let buf = buffers.get(sessionId);
-  if (!buf) {
-    buf = [];
-    buffers.set(sessionId, buf);
-  }
-  buf.push(b64Data);
+  // No writer yet — buffer bounded recent output for remounts.
+  appendBufferedChunk(sessionId, b64Data);
   return false;
 }
 
