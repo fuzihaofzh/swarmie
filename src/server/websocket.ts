@@ -88,13 +88,20 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     resizeTimers.set(sessionId, setTimeout(() => {
       resizeTimers.delete(sessionId);
       const applied = appliedSize.get(sessionId);
-      if (applied?.cols === minCols && applied.rows === minRows) return;
+      if (applied?.cols === minCols && applied.rows === minRows) {
+        console.error(`[swarmie/diag] applyMinSize ${sessionId} MIN=${minCols}x${minRows} (unchanged, skip)`);
+        return;
+      }
       appliedSize.set(sessionId, { cols: minCols, rows: minRows });
-      manager.getSession(sessionId)?.resize(minCols, minRows);
+      const sess = manager.getSession(sessionId);
+      console.error(`[swarmie/diag] applyMinSize ${sessionId} MIN=${minCols}x${minRows} hasSession=${!!sess}`);
+      sess?.resize(minCols, minRows);
     }, RESIZE_DEBOUNCE_MS));
   }
 
   function recordClientSize(key: WebSocket | typeof CLI_SIZE_KEY, sessionId: string, cols: number, rows: number): void {
+    const tag = key === CLI_SIZE_KEY ? 'CLI' : 'web';
+    console.error(`[swarmie/diag] recordClientSize ${tag} ${sessionId} ${cols}x${rows}`);
     let perSession = clientSizes.get(key);
     if (!perSession) {
       perSession = new Map();

@@ -99,6 +99,7 @@ async function main(): Promise<void> {
     const reportResize = () => {
       const cols = process.stdout.columns || 80;
       const rows = process.stdout.rows || 24;
+      console.error(`[swarmie/diag] CLI reportResize ${sessionId} ${cols}x${rows} hasSetCliSize=${!!coordinator?.setCliSize}`);
       if (coordinator?.setCliSize) {
         coordinator.setCliSize(sessionId, cols, rows);
       } else {
@@ -108,6 +109,8 @@ async function main(): Promise<void> {
     // Seed the initial size so a never-resized terminal still participates in MIN.
     reportResize();
     process.stdout.on('resize', reportResize);
+  } else {
+    console.error(`[swarmie/diag] stdout is not a TTY — CLI size not reported`);
   }
 
   // Wait for the adapter to finish
