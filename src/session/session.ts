@@ -170,10 +170,6 @@ export class Session extends EventEmitter {
   }
 
   resize(cols: number, rows: number): void {
-    // Local sessions are driven by the owning CLI terminal's stdout resize
-    // events; honoring web fits would race with the CLI and desync zsh's
-    // column tracking from xterm's rendering, corrupting cursor placement.
-    if (this.isLocal) return;
     this.adapter.resize(cols, rows);
   }
 

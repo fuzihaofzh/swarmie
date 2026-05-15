@@ -71,13 +71,6 @@ async function main(): Promise<void> {
     }
   });
 
-  // Handle terminal resize
-  if (process.stdout.isTTY) {
-    process.stdout.on('resize', () => {
-      adapter.resize(process.stdout.columns || 80, process.stdout.rows || 24);
-    });
-  }
-
   // Pipe stdin to the adapter
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
@@ -96,6 +89,25 @@ async function main(): Promise<void> {
   } else {
     // No web server and no remote — just start the adapter directly
     adapter.start();
+  }
+
+  // Handle terminal resize. When a coordinator owns the session, the CLI's
+  // terminal size is reported as a virtual client so the PTY runs at MIN
+  // across this terminal and every web viewer (tmux-style). Falls back to
+  // direct adapter.resize when there's no coordinator (no-web mode).
+  if (process.stdout.isTTY) {
+    const reportResize = () => {
+      const cols = process.stdout.columns || 80;
+      const rows = process.stdout.rows || 24;
+      if (coordinator?.setCliSize) {
+        coordinator.setCliSize(sessionId, cols, rows);
+      } else {
+        adapter.resize(cols, rows);
+      }
+    };
+    // Seed the initial size so a never-resized terminal still participates in MIN.
+    reportResize();
+    process.stdout.on('resize', reportResize);
   }
 
   // Wait for the adapter to finish

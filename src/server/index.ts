@@ -14,10 +14,19 @@ export interface ServerOptions {
   password?: string;
 }
 
+export interface ServerHandle {
+  close: () => Promise<void>;
+  address: string;
+  /** Register the owning CLI terminal's reported size so it counts in MIN. */
+  setCliSize: (sessionId: string, cols: number, rows: number) => void;
+  /** Drop the CLI's contribution for a session. */
+  dropCliSize: (sessionId: string) => void;
+}
+
 export async function createServer(
   manager: SessionManager,
   options: ServerOptions,
-): Promise<{ close: () => Promise<void>; address: string }> {
+): Promise<ServerHandle> {
   const app = Fastify({ logger: false });
 
   // CORS must be registered BEFORE auth so that CORS headers appear on 401 responses too
@@ -33,7 +42,7 @@ export async function createServer(
   setupRoutes(app, manager);
 
   // WebSocket handler
-  const { broadcastShutdown, stop: stopWebSocket } = setupWebSocket(app, manager);
+  const { broadcastShutdown, stop: stopWebSocket, setCliSize, dropCliSize } = setupWebSocket(app, manager);
 
   // Static files (web dashboard)
   await setupStatic(app);
@@ -48,6 +57,8 @@ export async function createServer(
 
   return {
     address,
+    setCliSize,
+    dropCliSize,
     close: async () => {
       broadcastShutdown();
       stopWebSocket();

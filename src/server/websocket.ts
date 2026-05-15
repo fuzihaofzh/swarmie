@@ -32,14 +32,28 @@ interface RemoteCLIClient {
   sessionId: string;
 }
 
-export function setupWebSocket(app: FastifyInstance, manager: SessionManager): { broadcastShutdown: () => void; stop: () => void } {
+export interface WebSocketHandle {
+  broadcastShutdown: () => void;
+  stop: () => void;
+  /** Register the owning CLI terminal's size as a virtual client for MIN calculation */
+  setCliSize: (sessionId: string, cols: number, rows: number) => void;
+  /** Drop the CLI's contribution for a session (e.g., when the session ends) */
+  dropCliSize: (sessionId: string) => void;
+}
+
+/** Sentinel key for the local CLI terminal's reported size in clientSizes. */
+const CLI_SIZE_KEY: unique symbol = Symbol('cli-size');
+
+export function setupWebSocket(app: FastifyInstance, manager: SessionManager): WebSocketHandle {
   const clients = new Set<WebSocket>();
   const subscriptions = new Map<WebSocket, Set<string>>(); // ws -> set of sessionIds
   const socketRequestIds = new Map<WebSocket, string>();
-  // Per-(ws, sessionId) reported viewport size. The PTY runs at MIN across
-  // all clients (tmux-style) so TUI apps render correctly on the smallest
-  // attached viewport; larger clients just get letterboxed.
-  const clientSizes = new Map<WebSocket, Map<string, { cols: number; rows: number }>>();
+  // Per-(client, sessionId) reported viewport size. Clients are WebSockets,
+  // plus a single CLI_SIZE_KEY entry for the owning local terminal (if any).
+  // The PTY runs at MIN across all clients (tmux-style) so TUI apps render
+  // correctly on the smallest attached viewport; larger clients just get
+  // letterboxed.
+  const clientSizes = new Map<WebSocket | typeof CLI_SIZE_KEY, Map<string, { cols: number; rows: number }>>();
   // Last applied PTY size per session — used to dedup so we don't fire
   // SIGWINCH (which makes ink-based apps redraw) when nothing changed.
   const appliedSize = new Map<string, { cols: number; rows: number }>();
@@ -80,26 +94,38 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): {
     }, RESIZE_DEBOUNCE_MS));
   }
 
-  function recordClientSize(socket: WebSocket, sessionId: string, cols: number, rows: number): void {
-    let perSession = clientSizes.get(socket);
+  function recordClientSize(key: WebSocket | typeof CLI_SIZE_KEY, sessionId: string, cols: number, rows: number): void {
+    let perSession = clientSizes.get(key);
     if (!perSession) {
       perSession = new Map();
-      clientSizes.set(socket, perSession);
+      clientSizes.set(key, perSession);
     }
     perSession.set(sessionId, { cols, rows });
     applyMinSizeForSession(sessionId);
   }
 
-  function dropClientSizes(socket: WebSocket): void {
-    const perSession = clientSizes.get(socket);
+  function dropClientSizes(key: WebSocket | typeof CLI_SIZE_KEY): void {
+    const perSession = clientSizes.get(key);
     if (!perSession) return;
     const affected = [...perSession.keys()];
-    clientSizes.delete(socket);
+    clientSizes.delete(key);
     // Recompute MIN with this client removed. If it was the only contributor,
     // we leave the PTY at its last size (no clients = no resize).
     for (const sessionId of affected) {
       applyMinSizeForSession(sessionId);
     }
+  }
+
+  function setCliSize(sessionId: string, cols: number, rows: number): void {
+    recordClientSize(CLI_SIZE_KEY, sessionId, cols, rows);
+  }
+
+  function dropCliSize(sessionId: string): void {
+    const perSession = clientSizes.get(CLI_SIZE_KEY);
+    if (!perSession) return;
+    if (!perSession.delete(sessionId)) return;
+    if (perSession.size === 0) clientSizes.delete(CLI_SIZE_KEY);
+    applyMinSizeForSession(sessionId);
   }
 
   // Periodic liveness check: reap sockets that haven't sent an *application*
@@ -299,6 +325,8 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): {
       for (const timer of resizeTimers.values()) clearTimeout(timer);
       resizeTimers.clear();
     },
+    setCliSize,
+    dropCliSize,
   };
 }
 

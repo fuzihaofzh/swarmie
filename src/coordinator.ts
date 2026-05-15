@@ -23,6 +23,11 @@ export interface CoordinatorHandle {
   isCoordinator: boolean;
   /** Session manager (only available on coordinator) */
   manager?: SessionManager;
+  /**
+   * Report the owning CLI terminal's size so it participates in the
+   * tmux-style MIN that drives the PTY. No-op for client modes.
+   */
+  setCliSize?: (sessionId: string, cols: number, rows: number) => void;
 }
 
 /**
@@ -167,6 +172,7 @@ async function startAsCoordinator(
   return {
     isCoordinator: true,
     manager,
+    setCliSize: server.setCliSize,
     cleanup: async () => {
       recorder?.close();
       // Kill all still-running sessions

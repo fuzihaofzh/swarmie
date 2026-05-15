@@ -447,18 +447,18 @@ describe('Session', () => {
     }
   });
 
-  it('forwards resize to adapter for non-local sessions', () => {
-    const adapter = createMockAdapter('sess-resize-remote');
+  it('forwards resize to adapter', () => {
+    const adapter = createMockAdapter('sess-resize');
     const onResize = vi.fn();
     adapter.onResize = onResize;
-    const session = new Session('sess-resize-remote', 'test', adapter);
+    const session = new Session('sess-resize', 'test', adapter);
 
     session.resize(120, 40);
 
     expect(onResize).toHaveBeenCalledWith(120, 40);
   });
 
-  it('ignores web-driven resize for local sessions (PTY size owned by CLI)', () => {
+  it('forwards resize even when isLocal is set (CLI is now treated as one more MIN-contributing viewer)', () => {
     const adapter = createMockAdapter('sess-resize-local');
     const onResize = vi.fn();
     adapter.onResize = onResize;
@@ -467,7 +467,7 @@ describe('Session', () => {
 
     session.resize(120, 40);
 
-    expect(onResize).not.toHaveBeenCalled();
+    expect(onResize).toHaveBeenCalledWith(120, 40);
   });
 });
 
