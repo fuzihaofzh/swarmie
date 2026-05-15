@@ -1,5 +1,5 @@
 import * as pty from 'node-pty';
-import { BaseAdapter } from './base.js';
+import { BaseAdapter, buildSpawnEnv } from './base.js';
 import type {
   AdapterInfo,
   RawOutputData,
@@ -42,7 +42,7 @@ export class GeminiAdapter extends BaseAdapter {
       cols: this.cols,
       rows: this.rows,
       cwd: this.cwd,
-      env: process.env as Record<string, string>,
+      env: buildSpawnEnv(),
     });
     this.startCwdPolling(this.ptyProcess.pid);
 

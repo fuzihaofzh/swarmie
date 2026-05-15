@@ -1,5 +1,5 @@
 import * as pty from 'node-pty';
-import { BaseAdapter, type AdapterOptions } from './base.js';
+import { BaseAdapter, buildSpawnEnv, type AdapterOptions } from './base.js';
 import type {
   AdapterInfo,
   RawOutputData,
@@ -51,20 +51,14 @@ export class ClaudeAdapter extends BaseAdapter {
 
     this.setStatus('running');
 
-    // Spawn PTY — remove CLAUDECODE env to avoid nested detection
-    const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (k !== 'CLAUDECODE' && v !== undefined) {
-        env[k] = v;
-      }
-    }
-
     this.ptyProcess = pty.spawn(command, args, {
       name: 'xterm-256color',
       cols: this.cols,
       rows: this.rows,
       cwd: this.cwd,
-      env,
+      // Strip COLUMNS/LINES so the child queries the PTY's actual size;
+      // strip CLAUDECODE to avoid the nested-detection guard.
+      env: buildSpawnEnv(['CLAUDECODE']),
     });
     this.startCwdPolling(this.ptyProcess.pid);
 

@@ -97,6 +97,25 @@ export interface AdapterOptions {
   rows?: number;
 }
 
+/**
+ * Build a spawn env that strips COLUMNS/LINES so children query the PTY
+ * via ioctl (TIOCGWINSZ) instead of reading a stale value inherited from
+ * the swarmie process's own launch terminal. Python's
+ * shutil.get_terminal_size() — and therefore tqdm — prefers $COLUMNS when
+ * set, so without this scrub a narrowed PTY still produces wide progress
+ * bars and viewers re-wrap them.
+ */
+export function buildSpawnEnv(extraExclude: string[] = []): Record<string, string> {
+  const exclude = new Set(['COLUMNS', 'LINES', ...extraExclude]);
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue;
+    if (exclude.has(k)) continue;
+    env[k] = v;
+  }
+  return env;
+}
+
 export abstract class BaseAdapter extends EventEmitter {
   readonly sessionId: string;
   protected toolArgs: string[];
