@@ -7,13 +7,14 @@ import { useUIStore } from './hooks/useUI';
 import { useServerStore, type ConnectionStatus } from './hooks/useServers';
 import { themes, applyTheme } from './themes';
 import { useKeybindingStore, matchesBinding, formatBinding, DEFAULT_BINDINGS, ACTION_LABELS, type ActionId, type KeyBinding } from './hooks/useKeybindings';
-import { WsContext, type WsFunctions } from './contexts/WsContext';
+import { WsContext, useWsContext, type WsFunctions } from './contexts/WsContext';
 import { DockviewTerminalPanel } from './components/DockviewTerminalPanel';
 import { DockviewNewSessionPanel } from './components/DockviewNewSessionPanel';
 import { DockviewCustomTab, DockviewNewSessionTab } from './components/DockviewCustomTab';
 import { useDockviewSync } from './hooks/useDockviewSync';
 import { useMRU } from './hooks/useMRU';
 import { TabSwitcher } from './components/TabSwitcher';
+import { TagSwitcher } from './components/TagSwitcher';
 
 const components = {
   terminal: DockviewTerminalPanel,
@@ -38,9 +39,9 @@ function NewTabButton(_props: IDockviewHeaderActionsProps) {
 }
 
 function MenuButton(_props: IDockviewHeaderActionsProps) {
-  const toggleDrawer = useUIStore((s) => s.toggleDrawer);
+  const openSettings = useUIStore((s) => s.openSettings);
   return (
-    <button className="dv-menu-btn" onClick={toggleDrawer} title="Settings">
+    <button className="dv-menu-btn" onClick={openSettings} title="Settings">
       <span /><span /><span />
     </button>
   );
@@ -50,8 +51,8 @@ export function App() {
   const wsFunctions = useMultiWebSocket();
   const [api, setApi] = useState<DockviewApi | null>(null);
 
-  const drawerOpen = useUIStore((s) => s.drawerOpen);
-  const toggleDrawer = useUIStore((s) => s.toggleDrawer);
+  const settingsOpen = useUIStore((s) => s.settingsOpen);
+  const closeSettings = useUIStore((s) => s.closeSettings);
   const themeName = useUIStore((s) => s.theme);
   const currentTheme = themes[themeName] ?? themes['github-dark'];
 
@@ -123,39 +124,6 @@ export function App() {
   return (
     <WsContext value={wsContext}>
       <div className="app-layout">
-        {/* Overlay */}
-        <div
-          className={`overlay ${drawerOpen ? 'open' : ''}`}
-          onClick={toggleDrawer}
-        />
-
-        {/* Drawer */}
-        <div className={`drawer ${drawerOpen ? 'open' : ''}`}>
-          <div className="drawer-header">
-            <h3>swarmie</h3>
-            <button className="drawer-close" onClick={toggleDrawer}>
-              &times;
-            </button>
-          </div>
-          <div className="drawer-content">
-            <div className="drawer-section">
-              <div className="drawer-section-header">Servers</div>
-              <DrawerServers />
-            </div>
-            <div className="drawer-section">
-              <div className="drawer-section-header">Settings</div>
-              <DrawerSettings />
-            </div>
-            <div className="drawer-section">
-              <div className="drawer-section-header">Keybindings</div>
-              <KeybindingSettings />
-            </div>
-            <div className="drawer-section">
-              <a href="/change-password" className="drawer-link">Change Password</a>
-            </div>
-          </div>
-        </div>
-
         {/* Main area */}
         <div className="app-main">
           <DockviewReact
@@ -168,8 +136,57 @@ export function App() {
           />
         </div>
       </div>
+      {settingsOpen && <SettingsModal onClose={closeSettings} />}
       <TabSwitcher mruRef={mruRef} />
+      <TagSwitcher />
     </WsContext>
+  );
+}
+
+function SettingsModal({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [onClose]);
+
+  return (
+    <div className="settings-modal-overlay" onClick={onClose}>
+      <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="settings-modal-header">
+          <h2>Settings</h2>
+          <button className="settings-modal-close" onClick={onClose}>&times;</button>
+        </div>
+        <div className="settings-modal-body">
+          <section className="settings-panel-section settings-panel-section-wide">
+            <h3>Servers</h3>
+            <DrawerServers />
+          </section>
+          <section className="settings-panel-section">
+            <h3>Automation</h3>
+            <AutomationSettings />
+          </section>
+          <section className="settings-panel-section">
+            <h3>Appearance</h3>
+            <DrawerSettings />
+          </section>
+          <section className="settings-panel-section">
+            <h3>Tags</h3>
+            <TagFilterSettings />
+          </section>
+          <section className="settings-panel-section">
+            <h3>Keybindings</h3>
+            <KeybindingSettings />
+          </section>
+          <section className="settings-panel-section">
+            <h3>Account</h3>
+            <a href="/change-password" className="drawer-link">Change Password</a>
+          </section>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -182,13 +199,6 @@ function DrawerSettings() {
   const setFontSize = useUIStore((s) => s.setFontSize);
   const setFontFamily = useUIStore((s) => s.setFontFamily);
   const setBellSound = useUIStore((s) => s.setBellSound);
-
-  const activeSessionId = useSessionStore((s) => s.activeSessionId);
-  const activeSession = useSessionStore((s) =>
-    s.sessions.find((sess) => sess.id === s.activeSessionId),
-  );
-  const setSessionAutoApprove = useSessionStore((s) => s.setSessionAutoApprove);
-  const autoApprove = !!activeSession?.autoApprove;
 
   return (
     <div className="settings-section">
@@ -239,19 +249,78 @@ function DrawerSettings() {
           </button>
         </label>
       </div>
+    </div>
+  );
+}
+
+function AutomationSettings() {
+  const autoCompactMinutes = useUIStore((s) => s.autoCompactMinutes);
+  const setAutoCompactMinutes = useUIStore((s) => s.setAutoCompactMinutes);
+
+  return (
+    <div className="settings-section">
       <div className="setting-group">
-        <label className="toggle-label">
-          <span>Auto-approve</span>
-          <button
-            className={`toggle-switch ${autoApprove ? 'on' : ''}`}
-            onClick={() => activeSessionId && setSessionAutoApprove(activeSessionId, !autoApprove)}
-            disabled={!activeSessionId}
-            aria-label="Toggle auto-approve for active session"
-          >
-            <span className="toggle-knob" />
-          </button>
-        </label>
+        <label>Auto Compact Time</label>
+        <div className="number-row">
+          <input
+            type="number"
+            min="1"
+            max="1440"
+            value={autoCompactMinutes}
+            onChange={(e) => setAutoCompactMinutes(Number(e.target.value))}
+          />
+          <span>minutes</span>
+        </div>
       </div>
+    </div>
+  );
+}
+
+function TagFilterSettings() {
+  const sessions = useSessionStore((s) => s.sessions);
+  const tagFilter = useUIStore((s) => s.tagFilter);
+  const toggleTagFilter = useUIStore((s) => s.toggleTagFilter);
+  const clearTagFilter = useUIStore((s) => s.clearTagFilter);
+
+  const tagCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const session of sessions) {
+      for (const tag of session.tags ?? []) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [sessions]);
+
+  const visibleCount = tagFilter.length === 0
+    ? sessions.length
+    : sessions.filter((session) => (session.tags ?? []).some((tag) => tagFilter.includes(tag))).length;
+
+  return (
+    <div className="settings-section">
+      <div className="tag-filter-summary">
+        Showing {visibleCount} of {sessions.length} sessions
+      </div>
+      <div className="tag-filter-grid">
+        <button
+          className={`tag-filter-chip ${tagFilter.length === 0 ? 'active' : ''}`}
+          onClick={clearTagFilter}
+        >
+          All
+        </button>
+        {tagCounts.map(([tag, count]) => (
+          <button
+            key={tag}
+            className={`tag-filter-chip ${tagFilter.includes(tag) ? 'active' : ''}`}
+            onClick={() => toggleTagFilter(tag)}
+          >
+            {tag}<span>{count}</span>
+          </button>
+        ))}
+      </div>
+      {tagCounts.length === 0 && (
+        <div className="tag-filter-empty">No tags have been added yet.</div>
+      )}
     </div>
   );
 }
@@ -355,6 +424,7 @@ function DrawerServers() {
   const connectionStatus = useServerStore((s) => s.connectionStatus);
   const addServer = useServerStore((s) => s.addServer);
   const removeServer = useServerStore((s) => s.removeServer);
+  const { getConnection } = useWsContext();
   const [url, setUrl] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
@@ -403,8 +473,24 @@ function DrawerServers() {
       {/* Remote servers */}
       {servers.map((s) => (
         <div key={s.url} className="server-entry">
-          <span className="server-dot" style={{ background: statusDotColor(connectionStatus[s.url]) }} />
-          <span className="server-label">{s.label}</span>
+          {(() => {
+            const status = connectionStatus[s.url];
+            return (
+              <>
+                <span className="server-dot" style={{ background: statusDotColor(status) }} />
+                <span className="server-label">{s.label}</span>
+                {(status === 'error' || status === 'disconnected') && (
+                  <button
+                    className="server-retry"
+                    onClick={() => getConnection(s.url)?.retry()}
+                    title="Retry connection"
+                  >
+                    Retry
+                  </button>
+                )}
+              </>
+            );
+          })()}
           <button
             className="server-remove"
             onClick={() => removeServer(s.url)}

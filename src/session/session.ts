@@ -1,13 +1,69 @@
 import { EventEmitter } from 'node:events';
 import { hostname as osHostname } from 'node:os';
 import type { BaseAdapter } from '../adapters/base.js';
-import type { NormalizedEvent, MetadataData } from '../adapters/types.js';
+import type { NormalizedEvent, MetadataData, SessionStatus } from '../adapters/types.js';
 import type { SessionInfo, SessionSummary } from './types.js';
+import { getDefaultHostTag } from './host.js';
 
 const _hostname = osHostname();
 
 const MAX_RECENT_EVENTS = 1000;
 const MAX_RAW_BYTES = 512 * 1024; // 512KB cap for raw terminal output per session
+const DEFAULT_AUTO_COMPACT_MINUTES = 60;
+const DEFAULT_REPEAT_INTERVAL_SECONDS = 60;
+const AUTO_COMPACT_COMMAND = '/compact';
+const REPEAT_CLEAR_COMMAND = '/clear';
+const REPEAT_CLEAR_DELAY_MS = 1000;
+
+export interface SessionSettingsPatch {
+  autoApprove?: boolean;
+  autoCompact?: boolean;
+  repeatEnabled?: boolean;
+  repeatCommand?: string;
+  repeatIntervalSeconds?: number;
+  repeatClear?: boolean;
+  tags?: string[];
+}
+
+function normalizeRepeatCommand(command: string): string {
+  return command.replace(/[\r\n]+/g, ' ');
+}
+
+function hasRepeatCommand(command: string): boolean {
+  return command.trim().length > 0;
+}
+
+function isRepeatReadyStatus(status: SessionStatus): boolean {
+  return status === 'idle' || status === 'waiting_input';
+}
+
+function isAutoCompactReadyStatus(status: SessionStatus): boolean {
+  return status === 'idle';
+}
+
+function isAutoCompactBusyStatus(status: SessionStatus): boolean {
+  return status === 'starting' || status === 'running' || status === 'thinking' || status === 'tool_executing';
+}
+
+function clampRepeatIntervalSeconds(seconds: number): number {
+  return Math.min(24 * 60 * 60, Math.max(1, Math.floor(seconds)));
+}
+
+function normalizeTags(tags: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const raw of tags) {
+    const tag = raw.trim().replace(/\s+/g, '-').slice(0, 32);
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    normalized.push(tag);
+  }
+  return normalized.slice(0, 12);
+}
+
+function defaultTagsForHostname(hostname: string): string[] {
+  return normalizeTags([getDefaultHostTag(hostname)]);
+}
 
 export class Session extends EventEmitter {
   readonly id: string;
@@ -17,6 +73,12 @@ export class Session extends EventEmitter {
   /** Local sessions have their PTY size controlled by the CLI terminal, not web */
   isLocal = false;
   autoApprove = false;
+  autoCompact = false;
+  repeatEnabled = false;
+  repeatCommand = '';
+  repeatIntervalSeconds = DEFAULT_REPEAT_INTERVAL_SECONDS;
+  repeatClear = false;
+  tags: string[] = [];
   private events: NormalizedEvent[] = [];
   private rawEvents: NormalizedEvent[] = [];
   private rawBytes = 0;
@@ -26,6 +88,16 @@ export class Session extends EventEmitter {
   private _cwd: string;
   private _hostname: string;
   private _initialHostname: string;
+  private _autoCompactMinutes = DEFAULT_AUTO_COMPACT_MINUTES;
+  private _autoApproveTimer: ReturnType<typeof setTimeout> | null = null;
+  private _autoCompactTimer: ReturnType<typeof setTimeout> | null = null;
+  private _repeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private _repeatClearTimer: ReturnType<typeof setTimeout> | null = null;
+  private _submitTimers = new Set<ReturnType<typeof setTimeout>>();
+  private _nextAutoCompactAt: number | undefined;
+  private _nextRepeatAt: number | undefined;
+  private _autoCompactBlockedUntilBusy = false;
+  private _autoCompactWaitingForRunToIdle = false;
 
   constructor(id: string, name: string, adapter: BaseAdapter, opts?: { cwd?: string; hostname?: string }) {
     super();
@@ -35,6 +107,7 @@ export class Session extends EventEmitter {
     this._cwd = opts?.cwd ?? process.cwd();
     this._hostname = opts?.hostname ?? _hostname;
     this._initialHostname = this._hostname;
+    this.tags = defaultTagsForHostname(this._hostname);
 
     this.adapter.on('event', (event: NormalizedEvent) => {
       this.handleEvent(event);
@@ -71,6 +144,16 @@ export class Session extends EventEmitter {
       hostname: this._hostname,
       initialHostname: this._initialHostname,
       autoApprove: this.autoApprove || undefined,
+      autoCompact: this.autoCompact || undefined,
+      repeatEnabled: this.repeatEnabled || undefined,
+      repeatCommand: hasRepeatCommand(this.repeatCommand) ? this.repeatCommand : undefined,
+      repeatIntervalSeconds: this.repeatIntervalSeconds !== DEFAULT_REPEAT_INTERVAL_SECONDS
+        ? this.repeatIntervalSeconds
+        : undefined,
+      repeatClear: this.repeatClear || undefined,
+      nextRepeatAt: this._nextRepeatAt,
+      nextAutoCompactAt: this._nextAutoCompactAt,
+      tags: this.tags.length > 0 ? [...this.tags] : undefined,
     };
   }
 
@@ -87,6 +170,10 @@ export class Session extends EventEmitter {
   }
 
   resize(cols: number, rows: number): void {
+    // Local sessions are driven by the owning CLI terminal's stdout resize
+    // events; honoring web fits would race with the CLI and desync zsh's
+    // column tracking from xterm's rendering, corrupting cursor placement.
+    if (this.isLocal) return;
     this.adapter.resize(cols, rows);
   }
 
@@ -97,6 +184,55 @@ export class Session extends EventEmitter {
 
   kill(signal?: string): void {
     this.adapter.kill(signal);
+  }
+
+  setSettings(patch: SessionSettingsPatch): void {
+    if (patch.autoApprove !== undefined) {
+      this.autoApprove = patch.autoApprove;
+      if (this.autoApprove && this.adapter.status === 'waiting_input') {
+        this.scheduleAutoApprove();
+      }
+    }
+    if (patch.autoCompact !== undefined) {
+      this.autoCompact = patch.autoCompact;
+      this._autoCompactBlockedUntilBusy = false;
+      this._autoCompactWaitingForRunToIdle = false;
+    }
+    if (patch.repeatEnabled !== undefined) {
+      this.repeatEnabled = patch.repeatEnabled;
+    }
+    if (patch.repeatCommand !== undefined) {
+      this.repeatCommand = normalizeRepeatCommand(patch.repeatCommand);
+    }
+    if (patch.repeatIntervalSeconds !== undefined) {
+      this.repeatIntervalSeconds = clampRepeatIntervalSeconds(patch.repeatIntervalSeconds);
+    }
+    if (patch.repeatClear !== undefined) {
+      this.repeatClear = patch.repeatClear;
+    }
+    if (patch.tags !== undefined) {
+      this.tags = normalizeTags(patch.tags);
+    }
+
+    if (this.autoCompact && isAutoCompactReadyStatus(this.adapter.status)) {
+      this.scheduleAutoCompact();
+    } else {
+      this.clearAutoCompactTimer();
+    }
+
+    if (this.repeatEnabled && isRepeatReadyStatus(this.adapter.status)) {
+      this.scheduleRepeat();
+    } else if (!this.repeatEnabled) {
+      this.clearRepeatTimers();
+    }
+  }
+
+  setAutoCompactMinutes(minutes: number): void {
+    const clamped = Math.min(24 * 60, Math.max(1, Math.floor(minutes)));
+    this._autoCompactMinutes = clamped;
+    if (this.autoCompact && isAutoCompactReadyStatus(this.adapter.status)) {
+      this.scheduleAutoCompact();
+    }
   }
 
   getRecentEvents(): NormalizedEvent[] {
@@ -133,6 +269,10 @@ export class Session extends EventEmitter {
       }
       case 'session:end': {
         this._endTime = event.timestamp;
+        this.clearAutoApproveTimer();
+        this.clearAutoCompactTimer();
+        this.clearRepeatTimers();
+        this.clearSubmitTimers();
         break;
       }
       case 'cwd:change': {
@@ -142,9 +282,25 @@ export class Session extends EventEmitter {
         break;
       }
       case 'status:change': {
-        const data = event.data as { from: string; to: string };
+        const data = event.data as { from: SessionStatus; to: SessionStatus };
         if (data.to === 'waiting_input' && this.autoApprove) {
-          setTimeout(() => this.write('\r'), 1000);
+          this.scheduleAutoApprove();
+        }
+        if (isAutoCompactBusyStatus(data.to) && this._autoCompactBlockedUntilBusy && !this._autoCompactWaitingForRunToIdle) {
+          this._autoCompactBlockedUntilBusy = false;
+        }
+        if (isRepeatReadyStatus(data.to)) {
+          this.scheduleRepeat();
+        } else {
+          this.clearRepeatTimer();
+        }
+        if (isAutoCompactReadyStatus(data.to) && this._autoCompactWaitingForRunToIdle) {
+          this._autoCompactWaitingForRunToIdle = false;
+        }
+        if (this.autoCompact && isAutoCompactReadyStatus(data.to)) {
+          this.scheduleAutoCompact();
+        } else {
+          this.clearAutoCompactTimer();
         }
         break;
       }
@@ -161,5 +317,128 @@ export class Session extends EventEmitter {
 
     // Re-emit for upstream consumers (session manager, web server)
     this.emit('event', event);
+  }
+
+  private scheduleAutoApprove(): void {
+    if (this._autoApproveTimer) return;
+    this._autoApproveTimer = setTimeout(() => {
+      this._autoApproveTimer = null;
+      if (this.autoApprove && this.adapter.status === 'waiting_input') {
+        this.write('\r');
+      }
+    }, 1000);
+  }
+
+  private clearAutoApproveTimer(): void {
+    if (this._autoApproveTimer) {
+      clearTimeout(this._autoApproveTimer);
+      this._autoApproveTimer = null;
+    }
+  }
+
+  private scheduleAutoCompact(delayMs?: number): void {
+    this.clearAutoCompactTimer();
+    if (!this.autoCompact || !isAutoCompactReadyStatus(this.adapter.status)) return;
+    if (this._autoCompactBlockedUntilBusy) return;
+
+    const waitMs = delayMs ?? this._autoCompactMinutes * 60 * 1000;
+    this._nextAutoCompactAt = Date.now() + waitMs;
+    this._autoCompactTimer = setTimeout(() => {
+      this.runAutoCompact();
+    }, waitMs);
+  }
+
+  private runAutoCompact(): void {
+    this._autoCompactTimer = null;
+    this._nextAutoCompactAt = undefined;
+    if (!this.autoCompact || !isAutoCompactReadyStatus(this.adapter.status)) return;
+
+    this.submitSlashCommand(AUTO_COMPACT_COMMAND);
+    this._autoCompactBlockedUntilBusy = true;
+    this._autoCompactWaitingForRunToIdle = isAutoCompactBusyStatus(this.adapter.status);
+  }
+
+  private clearAutoCompactTimer(): void {
+    if (this._autoCompactTimer) {
+      clearTimeout(this._autoCompactTimer);
+      this._autoCompactTimer = null;
+    }
+    this._nextAutoCompactAt = undefined;
+  }
+
+  private scheduleRepeat(): void {
+    this.clearRepeatTimer();
+    if (!this.repeatEnabled || !hasRepeatCommand(this.repeatCommand) || ['completed', 'error'].includes(this.adapter.status)) return;
+
+    this._nextRepeatAt = Date.now() + this.repeatIntervalSeconds * 1000;
+    this._repeatTimer = setTimeout(() => {
+      this._repeatTimer = null;
+      this._nextRepeatAt = undefined;
+      this.runRepeat();
+    }, this.repeatIntervalSeconds * 1000);
+  }
+
+  private runRepeat(): void {
+    if (!this.repeatEnabled || !hasRepeatCommand(this.repeatCommand) || !isRepeatReadyStatus(this.adapter.status)) return;
+
+    if (!this.repeatClear) {
+      this.submitCommand(this.repeatCommand);
+      return;
+    }
+
+    this.submitCommand(REPEAT_CLEAR_COMMAND);
+    this.clearRepeatClearTimer();
+    this._repeatClearTimer = setTimeout(() => {
+      this._repeatClearTimer = null;
+      if (!this.repeatEnabled || !hasRepeatCommand(this.repeatCommand) || ['completed', 'error'].includes(this.adapter.status)) return;
+      this.submitCommand(this.repeatCommand);
+    }, REPEAT_CLEAR_DELAY_MS);
+  }
+
+  private clearRepeatTimer(): void {
+    if (this._repeatTimer) {
+      clearTimeout(this._repeatTimer);
+      this._repeatTimer = null;
+    }
+    this._nextRepeatAt = undefined;
+  }
+
+  private clearRepeatClearTimer(): void {
+    if (this._repeatClearTimer) {
+      clearTimeout(this._repeatClearTimer);
+      this._repeatClearTimer = null;
+    }
+  }
+
+  private clearRepeatTimers(): void {
+    this.clearRepeatTimer();
+    this.clearRepeatClearTimer();
+  }
+
+  private submitSlashCommand(command: string): void {
+    this.submitCommand(command);
+  }
+
+  private submitCommand(command: string): void {
+    const normalized = command.replace(/[\r\n]+$/, '');
+    this.write(`${normalized}\n`);
+    this.scheduleSubmitWrite('\x0D\x0A', 200);
+    this.scheduleSubmitWrite('\r', 500);
+  }
+
+  private scheduleSubmitWrite(data: string, delayMs: number): void {
+    const timer = setTimeout(() => {
+      this._submitTimers.delete(timer);
+      if (['completed', 'error'].includes(this.adapter.status)) return;
+      this.write(data);
+    }, delayMs);
+    this._submitTimers.add(timer);
+  }
+
+  private clearSubmitTimers(): void {
+    for (const timer of this._submitTimers) {
+      clearTimeout(timer);
+    }
+    this._submitTimers.clear();
   }
 }

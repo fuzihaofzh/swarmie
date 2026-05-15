@@ -1,7 +1,8 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { ServerConnection } from './useWebSocket';
 import { useServerStore, LOCAL_SERVER } from './useServers';
-import { useSessionStore, registerAutoApproveSync } from './useSessions';
+import { useSessionStore, registerAutoApproveSync, registerSessionSettingsSync, type SessionSettingsPatch } from './useSessions';
+import { registerAutoCompactMinutesSync, useUIStore } from './useUI';
 
 export function useMultiWebSocket() {
   const connectionsRef = useRef<Map<string, ServerConnection>>(new Map());
@@ -26,6 +27,18 @@ export function useMultiWebSocket() {
     registerAutoApproveSync((sessionId, value) => {
       getConnectionForSession(sessionId)?.sendAutoApprove(sessionId, value);
     });
+    registerSessionSettingsSync((sessionId: string, patch: SessionSettingsPatch) => {
+      const conn = getConnectionForSession(sessionId);
+      if (patch.autoCompact !== undefined) {
+        conn?.sendAutoCompactMinutes(useUIStore.getState().autoCompactMinutes);
+      }
+      conn?.sendSessionSettings(sessionId, patch);
+    });
+    registerAutoCompactMinutesSync((minutes: number) => {
+      for (const conn of connectionsRef.current.values()) {
+        conn.sendAutoCompactMinutes(minutes);
+      }
+    });
 
     // Reconnect all connections when page becomes visible again
     const onVisibility = () => {
@@ -40,6 +53,8 @@ export function useMultiWebSocket() {
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
       registerAutoApproveSync(null);
+      registerSessionSettingsSync(null);
+      registerAutoCompactMinutesSync(null);
       for (const conn of connectionsRef.current.values()) {
         conn.disconnect();
       }

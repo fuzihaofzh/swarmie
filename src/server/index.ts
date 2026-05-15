@@ -33,7 +33,7 @@ export async function createServer(
   setupRoutes(app, manager);
 
   // WebSocket handler
-  const { broadcastShutdown } = setupWebSocket(app, manager);
+  const { broadcastShutdown, stop: stopWebSocket } = setupWebSocket(app, manager);
 
   // Static files (web dashboard)
   await setupStatic(app);
@@ -50,6 +50,7 @@ export async function createServer(
     address,
     close: async () => {
       broadcastShutdown();
+      stopWebSocket();
       // Small delay to let the shutdown message reach clients
       await new Promise((r) => setTimeout(r, 100));
       await app.close();

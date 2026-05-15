@@ -1,6 +1,7 @@
-import { useSessionStore, type SessionSummary, type NormalizedEvent } from './useSessions';
+import { useSessionStore, type SessionSummary, type NormalizedEvent, type SessionSettingsPatch } from './useSessions';
 import { writeToTerminal, clearTerminalBuffer } from '../terminalBus';
 import { useServerStore, LOCAL_SERVER } from './useServers';
+import { useUIStore } from './useUI';
 
 type WSMessage = {
   type: string;
@@ -53,6 +54,7 @@ export class ServerConnection {
   private pingTimer: ReturnType<typeof setInterval> | undefined;
   private shutdown = false;
   private disposed = false;
+  private retryPaused = false;
 
   constructor(serverUrl: string, token?: string) {
     this.serverUrl = serverUrl;
@@ -64,8 +66,9 @@ export class ServerConnection {
     return this.serverUrl === LOCAL_SERVER;
   }
 
-  connect(): void {
+  connect(force = false): void {
     if (this.disposed || this.shutdown) return;
+    if (this.retryPaused && !force) return;
 
     useServerStore.getState().setConnectionStatus(this.serverUrl, 'connecting');
 
@@ -77,6 +80,7 @@ export class ServerConnection {
     this.ws = ws;
 
     ws.onopen = () => {
+      this.retryPaused = false;
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'connected');
       ws.send(JSON.stringify({ type: 'subscribe:all' }));
       // Heartbeat to keep connection alive in background tabs
@@ -101,12 +105,22 @@ export class ServerConnection {
       this.ws = null;
       clearInterval(this.pingTimer);
       if (!this.shutdown && !this.disposed) {
+        if (this.retryPaused) {
+          useServerStore.getState().setConnectionStatus(this.serverUrl, 'error');
+          if (!this.isLocal) {
+            useSessionStore.getState().removeServerSessions(this.serverUrl);
+          }
+          return;
+        }
         useServerStore.getState().setConnectionStatus(this.serverUrl, 'disconnected');
         this.reconnectTimer = setTimeout(() => this.connect(), 2000);
       }
     };
 
     ws.onerror = () => {
+      if (!this.isLocal) {
+        this.retryPaused = true;
+      }
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'error');
       ws.close();
     };
@@ -115,9 +129,21 @@ export class ServerConnection {
   /** Reconnect immediately if the WebSocket is not open (e.g. after returning from background tab) */
   reconnectIfNeeded(): void {
     if (this.disposed || this.shutdown) return;
+    if (this.retryPaused) return;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     clearTimeout(this.reconnectTimer);
     this.connect();
+  }
+
+  retry(): void {
+    if (this.disposed) return;
+    this.shutdown = false;
+    this.retryPaused = false;
+    clearTimeout(this.reconnectTimer);
+    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+      this.ws.close();
+    }
+    this.connect(true);
   }
 
   disconnect(): void {
@@ -150,6 +176,37 @@ export class ServerConnection {
 
   sendAutoApprove(sessionId: string, value: boolean): void {
     this.send({ type: 'set:autoApprove', sessionId, value });
+  }
+
+  sendSessionSettings(sessionId: string, patch: SessionSettingsPatch): void {
+    if (patch.autoApprove !== undefined) {
+      this.send({ type: 'set:autoApprove', sessionId, value: patch.autoApprove });
+    }
+    if (patch.autoCompact !== undefined) {
+      this.send({ type: 'set:autoCompact', sessionId, value: patch.autoCompact });
+    }
+    if (
+      patch.repeatEnabled !== undefined ||
+      patch.repeatCommand !== undefined ||
+      patch.repeatIntervalSeconds !== undefined ||
+      patch.repeatClear !== undefined
+    ) {
+      this.send({
+        type: 'set:repeat',
+        sessionId,
+        enabled: patch.repeatEnabled,
+        command: patch.repeatCommand,
+        intervalSeconds: patch.repeatIntervalSeconds,
+        clear: patch.repeatClear,
+      });
+    }
+    if (patch.tags !== undefined) {
+      this.send({ type: 'set:tags', sessionId, tags: patch.tags });
+    }
+  }
+
+  sendAutoCompactMinutes(minutes: number): void {
+    this.send({ type: 'set:autoCompactMinutes', minutes });
   }
 
   async createSession(opts: {
@@ -242,11 +299,35 @@ export class ServerConnection {
           serverUrl,
         }));
         store.setServerSessions(serverUrl, sessions);
+        this.sendAutoCompactMinutes(useUIStore.getState().autoCompactMinutes);
+        for (const session of useSessionStore.getState().sessions.filter((s) => s.serverUrl === serverUrl)) {
+          this.sendSessionSettings(session.id, {
+            autoApprove: !!session.autoApprove,
+            autoCompact: !!session.autoCompact,
+            repeatEnabled: !!session.repeatEnabled,
+            repeatCommand: session.repeatCommand ?? '',
+            repeatIntervalSeconds: session.repeatIntervalSeconds ?? 60,
+            repeatClear: !!session.repeatClear,
+            tags: session.tags ?? [],
+          });
+        }
         break;
       }
       case 'session:added': {
         const session = { ...(msg.session as SessionSummary), serverUrl };
         store.addSession(session);
+        const synced = useSessionStore.getState().sessions.find((s) => s.id === session.id);
+        if (synced) {
+          this.sendSessionSettings(synced.id, {
+            autoApprove: !!synced.autoApprove,
+            autoCompact: !!synced.autoCompact,
+            repeatEnabled: !!synced.repeatEnabled,
+            repeatCommand: synced.repeatCommand ?? '',
+            repeatIntervalSeconds: synced.repeatIntervalSeconds ?? 60,
+            repeatClear: !!synced.repeatClear,
+            tags: synced.tags ?? [],
+          });
+        }
         break;
       }
       case 'session:removed':
@@ -256,6 +337,15 @@ export class ServerConnection {
       case 'session:autoApprove':
         // Update local state only — don't sync back to server
         store._setAutoApproveLocal(msg.sessionId as string, !!msg.value);
+        break;
+      case 'session:settings':
+        store._applySessionSettingsLocal(
+          msg.sessionId as string,
+          (msg.settings ?? {}) as SessionSettingsPatch,
+        );
+        break;
+      case 'settings:autoCompactMinutes':
+        useUIStore.getState()._setAutoCompactMinutesLocal(Number(msg.minutes));
         break;
       case 'server:shutdown':
         if (this.isLocal) {

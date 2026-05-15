@@ -20,6 +20,10 @@ const BROWSER_MESSAGE_TYPES = new Set([
   'resize',
   'redraw',
   'set:autoApprove',
+  'set:autoCompact',
+  'set:repeat',
+  'set:tags',
+  'set:autoCompactMinutes',
 ]);
 
 /** Tracks a CLI client connected via WebSocket for remote session registration */
@@ -28,19 +32,97 @@ interface RemoteCLIClient {
   sessionId: string;
 }
 
-export function setupWebSocket(app: FastifyInstance, manager: SessionManager): { broadcastShutdown: () => void } {
+export function setupWebSocket(app: FastifyInstance, manager: SessionManager): { broadcastShutdown: () => void; stop: () => void } {
   const clients = new Set<WebSocket>();
   const subscriptions = new Map<WebSocket, Set<string>>(); // ws -> set of sessionIds
   const socketRequestIds = new Map<WebSocket, string>();
+  // Per-(ws, sessionId) reported viewport size. The PTY runs at MIN across
+  // all clients (tmux-style) so TUI apps render correctly on the smallest
+  // attached viewport; larger clients just get letterboxed.
+  const clientSizes = new Map<WebSocket, Map<string, { cols: number; rows: number }>>();
+  // Last applied PTY size per session — used to dedup so we don't fire
+  // SIGWINCH (which makes ink-based apps redraw) when nothing changed.
+  const appliedSize = new Map<string, { cols: number; rows: number }>();
+  // Pending resize timers per session. iOS Safari's URL bar hide/show makes
+  // visualViewport.height oscillate; without debouncing, every oscillation
+  // hits the PTY and ink redraws half-finish, leaving the screen garbled.
+  const resizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const RESIZE_DEBOUNCE_MS = 250;
+  // Last time we received any frame (message or pong) from this socket.
+  // Mobile browsers commonly suspend JS in the background and leave the WS
+  // half-open; without this server-side liveness probe a backgrounded mobile
+  // would keep its (small) reported size pinned in clientSizes forever.
+  const lastSeen = new Map<WebSocket, number>();
+  const STALE_MS = 30_000;
 
   /** Remote CLI clients indexed by sessionId */
   const remoteClients = new Map<string, RemoteCLIClient>();
+
+  function applyMinSizeForSession(sessionId: string): void {
+    let minCols = Infinity;
+    let minRows = Infinity;
+    for (const perSession of clientSizes.values()) {
+      const entry = perSession.get(sessionId);
+      if (!entry) continue;
+      if (entry.cols < minCols) minCols = entry.cols;
+      if (entry.rows < minRows) minRows = entry.rows;
+    }
+    if (!Number.isFinite(minCols) || !Number.isFinite(minRows)) return;
+
+    const pending = resizeTimers.get(sessionId);
+    if (pending) clearTimeout(pending);
+    resizeTimers.set(sessionId, setTimeout(() => {
+      resizeTimers.delete(sessionId);
+      const applied = appliedSize.get(sessionId);
+      if (applied?.cols === minCols && applied.rows === minRows) return;
+      appliedSize.set(sessionId, { cols: minCols, rows: minRows });
+      manager.getSession(sessionId)?.resize(minCols, minRows);
+    }, RESIZE_DEBOUNCE_MS));
+  }
+
+  function recordClientSize(socket: WebSocket, sessionId: string, cols: number, rows: number): void {
+    let perSession = clientSizes.get(socket);
+    if (!perSession) {
+      perSession = new Map();
+      clientSizes.set(socket, perSession);
+    }
+    perSession.set(sessionId, { cols, rows });
+    applyMinSizeForSession(sessionId);
+  }
+
+  function dropClientSizes(socket: WebSocket): void {
+    const perSession = clientSizes.get(socket);
+    if (!perSession) return;
+    const affected = [...perSession.keys()];
+    clientSizes.delete(socket);
+    // Recompute MIN with this client removed. If it was the only contributor,
+    // we leave the PTY at its last size (no clients = no resize).
+    for (const sessionId of affected) {
+      applyMinSizeForSession(sessionId);
+    }
+  }
+
+  // Periodic liveness check: reap sockets that haven't sent an *application*
+  // message in STALE_MS. We don't ping at the WS protocol level — iOS Safari
+  // auto-pongs from the network stack even while JS is suspended, which would
+  // mask a backgrounded mobile and keep its size pinned in clientSizes. The
+  // browser-side `pingTimer` (15s) supplies the heartbeat we look for.
+  const livenessTimer = setInterval(() => {
+    const now = Date.now();
+    for (const ws of clients) {
+      const seen = lastSeen.get(ws) ?? now;
+      if (now - seen > STALE_MS) {
+        try { ws.terminate(); } catch { /* ignore */ }
+      }
+    }
+  }, 10_000);
 
   app.get('/ws', { websocket: true }, (socket, request) => {
     const requestId = resolveRequestId(request);
     clients.add(socket);
     subscriptions.set(socket, new Set());
     socketRequestIds.set(socket, requestId);
+    lastSeen.set(socket, Date.now());
     logObservabilityEvent('ws.connect', {
       requestId,
       sessionId: null,
@@ -68,6 +150,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): {
     const listTimer = setTimeout(ensureSessionList, 50);
 
     socket.on('message', (raw: Buffer | string) => {
+      lastSeen.set(socket, Date.now());
       const socketRequestId = socketRequestIds.get(socket) ?? requestId;
       let parsed: unknown;
       try {
@@ -131,13 +214,15 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): {
 
       // Browser client messages
       ensureSessionList();
-      handleMessage(socket, msg, manager, subscriptions, clients);
+      handleMessage(socket, msg, manager, subscriptions, clients, recordClientSize);
     });
 
     socket.on('close', () => {
       clearTimeout(listTimer);
       clients.delete(socket);
       subscriptions.delete(socket);
+      dropClientSizes(socket);
+      lastSeen.delete(socket);
       const socketRequestId = socketRequestIds.get(socket) ?? requestId;
       socketRequestIds.delete(socket);
 
@@ -175,15 +260,32 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): {
   });
 
   manager.on('session:removed', (sessionId: string) => {
+    const pending = resizeTimers.get(sessionId);
+    if (pending) {
+      clearTimeout(pending);
+      resizeTimers.delete(sessionId);
+    }
+    appliedSize.delete(sessionId);
+    for (const perSession of clientSizes.values()) {
+      perSession.delete(sessionId);
+    }
     broadcast(clients, { type: 'session:removed', sessionId });
   });
 
   // Broadcast events to subscribed clients
   manager.on('event', (event: NormalizedEvent) => {
+    const session = event.type === 'status:change' ? manager.getSession(event.sessionId) : undefined;
     for (const [ws, subs] of subscriptions) {
       // Send if subscribed to this session or subscribed to '*' (all)
       if (subs.has(event.sessionId) || subs.has('*')) {
         send(ws, { type: 'event', event });
+        if (session) {
+          send(ws, {
+            type: 'session:settings',
+            sessionId: event.sessionId,
+            settings: sessionSettingsPayload(session),
+          });
+        }
       }
     }
   });
@@ -191,6 +293,11 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): {
   return {
     broadcastShutdown: () => {
       broadcast(clients, { type: 'server:shutdown' });
+    },
+    stop: () => {
+      clearInterval(livenessTimer);
+      for (const timer of resizeTimers.values()) clearTimeout(timer);
+      resizeTimers.clear();
     },
   };
 }
@@ -201,6 +308,7 @@ function handleMessage(
   manager: SessionManager,
   subscriptions: Map<WebSocket, Set<string>>,
   clients: Set<WebSocket>,
+  recordClientSize: (socket: WebSocket, sessionId: string, cols: number, rows: number) => void,
 ): void {
   const subs = subscriptions.get(socket);
   if (!subs) return;
@@ -249,10 +357,10 @@ function handleMessage(
       const cols = msg.cols as number;
       const rows = msg.rows as number;
       if (sessionId && cols && rows) {
-        const session = manager.getSession(sessionId);
-        if (session) {
-          session.resize(cols, rows);
-        }
+        // Record this client's reported size and re-apply MIN across all
+        // connected clients (tmux-style) so TUI apps render correctly on
+        // the smallest attached viewport.
+        recordClientSize(socket, sessionId, cols, rows);
       }
       break;
     }
@@ -268,16 +376,80 @@ function handleMessage(
       const sessionId = msg.sessionId as string;
       const value = !!msg.value;
       if (sessionId) {
-        const session = manager.getSession(sessionId);
+        const session = manager.setSessionSettings(sessionId, { autoApprove: value });
         if (session) {
-          session.autoApprove = value;
           // Broadcast to all clients so all devices stay in sync
-          broadcast(clients, { type: 'session:autoApprove', sessionId, value });
+          broadcast(clients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
         }
       }
       break;
     }
+    case 'set:autoCompact': {
+      const sessionId = msg.sessionId as string;
+      const value = !!msg.value;
+      if (sessionId) {
+        const session = manager.setSessionSettings(sessionId, { autoCompact: value });
+        if (session) {
+          broadcast(clients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
+        }
+      }
+      break;
+    }
+    case 'set:repeat': {
+      const sessionId = msg.sessionId as string;
+      const intervalSeconds = typeof msg.intervalSeconds === 'number'
+        ? msg.intervalSeconds
+        : Number(msg.intervalSeconds);
+      if (sessionId) {
+        const patch = {
+          ...(typeof msg.enabled === 'boolean' ? { repeatEnabled: msg.enabled } : {}),
+          ...(typeof msg.command === 'string' ? { repeatCommand: msg.command } : {}),
+          ...(Number.isFinite(intervalSeconds) ? { repeatIntervalSeconds: intervalSeconds } : {}),
+          ...(typeof msg.clear === 'boolean' ? { repeatClear: msg.clear } : {}),
+        };
+        const session = manager.setSessionSettings(sessionId, {
+          ...patch,
+        });
+        if (session) {
+          broadcast(clients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
+        }
+      }
+      break;
+    }
+    case 'set:tags': {
+      const sessionId = msg.sessionId as string;
+      const tags = Array.isArray(msg.tags) ? msg.tags.filter((tag): tag is string => typeof tag === 'string') : [];
+      if (sessionId) {
+        const session = manager.setSessionSettings(sessionId, { tags });
+        if (session) {
+          broadcast(clients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
+        }
+      }
+      break;
+    }
+    case 'set:autoCompactMinutes': {
+      const minutes = typeof msg.minutes === 'number' ? msg.minutes : Number(msg.minutes);
+      if (Number.isFinite(minutes)) {
+        const value = manager.setAutoCompactMinutes(minutes);
+        broadcast(clients, { type: 'settings:autoCompactMinutes', minutes: value });
+      }
+      break;
+    }
   }
+}
+
+function sessionSettingsPayload(session: NonNullable<ReturnType<SessionManager['getSession']>>): Record<string, unknown> {
+  return {
+    autoApprove: session.autoApprove,
+    autoCompact: session.autoCompact,
+    repeatEnabled: session.repeatEnabled,
+    repeatCommand: session.repeatCommand,
+    repeatIntervalSeconds: session.repeatIntervalSeconds,
+    repeatClear: session.repeatClear,
+    nextRepeatAt: session.summary.nextRepeatAt ?? null,
+    nextAutoCompactAt: session.summary.nextAutoCompactAt ?? null,
+    tags: session.tags,
+  };
 }
 
 function send(ws: WebSocket, data: unknown): void {

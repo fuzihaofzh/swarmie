@@ -17,13 +17,28 @@ function normalizeHost(h?: string): string {
   return h;
 }
 
+/** Collapse `/Users/<u>/...` and `/home/<u>/...` to `~/...` so dedup key matches OSC-title form */
+function normalizeDir(dir: string): string {
+  return dir.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
+}
+
 function entryKey(dir: string, hostname?: string): string {
-  return `${normalizeHost(hostname)}:${dir}`;
+  return `${normalizeHost(hostname)}:${normalizeDir(dir)}`;
 }
 
 export function loadRecentDirs(): RecentEntry[] {
   try {
-    return JSON.parse(localStorage.getItem(RECENT_DIRS_KEY) || '[]');
+    const raw: RecentEntry[] = JSON.parse(localStorage.getItem(RECENT_DIRS_KEY) || '[]');
+    // Dedup pre-existing entries that were saved before normalization landed
+    const seen = new Set<string>();
+    const out: RecentEntry[] = [];
+    for (const e of raw) {
+      const k = entryKey(e.dir, e.hostname);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(e);
+    }
+    return out;
   } catch { return []; }
 }
 

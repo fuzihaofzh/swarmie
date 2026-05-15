@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createAdapter, getAdapterNames } from '../src/adapters/registry.js';
+import { RemoteAdapter } from '../src/adapters/remote.js';
 
 describe('adapter registry', () => {
   it('registers claude, codex, gemini', () => {
@@ -39,5 +40,88 @@ describe('adapter registry', () => {
     const adapter = createAdapter('cld', { sessionId: 'x', toolArgs: [] });
     expect(adapter.info.name).toBe('cld');
     expect(adapter.info.command).toBe('cld');
+  });
+
+  it('settles remote startup output to idle', () => {
+    const adapter = new RemoteAdapter(
+      { sessionId: 'remote-ready', toolArgs: [] },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: '',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+
+    adapter.start();
+    adapter.pushEvent({
+      type: 'raw:output',
+      sessionId: 'remote-ready',
+      timestamp: Date.now(),
+      data: { data: Buffer.from('startup complete').toString('base64') },
+    });
+
+    expect(adapter.status).toBe('idle');
+  });
+
+  it('does not let remote running status override local idle without submitted input', () => {
+    const adapter = new RemoteAdapter(
+      { sessionId: 'remote-click', toolArgs: [] },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: '',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+
+    adapter.start();
+    adapter.pushEvent({
+      type: 'raw:output',
+      sessionId: 'remote-click',
+      timestamp: Date.now(),
+      data: { data: Buffer.from('startup complete').toString('base64') },
+    });
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: 'remote-click',
+      timestamp: Date.now(),
+      data: { from: 'idle', to: 'running' },
+    });
+
+    expect(adapter.status).toBe('idle');
+  });
+
+  it('marks remote sessions running when dashboard submits input', () => {
+    const adapter = new RemoteAdapter(
+      { sessionId: 'remote-submit', toolArgs: [] },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: '',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+
+    adapter.start();
+    adapter.pushEvent({
+      type: 'raw:output',
+      sessionId: 'remote-submit',
+      timestamp: Date.now(),
+      data: { data: Buffer.from('startup complete').toString('base64') },
+    });
+
+    adapter.write('run ls\r');
+
+    expect(adapter.status).toBe('running');
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: 'remote-submit',
+      timestamp: Date.now(),
+      data: { from: 'running', to: 'idle' },
+    });
   });
 });

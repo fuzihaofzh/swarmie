@@ -51,10 +51,10 @@ export function getConfigDir(): string {
   return CONFIG_DIR;
 }
 
-export function getSocketPath(): string {
-  return join(CONFIG_DIR, 'server.sock');
+export function getSocketPath(port: number): string {
+  return join(CONFIG_DIR, `server-${port}.sock`);
 }
 
-export function getLockPath(): string {
-  return join(CONFIG_DIR, 'server.lock');
+export function getLockPath(port: number): string {
+  return join(CONFIG_DIR, `server-${port}.lock`);
 }

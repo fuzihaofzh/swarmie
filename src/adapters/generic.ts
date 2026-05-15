@@ -102,7 +102,7 @@ export class GenericAdapter extends BaseAdapter {
 
   write(data: string): void {
     this.ptyProcess?.write(data);
-    this.handleUserInput();
+    this.handleUserInput(data);
     // On Enter, start scanning output for tool signatures
     if (data === '\r' || data === '\n') {
       this._detectActive = true;

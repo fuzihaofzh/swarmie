@@ -101,7 +101,7 @@ export class ClaudeAdapter extends BaseAdapter {
 
   write(data: string): void {
     this.ptyProcess?.write(data);
-    this.handleUserInput();
+    this.handleUserInput(data);
   }
 
   resize(cols: number, rows: number): void {

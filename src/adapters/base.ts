@@ -7,6 +7,14 @@ import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, Sess
 
 const execFileAsync = promisify(execFile);
 
+const ESC_CHAR = String.fromCharCode(0x1b);
+const BEL_CHAR = String.fromCharCode(0x07);
+const NUL_CHAR = String.fromCharCode(0x00);
+const US_CHAR = String.fromCharCode(0x1f);
+const COMMAND_IDLE_TIMEOUT_MS = 30_000;
+const ACTIVITY_CHECK_INTERVAL_MS = 2_000;
+const USER_INPUT_ACTIVE_MS = 3_000;
+
 // Regexes that indicate the tool is waiting for user input.
 // Use .{0,N} between words to tolerate Ink's cursor-based rendering
 // which may insert unrelated characters between words of a single phrase.
@@ -29,11 +37,6 @@ const ANIMATION_CHARS = /[⏺✶✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆✢
 // Max chars to keep in the rolling stripped-text buffer for detection.
 const DETECT_BUFFER_SIZE = 1000;
 
-const ESC_CHAR = String.fromCharCode(0x1b);
-const BEL_CHAR = String.fromCharCode(0x07);
-const NUL_CHAR = String.fromCharCode(0x00);
-const US_CHAR = String.fromCharCode(0x1f);
-
 // OSC 7: file://hostname/path — shell reports cwd (+ hostname for SSH)
 const OSC7_RE = new RegExp(
   `${ESC_CHAR}\\]7;file://([^/]*)(/[^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
@@ -50,6 +53,41 @@ const ESC_OTHER_RE = new RegExp(`${ESC_CHAR}[^\\[].?`, 'g');
 const CONTROL_CHARS_RE = new RegExp(`[${NUL_CHAR}-${US_CHAR}]`, 'g');
 const CSI_FRAGMENT_RE = /\[(?:\??\d{1,3}[A-Za-z~]|(?:\d{1,3}[;:?]){1,16}\d{0,3}(?:[A-Za-z~])?)/g;
 const SGR_TAIL_FRAGMENT_RE = /(?:^|\s)(?:\d{1,3}[;:]){2,}\d{1,3}m/g;
+const SGR_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[<\\d+;\\d+;\\d+[mM]`);
+const X10_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[M[\\s\\S]{3}`);
+const URXVT_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[\\d+;\\d+;\\d+M`);
+
+function isSubmittedInput(data: string): boolean {
+  return data.includes('\r') || data.includes('\n');
+}
+
+function isInactiveStatus(status: SessionStatus): boolean {
+  return status === 'idle' || status === 'waiting_input' || status === 'completed' || status === 'error';
+}
+
+function passiveInputTokenLength(data: string): number {
+  if (data.startsWith(`${ESC_CHAR}[I`) || data.startsWith(`${ESC_CHAR}[O`)) return 3;
+  for (const pattern of [SGR_MOUSE_INPUT_RE, X10_MOUSE_INPUT_RE, URXVT_MOUSE_INPUT_RE]) {
+    const match = pattern.exec(data);
+    if (match) return match[0].length;
+  }
+  return 0;
+}
+
+function stripPassiveTerminalInput(data: string): string {
+  let rest = data;
+  let meaningful = '';
+  while (rest.length > 0) {
+    const len = passiveInputTokenLength(rest);
+    if (len > 0) {
+      rest = rest.slice(len);
+      continue;
+    }
+    meaningful += rest[0];
+    rest = rest.slice(1);
+  }
+  return meaningful;
+}
 
 export interface AdapterOptions {
   sessionId: string;
@@ -69,7 +107,11 @@ export abstract class BaseAdapter extends EventEmitter {
   protected rows: number;
   protected _status: SessionStatus = 'starting';
   protected _startTime: number = Date.now();
-  private _idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private _activityCheckInterval: ReturnType<typeof setInterval> | null = null;
+  private _userInputTimer: ReturnType<typeof setTimeout> | null = null;
+  private _userInputActive = false;
+  private _commandExecuting = false;
+  private _lastActivity = Date.now();
   private _cwdTimer: ReturnType<typeof setInterval> | null = null;
   /** Rolling buffer of ANSI-stripped text for waiting_input detection */
   private _detectBuffer: string = '';
@@ -123,7 +165,23 @@ export abstract class BaseAdapter extends EventEmitter {
     const from = this._status;
     if (from === newStatus) return;
     this._status = newStatus;
+    if (isInactiveStatus(newStatus)) {
+      this.stopCommandTracking();
+      this.stopUserInputTracking();
+    }
     this.emitEvent('status:change', { from, to: newStatus });
+  }
+
+  protected get isCommandExecuting(): boolean {
+    return this._commandExecuting;
+  }
+
+  protected applyExternalStatus(newStatus: SessionStatus): void {
+    this._status = newStatus;
+    if (isInactiveStatus(newStatus)) {
+      this.stopCommandTracking();
+      this.stopUserInputTracking();
+    }
   }
 
   protected emitEvent(type: NormalizedEventType, data: EventData): void {
@@ -166,19 +224,26 @@ export abstract class BaseAdapter extends EventEmitter {
       for (const pattern of WAITING_INPUT_PATTERNS) {
         if (pattern.test(this._detectBuffer)) {
           this.setStatus('waiting_input');
-          this.clearIdleTimer();
           this._detectBuffer = ''; // Reset so we don't re-trigger
           return;
         }
       }
     }
 
-    // Any PTY output (even pure escape sequences) means the process is active.
-    if (this._status !== 'waiting_input') {
-      if (this._status === 'idle') {
-        this.setStatus('running');
-      }
-      this.resetIdleTimer();
+    // claudemonitor-style busy detection:
+    // commandExecuting starts only when Swarmie submits a command. Any PTY
+    // output while it is true refreshes lastActivity; output by itself never
+    // starts a busy period.
+    if (this._commandExecuting) {
+      this._lastActivity = Date.now();
+    }
+
+    if (stripped.trim().length === 0) {
+      return;
+    }
+
+    if (!this._commandExecuting && !this._userInputActive && (this._status === 'starting' || this._status === 'running')) {
+      this.setStatus('idle');
     }
   }
 
@@ -275,31 +340,85 @@ export abstract class BaseAdapter extends EventEmitter {
     }
   }
 
-  /** Call from subclass write() to clear waiting state when user sends input */
-  protected handleUserInput(): void {
-    if (this._status === 'waiting_input') {
-      this.setStatus('running');
-      // Only clear buffer on state transition so new prompt text
-      // arriving concurrently isn't lost
-      this._detectBuffer = '';
+  /** Call from subclass write() to mark a submitted command as executing */
+  protected handleUserInput(data = ''): void {
+    const meaningfulInput = stripPassiveTerminalInput(data);
+    if (!meaningfulInput) return;
+    if (this._status === 'completed' || this._status === 'error') return;
+
+    if (!isSubmittedInput(meaningfulInput)) {
+      this.markUserInputActive();
+      return;
     }
+
+    this.stopUserInputTracking();
+    this._commandExecuting = true;
+    this._lastActivity = Date.now();
+    this._detectBuffer = '';
+    this.setStatus('running');
+    this.startCommandTimeout();
   }
 
   /** Call from subclass onExit to clean up timers */
   protected clearIdleTimer(): void {
-    if (this._idleTimer) {
-      clearTimeout(this._idleTimer);
-      this._idleTimer = null;
-    }
+    this.stopCommandTracking();
+    this.stopUserInputTracking();
     this.stopCwdPolling();
   }
 
-  private resetIdleTimer(): void {
-    if (this._idleTimer) clearTimeout(this._idleTimer);
-    this._idleTimer = setTimeout(() => {
-      if (this._status === 'running' || this._status === 'tool_executing') {
+  private markUserInputActive(): void {
+    this._userInputActive = true;
+    this._detectBuffer = '';
+    this.setStatus('running');
+    this.stopUserInputTimer();
+    this._userInputTimer = setTimeout(() => {
+      this._userInputActive = false;
+      this._userInputTimer = null;
+      if (!this._commandExecuting && (this._status === 'running' || this._status === 'thinking' || this._status === 'tool_executing')) {
         this.setStatus('idle');
       }
-    }, 10000);
+    }, USER_INPUT_ACTIVE_MS);
+    (this._userInputTimer as { unref?: () => void }).unref?.();
+  }
+
+  private startCommandTimeout(): void {
+    this.stopCommandActivityInterval();
+    this._activityCheckInterval = setInterval(() => {
+      if (!this._commandExecuting) {
+        this.stopCommandActivityInterval();
+        return;
+      }
+
+      const idleTime = Date.now() - this._lastActivity;
+      if (idleTime > COMMAND_IDLE_TIMEOUT_MS) {
+        this.stopCommandTracking();
+        this.setStatus('idle');
+      }
+    }, ACTIVITY_CHECK_INTERVAL_MS);
+    (this._activityCheckInterval as { unref?: () => void }).unref?.();
+  }
+
+  private stopCommandTracking(): void {
+    this._commandExecuting = false;
+    this.stopCommandActivityInterval();
+  }
+
+  private stopUserInputTracking(): void {
+    this._userInputActive = false;
+    this.stopUserInputTimer();
+  }
+
+  private stopUserInputTimer(): void {
+    if (this._userInputTimer) {
+      clearTimeout(this._userInputTimer);
+      this._userInputTimer = null;
+    }
+  }
+
+  private stopCommandActivityInterval(): void {
+    if (this._activityCheckInterval) {
+      clearInterval(this._activityCheckInterval);
+      this._activityCheckInterval = null;
+    }
   }
 }

@@ -1,5 +1,5 @@
 import { BaseAdapter, type AdapterOptions } from './base.js';
-import type { AdapterInfo, NormalizedEvent } from './types.js';
+import type { AdapterInfo, NormalizedEvent, RawOutputData, SessionStatus } from './types.js';
 
 /**
  * A virtual adapter that represents a session from a remote swarmie instance.
@@ -34,9 +34,22 @@ export class RemoteAdapter extends BaseAdapter {
     if (event.type === 'session:end') {
       this._isRunning = false;
     }
+    if (event.type === 'raw:output') {
+      try {
+        const data = (event.data as RawOutputData).data;
+        this.handleActivityDetection(Buffer.from(data, 'base64').toString('utf8'));
+      } catch {
+        // Ignore malformed remote output; still forward the original event.
+      }
+    }
     if (event.type === 'status:change') {
       const data = event.data as { to: string };
-      this._status = data.to as typeof this._status;
+      const nextStatus = data.to as SessionStatus;
+      if (nextStatus === 'running' && this._status !== 'starting' && !this.isCommandExecuting) {
+        this.emit('event', event);
+        return;
+      }
+      this.applyExternalStatus(nextStatus);
     }
     this.emit('event', event);
   }
@@ -47,6 +60,7 @@ export class RemoteAdapter extends BaseAdapter {
   onKill?: (signal?: string) => void;
 
   write(data: string): void {
+    this.handleUserInput(data);
     this.onWrite?.(data);
   }
 

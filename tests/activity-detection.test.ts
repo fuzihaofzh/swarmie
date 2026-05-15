@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BaseAdapter } from '../src/adapters/base.js';
 import type { AdapterInfo } from '../src/adapters/types.js';
 
@@ -22,8 +22,7 @@ class ActivityDetectionAdapter extends BaseAdapter {
   }
 
   write(data: string): void {
-    void data;
-    this.handleUserInput();
+    this.handleUserInput(data);
   }
 
   resize(cols: number, rows: number): void {
@@ -70,5 +69,107 @@ describe('activity detection', () => {
     adapter.feed('242;236;217m > 1. Yes, proceed (y) ');
 
     expect(adapter.status).toBe('waiting_input');
+  });
+
+  it('settles startup output to idle without treating it as command activity', () => {
+    const adapter = createAdapter();
+
+    adapter.feed('startup complete');
+
+    expect(adapter.status).toBe('idle');
+  });
+
+  it('does not mark idle sessions running for passive focus input', () => {
+    const adapter = createAdapter();
+
+    adapter.feed('startup complete');
+    expect(adapter.status).toBe('idle');
+
+    adapter.write('\x1b[I');
+
+    expect(adapter.status).toBe('idle');
+  });
+
+  it('marks sessions briefly running while the user types without submitting', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createAdapter();
+
+      adapter.feed('startup complete');
+      expect(adapter.status).toBe('idle');
+
+      adapter.write('\x1b[Ih');
+      expect(adapter.status).toBe('running');
+
+      adapter.feed('h');
+      expect(adapter.status).toBe('running');
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(adapter.status).toBe('idle');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks submitted input as command execution', () => {
+    const adapter = createAdapter();
+
+    adapter.feed('startup complete');
+    expect(adapter.status).toBe('idle');
+
+    adapter.write('\x1b[Ih\r');
+
+    expect(adapter.status).toBe('running');
+  });
+
+  it('does not mark idle sessions running for terminal redraw output', () => {
+    const adapter = createAdapter();
+
+    adapter.feed('startup complete');
+    expect(adapter.status).toBe('idle');
+
+    adapter.feed('\x1b[?25l\x1b[?25h');
+    adapter.feed('gpt-5.5 xhigh · ~');
+
+    expect(adapter.status).toBe('idle');
+  });
+
+  it('idles submitted commands after claudemonitor-style quiet timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createAdapter();
+
+      adapter.feed('startup complete');
+      expect(adapter.status).toBe('idle');
+
+      adapter.write('echo test\r');
+      expect(adapter.status).toBe('running');
+
+      await vi.advanceTimersByTimeAsync(32_000);
+      expect(adapter.status).toBe('idle');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refreshes command activity on output before idling', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createAdapter();
+
+      adapter.feed('startup complete');
+      adapter.write('echo test\r');
+      expect(adapter.status).toBe('running');
+
+      await vi.advanceTimersByTimeAsync(29_000);
+      adapter.feed('streaming output');
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(adapter.status).toBe('running');
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(adapter.status).toBe('idle');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

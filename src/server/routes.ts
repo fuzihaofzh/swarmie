@@ -364,13 +364,17 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
       const recentRaw = rawEvents.slice(-5).map((e) => {
         const b64 = (e.data as { data: string }).data;
         try {
+          const esc = String.fromCharCode(0x1b);
+          const bel = String.fromCharCode(0x07);
+          const nul = String.fromCharCode(0x00);
+          const us = String.fromCharCode(0x1f);
           const bytes = Buffer.from(b64, 'base64');
           // Strip ANSI for readability
           const text = bytes.toString('utf-8')
-            .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
-            .replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, '')
-            .replace(/\x1b[^\[].?/g, '')
-            .replace(/[\x00-\x1f]/g, ' ')
+            .replace(new RegExp(`${esc}\\].*?(?:${bel}|${esc}\\\\)`, 'g'), '')
+            .replace(new RegExp(`${esc}\\[[0-9;?]*[A-Za-z~]`, 'g'), '')
+            .replace(new RegExp(`${esc}[^\\[].?`, 'g'), '')
+            .replace(new RegExp(`[${nul}-${us}]`, 'g'), ' ')
             .replace(/\s+/g, ' ')
             .trim();
           return { time: new Date(e.timestamp).toISOString(), text: text.slice(-200) };
@@ -383,6 +387,12 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
         name: s.name,
         status: s.status,
         autoApprove: s.autoApprove,
+        autoCompact: s.autoCompact,
+        repeatEnabled: s.repeatEnabled,
+        repeatCommand: s.repeatCommand,
+        repeatIntervalSeconds: s.repeatIntervalSeconds,
+        repeatClear: s.repeatClear,
+        tags: s.tags,
         isLocal: s.isLocal,
         detectBuffer: s.adapter.detectBuffer.slice(-500),
         recentStatusChanges: statusEvents.slice(-5).map((e) => ({

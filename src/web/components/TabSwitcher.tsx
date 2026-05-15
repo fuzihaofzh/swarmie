@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSessionStore } from '../hooks/useSessions';
 import { ToolIcon } from './ToolIcon';
 import { useKeybindingStore, matchesAction } from '../hooks/useKeybindings';
+import { useUIStore } from '../hooks/useUI';
 
 interface TabSwitcherProps {
   mruRef: React.RefObject<string[]>;
@@ -11,13 +12,17 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const sessions = useSessionStore((s) => s.sessions);
+  const tagFilter = useUIStore((s) => s.tagFilter);
   const mruListRef = useRef<string[]>([]);
 
   const setSessionAutoApprove = useSessionStore((s) => s.setSessionAutoApprove);
 
   const getMRUSessions = useCallback(() => {
     const mru = mruListRef.current;
-    const sessionMap = new Map(sessions.map((s) => [s.id, s]));
+    const visibleSessions = tagFilter.length === 0
+      ? sessions
+      : sessions.filter((s) => (s.tags ?? []).some((tag) => tagFilter.includes(tag)));
+    const sessionMap = new Map(visibleSessions.map((s) => [s.id, s]));
     const list = mru.map((id) => sessionMap.get(id)).filter(Boolean) as typeof sessions;
     // Sort: waiting_input (bell) first, then preserve MRU order
     return list.sort((a, b) => {
@@ -25,7 +30,7 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
       const bBell = b.status === 'waiting_input' ? 0 : 1;
       return aBell - bBell;
     });
-  }, [sessions]);
+  }, [sessions, tagFilter]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

@@ -64,12 +64,15 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const initStartedRef = useRef(false);
   const [termReady, setTermReady] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const isActiveRef = useRef(isActive);
   const prevSearchOpenRef = useRef(searchOpen);
+  const lastReportedSizeRef = useRef<{ cols: number; rows: number } | null>(null);
 
   const themeName = useUIStore((s) => s.theme);
   const fontSize = useUIStore((s) => s.fontSize);
@@ -88,21 +91,28 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     isActiveRef.current = isActive;
   });
 
-  const containerCallbackRef = useCallback((el: HTMLDivElement | null) => {
-    // Cleanup previous
-    if (observerRef.current) {
-      observerRef.current.disconnect();
-      observerRef.current = null;
-    }
-    if (termRef.current) {
-      termRef.current.dispose();
-      termRef.current = null;
-      fitRef.current = null;
-    }
+  const reportResize = useCallback((term: Terminal) => {
+    const previous = lastReportedSizeRef.current;
+    if (previous?.cols === term.cols && previous.rows === term.rows) return;
+    lastReportedSizeRef.current = { cols: term.cols, rows: term.rows };
+    onResize?.(term.cols, term.rows);
+  }, [onResize]);
 
+  const containerCallbackRef = useCallback((el: HTMLDivElement | null) => {
+    containerRef.current = el;
+  }, []);
+
+  // Lazy-initialize xterm only when this panel becomes active for the first
+  // time. Mounting all panels at page load was making mobile blank for many
+  // seconds while every terminal init'd + replayed its 512KB ring buffer.
+  useEffect(() => {
+    if (!isActive) return;
+    if (initStartedRef.current) return;
+    const el = containerRef.current;
     if (!el) return;
 
-    // Wait for the container to have layout dimensions
+    initStartedRef.current = true;
+
     const init = () => {
       if (el.clientWidth === 0 || el.clientHeight === 0) {
         requestAnimationFrame(init);
@@ -126,7 +136,6 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
       term.loadAddon(fitAddon);
       term.open(el);
 
-      // Canvas renderer for box-drawing glyphs + proper CJK wide-char rendering
       try {
         term.loadAddon(new CanvasAddon());
       } catch {
@@ -144,7 +153,6 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         const tabSwitchBinding = getBinding('tab-switcher');
         const tabSwitchPrevBinding = getBinding('tab-switcher-prev');
 
-        // New-line shortcut (default: Shift+Enter → backslash + Enter for Claude Code)
         if (matchesBinding(e, newLineBinding)) {
           if (e.type === 'keydown') {
             e.preventDefault();
@@ -154,11 +162,9 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
           }
           return false;
         }
-        // Tab switcher: let bubble up
         if (matchesBinding(e, tabSwitchBinding) || matchesBinding(e, tabSwitchPrevBinding)) {
           return false;
         }
-        // Option+key: send as Meta escape sequences (ESC + key) for tmux/readline
         if (e.altKey && !e.ctrlKey && !e.metaKey) {
           const arrowSeq: Record<string, string> = {
             ArrowLeft: '\x1b[1;3D',
@@ -171,7 +177,6 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
             if (e.type === 'keydown') onInput?.(seq);
             return false;
           }
-          // Option+letter/digit: send \x1b + key (e.g. Option+F → \x1bf)
           if (e.type === 'keydown' && e.code.length > 0) {
             const match = e.code.match(/^Key([A-Z])$/);
             if (match) {
@@ -186,7 +191,6 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
             }
           }
         }
-        // Search shortcut (default: Cmd+Shift+F)
         if (matchesBinding(e, searchBinding)) {
           if (e.type === 'keydown') {
             e.preventDefault();
@@ -207,7 +211,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
           if (!el.clientWidth || !el.clientHeight) return;
           try {
             fitAddon.fit();
-            onResize?.(term.cols, term.rows);
+            reportResize(term);
             term.scrollToBottom();
           } catch { /* ignore */ }
         });
@@ -228,7 +232,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
 
     requestAnimationFrame(init);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [isActive, sessionId]);
 
   const getFocusPolicyEnv = useCallback(() => {
     return {
@@ -261,14 +265,14 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     requestAnimationFrame(() => {
       try {
         fitAddon?.fit();
-        onResize?.(term.cols, term.rows);
+        reportResize(term);
       } catch { /* ignore */ }
       term.scrollToBottom();
       if (autoFocus) {
         term.focus();
       }
     });
-  }, [isActive, termReady, getFocusPolicyEnv]);
+  }, [isActive, termReady, getFocusPolicyEnv, reportResize]);
 
   // Update terminal when theme/font changes
   useEffect(() => {
@@ -312,24 +316,104 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     setSearchOpen(false);
   }, []);
 
+  // xterm.js handles touch by directly mutating viewport.scrollTop and calls
+  // preventDefault, which kills native iOS momentum. We observe the gesture
+  // and run a simple deceleration animation after release.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const root = term.element;
+    const viewport = root?.querySelector('.xterm-viewport') as HTMLElement | null;
+    if (!root || !viewport) return;
+
+    // Velocity is computed from the last ~80ms of touch samples — that's how
+    // long native iOS looks at to estimate flick speed.
+    const samples: { y: number; t: number }[] = [];
+    let frame: number | null = null;
+
+    const cancelInertia = () => {
+      if (frame !== null) {
+        cancelAnimationFrame(frame);
+        frame = null;
+      }
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      cancelInertia();
+      samples.length = 0;
+      samples.push({ y: e.touches[0].pageY, t: performance.now() });
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      const now = performance.now();
+      samples.push({ y: e.touches[0].pageY, t: now });
+      while (samples.length > 1 && now - samples[0].t > 80) {
+        samples.shift();
+      }
+    };
+
+    const onTouchEnd = () => {
+      if (samples.length < 2) return;
+      const last = samples[samples.length - 1];
+      const first = samples[0];
+      const span = last.t - first.t;
+      // Finger paused before lifting → no flick
+      if (performance.now() - last.t > 80) return;
+      if (span <= 0) return;
+
+      // px/ms; positive = content scrolls down (finger moved up)
+      let velocity = (first.y - last.y) / span;
+      if (Math.abs(velocity) < 0.15) return;
+      // Cap so a frantic flick doesn't run forever, but allow real momentum.
+      velocity = Math.max(-9, Math.min(9, velocity));
+
+      // ~0.97 per 16ms frame. A 3 px/ms flick travels ~1500px over ~1.7s,
+      // a 5 px/ms flick travels ~2500px — snappier than the earlier ~1000px
+      // ceiling, closer to a native flick on a long page.
+      const decayPerMs = 0.998;
+      const minSpeed = 0.1;
+      let prev = performance.now();
+
+      const tick = (now: number) => {
+        const dt = Math.min(50, now - prev);
+        prev = now;
+
+        const before = viewport.scrollTop;
+        viewport.scrollTop += velocity * dt;
+        if (viewport.scrollTop === before) {
+          frame = null;
+          return;
+        }
+
+        velocity *= Math.pow(decayPerMs, dt);
+        if (Math.abs(velocity) > minSpeed) {
+          frame = requestAnimationFrame(tick);
+        } else {
+          frame = null;
+        }
+      };
+      frame = requestAnimationFrame(tick);
+    };
+
+    root.addEventListener('touchstart', onTouchStart, { passive: true });
+    root.addEventListener('touchmove', onTouchMove, { passive: true });
+    root.addEventListener('touchend', onTouchEnd, { passive: true });
+    root.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+    return () => {
+      cancelInertia();
+      root.removeEventListener('touchstart', onTouchStart);
+      root.removeEventListener('touchmove', onTouchMove);
+      root.removeEventListener('touchend', onTouchEnd);
+      root.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [termReady]);
+
   // Register this terminal as a writer on the terminalBus so raw:output
   // data is written directly from useWebSocket without going through Zustand.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-
-    // Track whether user has scrolled away from bottom
-    const userScrolledUp = { current: false };
-
-    // Detect user scroll via wheel events on the terminal container
-    const container = term.element?.parentElement;
-    const onWheel = () => {
-      requestAnimationFrame(() => {
-        const buf = term.buffer.active;
-        userScrolledUp.current = buf.viewportY < buf.baseY;
-      });
-    };
-    container?.addEventListener('wheel', onWheel, { passive: true });
 
     const pendingChunks: string[] = [];
     const pendingBytes = { current: 0 };
@@ -360,10 +444,16 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
           batchBytes += chunkBytes;
         }
 
+        // Capture bottom state from xterm's own buffer right before writing.
+        // Works for any input method (wheel, touch, keyboard) — no need to
+        // listen for individual scroll events, which miss touch on mobile.
+        const buf = term.buffer.active;
+        const wasAtBottom = buf.viewportY >= buf.baseY;
+
         writeInFlight = true;
         term.write(decodeBase64Chunks(batch), () => {
           if (disposed) return;
-          if (!userScrolledUp.current) {
+          if (wasAtBottom) {
             term.scrollToBottom();
           }
           writeInFlight = false;
@@ -381,7 +471,6 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
       scheduleFlush();
     });
 
-    const cleanupScroll = () => container?.removeEventListener('wheel', onWheel);
     const cleanupFlush = () => {
       if (flushFrame !== null) {
         cancelAnimationFrame(flushFrame);
@@ -393,8 +482,8 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
 
     // After (re)connecting, trigger a SIGWINCH on the PTY (at its current size)
     // so ink-based apps (Claude Code) redraw their UI on the fresh terminal.
-    // This works for both local and non-local sessions (unlike onResize which
-    // is blocked for local sessions).
+    // Redraw works for both local and non-local sessions; resize is gated
+    // server-side on Session.isLocal.
     setTimeout(() => {
       onRedraw?.();
     }, 200);
@@ -402,7 +491,6 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     return () => {
       disposed = true;
       cleanupFlush();
-      cleanupScroll();
       unregisterTerminalWriter(sessionId);
     };
   }, [sessionId, termReady]);

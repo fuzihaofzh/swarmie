@@ -11,12 +11,16 @@ export interface KeyBinding {
 export type ActionId =
   | 'tab-switcher'
   | 'tab-switcher-prev'
+  | 'tag-switcher'
+  | 'tag-switcher-prev'
   | 'search'
   | 'new-line';
 
 export const ACTION_LABELS: Record<ActionId, string> = {
   'tab-switcher': 'Switch Tab (Next)',
   'tab-switcher-prev': 'Switch Tab (Prev)',
+  'tag-switcher': 'Switch Tag (Next)',
+  'tag-switcher-prev': 'Switch Tag (Prev)',
   'search': 'Search in Terminal',
   'new-line': 'New Line (Shift+Enter)',
 };
@@ -24,6 +28,8 @@ export const ACTION_LABELS: Record<ActionId, string> = {
 export const DEFAULT_BINDINGS: Record<ActionId, KeyBinding> = {
   'tab-switcher':      { code: 'BracketLeft', alt: true },
   'tab-switcher-prev': { code: 'BracketLeft', alt: true, shift: true },
+  'tag-switcher':      { code: 'BracketRight', alt: true },
+  'tag-switcher-prev': { code: 'BracketRight', alt: true, shift: true },
   'search':            { code: 'KeyF', meta: true, shift: true },
   'new-line':          { code: 'Enter', shift: true },
 };

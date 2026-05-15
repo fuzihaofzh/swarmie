@@ -34,4 +34,12 @@ export interface SessionSummary {
   hostname: string;
   initialHostname: string;
   autoApprove?: boolean;
+  autoCompact?: boolean;
+  repeatEnabled?: boolean;
+  repeatCommand?: string;
+  repeatIntervalSeconds?: number;
+  repeatClear?: boolean;
+  nextRepeatAt?: number | null;
+  nextAutoCompactAt?: number | null;
+  tags?: string[];
 }

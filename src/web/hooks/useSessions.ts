@@ -16,6 +16,14 @@ export interface SessionSummary {
   hostname: string;
   initialHostname: string;
   autoApprove?: boolean;
+  autoCompact?: boolean;
+  repeatEnabled?: boolean;
+  repeatCommand?: string;
+  repeatIntervalSeconds?: number;
+  repeatClear?: boolean;
+  nextRepeatAt?: number | null;
+  nextAutoCompactAt?: number | null;
+  tags?: string[];
   /** '' for local server, absolute URL for remote */
   serverUrl: string;
 }
@@ -41,8 +49,12 @@ interface SessionState {
   addEventBatch: (sessionId: string, events: NormalizedEvent[]) => void;
   updateSessionStatus: (sessionId: string, status: string) => void;
   setSessionAutoApprove: (sessionId: string, value: boolean) => void;
+  setSessionAutoCompact: (sessionId: string, value: boolean) => void;
+  setSessionRepeat: (sessionId: string, patch: RepeatSettingsPatch) => void;
+  setSessionTags: (sessionId: string, tags: string[]) => void;
   /** Update auto-approve from server broadcast (no sync back) */
   _setAutoApproveLocal: (sessionId: string, value: boolean) => void;
+  _applySessionSettingsLocal: (sessionId: string, patch: SessionSettingsPatch) => void;
   /** Replace all sessions from a given server */
   setServerSessions: (serverUrl: string, sessions: SessionSummary[]) => void;
   /** Remove all sessions for a disconnected server */
@@ -52,23 +64,103 @@ interface SessionState {
 const MAX_EVENTS_PER_SESSION = 2000;
 const EMPTY_EVENTS: NormalizedEvent[] = [];
 
-const AUTO_APPROVE_KEY = 'swarmie-auto-approve-map';
+const SESSION_SETTINGS_KEY = 'swarmie-session-settings-map';
 
-function loadAutoApproveMap(): Record<string, boolean> {
-  try { return JSON.parse(localStorage.getItem(AUTO_APPROVE_KEY) || '{}'); }
-  catch { return {}; }
+export interface SessionSettingsPatch {
+  autoApprove?: boolean;
+  autoCompact?: boolean;
+  repeatEnabled?: boolean;
+  repeatCommand?: string;
+  repeatIntervalSeconds?: number;
+  repeatClear?: boolean;
+  nextRepeatAt?: number | null;
+  nextAutoCompactAt?: number | null;
+  tags?: string[];
 }
 
-function saveAutoApproveMap(sessions: SessionSummary[]) {
-  const map: Record<string, boolean> = {};
-  for (const s of sessions) { if (s.autoApprove) map[s.id] = true; }
-  localStorage.setItem(AUTO_APPROVE_KEY, JSON.stringify(map));
+type SavedSessionSettings = Record<string, SessionSettingsPatch>;
+export interface RepeatSettingsPatch {
+  enabled?: boolean;
+  command?: string;
+  intervalSeconds?: number;
+  clear?: boolean;
+}
+
+function loadSessionSettingsMap(): SavedSessionSettings {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SESSION_SETTINGS_KEY) || '{}') as SavedSessionSettings;
+    if (Object.keys(saved).length > 0) return saved;
+    const legacy = JSON.parse(localStorage.getItem('swarmie-auto-approve-map') || '{}') as Record<string, boolean>;
+    return Object.fromEntries(
+      Object.entries(legacy)
+        .filter(([, value]) => value)
+        .map(([id]) => [id, { autoApprove: true }]),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function saveSessionSettingsMap(sessions: SessionSummary[]) {
+  const map: SavedSessionSettings = {};
+  for (const s of sessions) {
+    const settings: SessionSettingsPatch = {};
+    if (s.autoApprove) settings.autoApprove = true;
+    if (s.autoCompact) settings.autoCompact = true;
+    if (s.repeatEnabled) settings.repeatEnabled = true;
+    if (s.repeatCommand) settings.repeatCommand = s.repeatCommand;
+    if (s.repeatIntervalSeconds !== undefined && s.repeatIntervalSeconds !== 60) {
+      settings.repeatIntervalSeconds = s.repeatIntervalSeconds;
+    }
+    if (s.repeatClear) settings.repeatClear = true;
+    if (s.tags && s.tags.length > 0) settings.tags = s.tags;
+    if (Object.keys(settings).length > 0) map[s.id] = settings;
+  }
+  localStorage.setItem(SESSION_SETTINGS_KEY, JSON.stringify(map));
+}
+
+function clampRepeatIntervalSeconds(seconds: number | undefined): number {
+  const value = Number(seconds);
+  if (!Number.isFinite(value)) return 60;
+  return Math.min(24 * 60 * 60, Math.max(1, Math.floor(value)));
+}
+
+function normalizeTags(tags: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const raw of tags) {
+    const tag = raw.trim().replace(/\s+/g, '-').slice(0, 32);
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    normalized.push(tag);
+  }
+  return normalized.slice(0, 12);
+}
+
+function applySavedSettings(session: SessionSummary, saved: SavedSessionSettings): SessionSummary {
+  const patch = saved[session.id] ?? {};
+  return {
+    ...session,
+    serverUrl: session.serverUrl ?? '',
+    autoApprove: session.autoApprove || patch.autoApprove || false,
+    autoCompact: session.autoCompact || patch.autoCompact || false,
+    repeatEnabled: session.repeatEnabled || patch.repeatEnabled || false,
+    repeatCommand: session.repeatCommand ?? patch.repeatCommand ?? '',
+    repeatIntervalSeconds: clampRepeatIntervalSeconds(session.repeatIntervalSeconds ?? patch.repeatIntervalSeconds),
+    repeatClear: session.repeatClear || patch.repeatClear || false,
+    tags: normalizeTags(session.tags ?? patch.tags ?? []),
+  };
 }
 
 /** Module-level callback to sync auto-approve state to server */
 let autoApproveSync: ((sessionId: string, value: boolean) => void) | null = null;
 export function registerAutoApproveSync(fn: ((sessionId: string, value: boolean) => void) | null) {
   autoApproveSync = fn;
+}
+
+let sessionSettingsSync: ((sessionId: string, patch: SessionSettingsPatch) => void) | null = null;
+export function registerSessionSettingsSync(fn: ((sessionId: string, patch: SessionSettingsPatch) => void) | null) {
+  sessionSettingsSync = fn;
 }
 
 /** Stable selector for session events — returns same ref when empty */
@@ -85,12 +177,8 @@ export const useSessionStore = create<SessionState>((set) => ({
     set((state) => {
       const local = sessions.find((s) => !s.serverUrl || s.serverUrl === '');
       if (local?.initialHostname) setLocalHostname(local.initialHostname);
-      const saved = loadAutoApproveMap();
-      const merged = sessions.map((s) => ({
-        ...s,
-        serverUrl: s.serverUrl ?? '',
-        autoApprove: s.autoApprove || saved[s.id] || false,
-      }));
+      const saved = loadSessionSettingsMap();
+      const merged = sessions.map((s) => applySavedSettings(s, saved));
       const activeSessionId = state.activeSessionId ?? merged[0]?.id ?? null;
       return { sessions: merged, activeSessionId };
     }),
@@ -99,12 +187,8 @@ export const useSessionStore = create<SessionState>((set) => ({
     set((state) => {
       const exists = state.sessions.some((s) => s.id === session.id);
       if (exists) return state;
-      const saved = loadAutoApproveMap();
-      const tagged = {
-        ...session,
-        serverUrl: session.serverUrl ?? '',
-        autoApprove: session.autoApprove || saved[session.id] || false,
-      };
+      const saved = loadSessionSettingsMap();
+      const tagged = applySavedSettings(session, saved);
       const sessions = [...state.sessions, tagged];
       const activeSessionId = state.activeSessionId ?? session.id;
       return { sessions, activeSessionId };
@@ -205,12 +289,58 @@ export const useSessionStore = create<SessionState>((set) => ({
     })),
 
   setSessionAutoApprove: (sessionId, value) => {
-    autoApproveSync?.(sessionId, value);
+    if (sessionSettingsSync) {
+      sessionSettingsSync(sessionId, { autoApprove: value });
+    } else {
+      autoApproveSync?.(sessionId, value);
+    }
     set((state) => {
       const sessions = state.sessions.map((s) =>
         s.id === sessionId ? { ...s, autoApprove: value } : s,
       );
-      saveAutoApproveMap(sessions);
+      saveSessionSettingsMap(sessions);
+      return { sessions };
+    });
+  },
+
+  setSessionAutoCompact: (sessionId, value) => {
+    sessionSettingsSync?.(sessionId, { autoCompact: value });
+    set((state) => {
+      const sessions = state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, autoCompact: value } : s,
+      );
+      saveSessionSettingsMap(sessions);
+      return { sessions };
+    });
+  },
+
+  setSessionRepeat: (sessionId, incoming) => {
+    const patch: SessionSettingsPatch = {
+      ...(incoming.enabled !== undefined ? { repeatEnabled: incoming.enabled } : {}),
+      ...(incoming.command !== undefined ? { repeatCommand: incoming.command } : {}),
+      ...(incoming.intervalSeconds !== undefined
+        ? { repeatIntervalSeconds: clampRepeatIntervalSeconds(incoming.intervalSeconds) }
+        : {}),
+      ...(incoming.clear !== undefined ? { repeatClear: incoming.clear } : {}),
+    };
+    sessionSettingsSync?.(sessionId, patch);
+    set((state) => {
+      const sessions = state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, ...patch } : s,
+      );
+      saveSessionSettingsMap(sessions);
+      return { sessions };
+    });
+  },
+
+  setSessionTags: (sessionId, tags) => {
+    const normalized = normalizeTags(tags);
+    sessionSettingsSync?.(sessionId, { tags: normalized });
+    set((state) => {
+      const sessions = state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, tags: normalized } : s,
+      );
+      saveSessionSettingsMap(sessions);
       return { sessions };
     });
   },
@@ -220,17 +350,35 @@ export const useSessionStore = create<SessionState>((set) => ({
       const sessions = state.sessions.map((s) =>
         s.id === sessionId ? { ...s, autoApprove: value } : s,
       );
-      saveAutoApproveMap(sessions);
+      saveSessionSettingsMap(sessions);
+      return { sessions };
+    }),
+
+  _applySessionSettingsLocal: (sessionId, patch) =>
+    set((state) => {
+      const sessions = state.sessions.map((s) => {
+        if (s.id !== sessionId) return s;
+        return {
+          ...s,
+          ...(patch.autoApprove !== undefined ? { autoApprove: patch.autoApprove } : {}),
+          ...(patch.autoCompact !== undefined ? { autoCompact: patch.autoCompact } : {}),
+          ...(patch.repeatEnabled !== undefined ? { repeatEnabled: patch.repeatEnabled } : {}),
+          ...(patch.repeatCommand !== undefined ? { repeatCommand: patch.repeatCommand } : {}),
+          ...(patch.repeatIntervalSeconds !== undefined ? { repeatIntervalSeconds: patch.repeatIntervalSeconds } : {}),
+          ...(patch.repeatClear !== undefined ? { repeatClear: patch.repeatClear } : {}),
+          ...(patch.nextRepeatAt !== undefined ? { nextRepeatAt: patch.nextRepeatAt } : {}),
+          ...(patch.nextAutoCompactAt !== undefined ? { nextAutoCompactAt: patch.nextAutoCompactAt } : {}),
+          ...(patch.tags !== undefined ? { tags: normalizeTags(patch.tags) } : {}),
+        };
+      });
+      saveSessionSettingsMap(sessions);
       return { sessions };
     }),
 
   setServerSessions: (serverUrl, incoming) =>
     set((state) => {
-      const saved = loadAutoApproveMap();
-      const tagged = incoming.map((s) => {
-        const merged = saved[s.id] ? { ...s, autoApprove: true, serverUrl } : { ...s, serverUrl };
-        return merged;
-      });
+      const saved = loadSessionSettingsMap();
+      const tagged = incoming.map((s) => applySavedSettings({ ...s, serverUrl }, saved));
       // Keep sessions from other servers, replace sessions from this server
       const others = state.sessions.filter((s) => s.serverUrl !== serverUrl);
       const sessions = [...others, ...tagged];

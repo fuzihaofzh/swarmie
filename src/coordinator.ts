@@ -11,6 +11,7 @@ import { loadConfig } from './cli/config.js';
 import { IPCServer } from './ipc/server.js';
 import { IPCClient } from './ipc/client.js';
 import { WSRemoteClient, parseServerAddress } from './ipc/ws-client.js';
+import { getSystemDisplayHostname } from './session/host.js';
 
 export interface CoordinatorHandle {
   cleanup: () => Promise<void>;
@@ -46,8 +47,8 @@ export async function startCoordinator(
   }
 
   ensureConfigDir();
-  const socketPath = getSocketPath();
-  const lockPath = getLockPath();
+  const socketPath = getSocketPath(options.port);
+  const lockPath = getLockPath(options.port);
 
   // Check if a coordinator is already running
   if (existsSync(socketPath) && existsSync(lockPath)) {
@@ -217,7 +218,7 @@ async function startAsClient(
     tool: adapter.info.name,
     adapterInfo: adapter.info,
     cwd: process.cwd(),
-    hostname: (await import('node:os')).hostname(),
+    hostname: getSystemDisplayHostname(),
     command: [],
   });
 
@@ -267,7 +268,7 @@ async function startAsRemoteClient(
     tool: adapter.info.name,
     adapterInfo: adapter.info,
     cwd: process.cwd(),
-    hostname: (await import('node:os')).hostname(),
+    hostname: getSystemDisplayHostname(),
     command: [],
   });
 

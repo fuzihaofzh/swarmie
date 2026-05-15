@@ -4,7 +4,19 @@ import { useSessionStore, type SessionSummary } from './useSessions';
 import { useUIStore } from './useUI';
 import { NEW_SESSION_PANEL_ID } from '../components/DockviewCustomTab';
 
-const LAYOUT_KEY = 'swarmie-dockview-layout';
+const LAYOUT_KEY_DESKTOP = 'swarmie-dockview-layout';
+const LAYOUT_KEY_MOBILE = 'swarmie-dockview-layout-mobile';
+const MOBILE_VIEWPORT_BREAKPOINT = 768;
+
+function getLayoutKey(): string {
+  if (typeof window === 'undefined') return LAYOUT_KEY_DESKTOP;
+  return window.innerWidth < MOBILE_VIEWPORT_BREAKPOINT ? LAYOUT_KEY_MOBILE : LAYOUT_KEY_DESKTOP;
+}
+
+function sessionMatchesTagFilter(session: SessionSummary, tagFilter: string[]): boolean {
+  if (tagFilter.length === 0) return true;
+  return (session.tags ?? []).some((tag) => tagFilter.includes(tag));
+}
 
 /**
  * Syncs Zustand session state ↔ Dockview panels.
@@ -18,6 +30,29 @@ export function useDockviewSync(api: DockviewApi | null) {
   const prevSessionIdsRef = useRef<Set<string>>(new Set());
   const suppressZustandSync = useRef(false);
 
+  // Filter changes never add/remove panels — panels stay alive for all
+  // sessions, the tab header is hidden via CSS for filtered-out sessions.
+  // Destroying the panel would dispose its xterm and lose terminal content.
+  // We only enforce that the active session matches the filter, so a hidden
+  // tab doesn't end up as the visible content.
+  const reconcileActiveForFilter = (sessions: SessionSummary[], tagFilter: string[]) => {
+    if (!api) return;
+    const activeId = useSessionStore.getState().activeSessionId;
+    const activeSession = activeId ? sessions.find((s) => s.id === activeId) : undefined;
+    if (activeSession && !sessionMatchesTagFilter(activeSession, tagFilter)) {
+      const firstVisible = sessions.find((s) => sessionMatchesTagFilter(s, tagFilter));
+      useSessionStore.getState().setActiveSession(firstVisible?.id ?? null);
+      if (firstVisible) {
+        const panel = api.getPanel(firstVisible.id);
+        if (panel && !panel.api.isActive) {
+          suppressZustandSync.current = true;
+          panel.api.setActive();
+          suppressZustandSync.current = false;
+        }
+      }
+    }
+  };
+
   // Sync sessions → panels
   useEffect(() => {
     if (!api) return;
@@ -26,23 +61,21 @@ export function useDockviewSync(api: DockviewApi | null) {
       const currentIds = new Set(state.sessions.map((s) => s.id));
       const prevIds = prevSessionIdsRef.current;
 
-      // Added sessions
+      // Added sessions — create a panel regardless of filter; the tab is
+      // hidden via CSS if the session doesn't match the active filter.
       for (const session of state.sessions) {
-        if (!prevIds.has(session.id)) {
-          // Check if panel already exists (e.g., from initial load)
-          if (!api.getPanel(session.id)) {
-            api.addPanel({
-              id: session.id,
-              component: 'terminal',
-              tabComponent: 'sessionTab',
-              params: { sessionId: session.id },
-              renderer: 'always',
-            });
-          }
+        if (!prevIds.has(session.id) && !api.getPanel(session.id)) {
+          api.addPanel({
+            id: session.id,
+            component: 'terminal',
+            tabComponent: 'sessionTab',
+            params: { sessionId: session.id },
+            renderer: 'always',
+          });
         }
       }
 
-      // Removed sessions
+      // Removed sessions (truly removed from the store — kill/end)
       for (const id of prevIds) {
         if (!currentIds.has(id)) {
           const panel = api.getPanel(id);
@@ -58,6 +91,9 @@ export function useDockviewSync(api: DockviewApi | null) {
 
       // Active session changed in Zustand → activate panel in Dockview
       if (state.activeSessionId !== prev.activeSessionId && state.activeSessionId) {
+        const tagFilter = useUIStore.getState().tagFilter;
+        const activeSession = state.sessions.find((s) => s.id === state.activeSessionId);
+        if (activeSession && !sessionMatchesTagFilter(activeSession, tagFilter)) return;
         const panel = api.getPanel(state.activeSessionId);
         if (panel && !panel.api.isActive) {
           suppressZustandSync.current = true;
@@ -90,11 +126,14 @@ export function useDockviewSync(api: DockviewApi | null) {
     return () => disposable.dispose();
   }, [api]);
 
-  // showNewSession → add/activate new session panel
+  // showNewSession/tag filter → add/activate new session panel or reconcile visible tabs
   useEffect(() => {
     if (!api) return;
 
     const unsub = useUIStore.subscribe((state, prev) => {
+      if (state.tagFilter !== prev.tagFilter) {
+        reconcileActiveForFilter(useSessionStore.getState().sessions, state.tagFilter);
+      }
       if (state.showNewSession && !prev.showNewSession) {
         let panel = api.getPanel(NEW_SESSION_PANEL_ID);
         if (!panel) {
@@ -132,7 +171,7 @@ export function useDockviewSync(api: DockviewApi | null) {
       clearTimeout(timer);
       timer = setTimeout(() => {
         try {
-          localStorage.setItem(LAYOUT_KEY, JSON.stringify(api.toJSON()));
+          localStorage.setItem(getLayoutKey(), JSON.stringify(api.toJSON()));
         } catch { /* ignore quota errors */ }
       }, 500);
     });
@@ -149,12 +188,13 @@ export function useDockviewSync(api: DockviewApi | null) {
 
     const sessions = useSessionStore.getState().sessions;
     const activeId = useSessionStore.getState().activeSessionId;
+    const tagFilter = useUIStore.getState().tagFilter;
     const sessionIds = new Set(sessions.map((s: SessionSummary) => s.id));
     let restored = false;
 
     // Try restoring saved layout
     try {
-      const raw = localStorage.getItem(LAYOUT_KEY);
+      const raw = localStorage.getItem(getLayoutKey());
       if (raw) {
         const savedLayout = JSON.parse(raw);
         api.fromJSON(savedLayout);
@@ -187,7 +227,8 @@ export function useDockviewSync(api: DockviewApi | null) {
           }
           prevSessionIdsRef.current = sessionIds;
 
-          // Add panels for new sessions not in saved layout
+          // Add panels for new sessions not in saved layout (all sessions,
+          // not just filter-visible — filter only hides the tab header).
           for (const session of sessions) {
             if (!api.getPanel(session.id)) {
               api.addPanel({
@@ -205,7 +246,7 @@ export function useDockviewSync(api: DockviewApi | null) {
       restored = false;
     }
 
-    // Fallback: add panels one by one
+    // Fallback: add panels one by one (all sessions; filter only hides tabs)
     if (!restored) {
       for (const session of sessions) {
         if (!api.getPanel(session.id)) {
@@ -221,9 +262,17 @@ export function useDockviewSync(api: DockviewApi | null) {
       prevSessionIdsRef.current = sessionIds;
     }
 
-    // Activate the right panel
-    if (activeId) {
+    // Activate the right panel — must satisfy the active tag filter so a
+    // CSS-hidden tab doesn't end up as the visible content.
+    const firstVisible = sessions.find((s) => sessionMatchesTagFilter(s, tagFilter));
+    const activeSession = activeId ? sessions.find((s) => s.id === activeId) : undefined;
+    const activeIsVisible = activeSession ? sessionMatchesTagFilter(activeSession, tagFilter) : false;
+    if (activeId && activeIsVisible) {
       const panel = api.getPanel(activeId);
+      if (panel) panel.api.setActive();
+    } else if (firstVisible) {
+      useSessionStore.getState().setActiveSession(firstVisible.id);
+      const panel = api.getPanel(firstVisible.id);
       if (panel) panel.api.setActive();
     }
 

@@ -55,6 +55,7 @@ export class GeminiAdapter extends BaseAdapter {
     });
 
     this.ptyProcess.onExit(({ exitCode, signal }) => {
+      this.clearIdleTimer();
       this.setStatus(exitCode === 0 ? 'completed' : 'error');
       this.emitEvent('session:end', {
         exitCode,
@@ -65,7 +66,7 @@ export class GeminiAdapter extends BaseAdapter {
   }
 
   write(data: string): void {
-    this.handleUserInput();
+    this.handleUserInput(data);
     this.ptyProcess?.write(data);
   }
 

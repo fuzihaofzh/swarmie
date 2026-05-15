@@ -61,31 +61,41 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  // Handle native keyboard pushing the viewport up
+  // Handle native keyboard pushing the viewport up. Only constrain height
+  // when the viewport is *clearly* shrunk by the keyboard; iOS Safari's URL
+  // bar hide/show causes vv.height to oscillate during scroll, and forcing
+  // a height on every event triggers a refit→resize→SIGWINCH storm that
+  // garbles ink-based TUI output mid-render.
   useEffect(() => {
     if (!shouldShowMobileToolbar(getFocusPolicyEnv()) || !window.visualViewport) return;
 
     const vv = window.visualViewport;
-    const onResize = () => {
-      // When native keyboard opens, visualViewport.height shrinks.
-      // Set the app height to match so everything fits above the keyboard.
+    let maxHeight = vv.height;
+
+    const apply = () => {
       const root = document.getElementById('root');
-      if (root) {
+      if (!root) return;
+      if (vv.height > maxHeight) maxHeight = vv.height;
+      // Treat as "keyboard is open" only if viewport is at least 20% shorter
+      // than the largest height we've seen this session. URL-bar transitions
+      // are typically <10% and should be ignored.
+      if (vv.height < maxHeight * 0.8) {
         root.style.height = vv.height + 'px';
+      } else if (root.style.height) {
+        root.style.height = '';
       }
-      window.scrollTo(0, 0);
     };
 
     const onScroll = () => {
       window.scrollTo(0, 0);
     };
 
-    vv.addEventListener('resize', onResize);
+    vv.addEventListener('resize', apply);
     vv.addEventListener('scroll', onScroll);
-    onResize();
+    apply();
 
     return () => {
-      vv.removeEventListener('resize', onResize);
+      vv.removeEventListener('resize', apply);
       vv.removeEventListener('scroll', onScroll);
       const root = document.getElementById('root');
       if (root) root.style.height = '';
