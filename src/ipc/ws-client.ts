@@ -33,6 +33,10 @@ export class WSRemoteClient extends EventEmitter {
   private buffer: string[] = [];
   private readonly maxBufferSize = 1000;
 
+  /** Last reported CLI terminal size, replayed on reconnect so the remote
+   *  dashboard's MIN reflects this session even across drops. */
+  private lastCliSize?: { cols: number; rows: number };
+
   constructor(url: string, sessionId: string) {
     super();
     this.url = url;
@@ -79,6 +83,13 @@ export class WSRemoteClient extends EventEmitter {
     this.send({ type: 'event', event });
   }
 
+  /** Report the owning CLI terminal's size so the remote dashboard's MIN
+   *  includes it (tmux-style). Replayed on reconnect. */
+  setCliSize(cols: number, rows: number): void {
+    this.lastCliSize = { cols, rows };
+    this.send({ type: 'cli:size', sessionId: this.sessionId, cols, rows });
+  }
+
   private doConnect(
     resolve?: () => void,
     reject?: (err: Error) => void,
@@ -99,6 +110,16 @@ export class WSRemoteClient extends EventEmitter {
           type: 'register',
           sessionId: this.sessionId,
           ...this.registrationInfo,
+        });
+      }
+
+      // Replay last CLI size so MIN includes us even after reconnect
+      if (this.lastCliSize) {
+        this.send({
+          type: 'cli:size',
+          sessionId: this.sessionId,
+          cols: this.lastCliSize.cols,
+          rows: this.lastCliSize.rows,
         });
       }
 

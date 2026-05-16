@@ -304,6 +304,14 @@ async function startAsRemoteClient(
     cleanup: async () => { client.close(); },
     activeSessionCount: () => 0,
     waitForAllDone: () => Promise.resolve(),
+    // Report this CLI terminal's size to the remote dashboard so it
+    // participates in MIN (tmux-style). The dashboard then drives the PTY
+    // via the existing resize-back-over-WS flow; we don't call adapter.resize
+    // directly here, which would race the dashboard's MIN.
+    setCliSize: (sId, cols, rows) => {
+      if (sId !== sessionId) return;
+      client.setCliSize(cols, rows);
+    },
   };
 }
 

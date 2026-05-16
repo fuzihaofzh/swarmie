@@ -222,6 +222,19 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
         remoteClients.delete(sessionId);
         return;
       }
+      if (msg.type === 'cli:size') {
+        // Remote CLI reporting its owning terminal's size. Tracked under the
+        // CLI socket like any browser viewport so it joins the MIN that
+        // drives the PTY; cleared automatically on socket close via
+        // dropClientSizes(socket).
+        const sessionId = msg.sessionId as string;
+        const cols = msg.cols as number;
+        const rows = msg.rows as number;
+        if (sessionId && cols && rows) {
+          recordClientSize(socket, sessionId, cols, rows);
+        }
+        return;
+      }
       if (msg.type === 'ping') {
         // Browser keepalive — no-op, just prevents the connection from going idle
         return;
