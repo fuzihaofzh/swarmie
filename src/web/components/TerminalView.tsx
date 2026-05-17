@@ -31,7 +31,10 @@ interface TerminalViewProps {
 }
 
 const MAX_TERMINAL_WRITE_BYTES_PER_FRAME = 256 * 1024;
-const TERMINAL_SCROLLBACK_LINES = 10000;
+// Sized to comfortably hold a full MAX_RAW_BYTES (16MB) snapshot at typical
+// terminal line widths. xterm only allocates per actual line written, so the
+// cap is essentially free when usage is small.
+const TERMINAL_SCROLLBACK_LINES = 200000;
 /** How many bytes earlier to fetch each time the user asks for more history. */
 const HISTORY_CHUNK_BYTES = 2 * 1024 * 1024;
 /** Auto-trigger only fires if the user wheel/touch-swiped up within this window. */
@@ -386,14 +389,20 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
   }, [handleLoadEarlier]);
 
   // Auto-trigger: when the user actively scrolls UP and lands at the top of
-  // xterm's scrollback, request older history. Gating on a recent wheel/touch
-  // UP gesture avoids firing on initial render or on programmatic scrolls
-  // (e.g. when the active-tab effect snaps to bottom).
+  // xterm's scrollback, request older history. We listen to the viewport's
+  // native scroll event because xterm's term.onScroll uses
+  // suppressScrollEvent=true for native-scroll-driven changes and so it
+  // would never fire for wheel/touch input.
+  //
+  // Gating on a recent wheel/touch UP gesture avoids firing on initial render
+  // or on programmatic scroll-to-bottom from the active-tab effect.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     const root = term.element;
     if (!root) return;
+    const viewport = root.querySelector('.xterm-viewport') as HTMLElement | null;
+    if (!viewport) return;
 
     const onWheel = (e: WheelEvent) => {
       if (e.deltaY < 0) scrolledUpAtRef.current = performance.now();
@@ -407,27 +416,27 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       // Finger moving DOWN reveals OLDER content in xterm scrollback.
       if (y - touchStartY.y > 8) scrolledUpAtRef.current = performance.now();
     };
+    const onScroll = () => {
+      if (viewport.scrollTop > 0) return;
+      // baseY check via xterm — if no scrollback yet, ignore.
+      if (term.buffer.active.baseY === 0) return;
+      if (performance.now() - scrolledUpAtRef.current > AUTO_LOAD_RECENT_WINDOW_MS) return;
+      // Consume the gesture timestamp so we don't refire each frame while
+      // the viewport sits at the top.
+      scrolledUpAtRef.current = 0;
+      handleLoadEarlierRef.current?.();
+    };
 
     root.addEventListener('wheel', onWheel, { passive: true });
     root.addEventListener('touchstart', onTouchStart, { passive: true });
     root.addEventListener('touchmove', onTouchMove, { passive: true });
-
-    const scrollDisp = term.onScroll(() => {
-      const buf = term.buffer.active;
-      if (buf.baseY === 0) return;
-      if (buf.viewportY > 0) return;
-      if (performance.now() - scrolledUpAtRef.current > AUTO_LOAD_RECENT_WINDOW_MS) return;
-      // Consume the gesture timestamp so we don't refire each frame while the
-      // viewport sits at the top.
-      scrolledUpAtRef.current = 0;
-      handleLoadEarlierRef.current?.();
-    });
+    viewport.addEventListener('scroll', onScroll, { passive: true });
 
     return () => {
       root.removeEventListener('wheel', onWheel);
       root.removeEventListener('touchstart', onTouchStart);
       root.removeEventListener('touchmove', onTouchMove);
-      scrollDisp.dispose();
+      viewport.removeEventListener('scroll', onScroll);
     };
   }, [termReady]);
 
