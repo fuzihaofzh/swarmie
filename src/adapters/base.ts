@@ -32,7 +32,7 @@ const WAITING_INPUT_PATTERNS = [
 
 // Characters that are purely decorative / animation and should not
 // pollute the detect buffer (Ink thinking spinners, bullet chars, etc.)
-const ANIMATION_CHARS = /[⏺✶✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆✢✣✤✥✦✧✩✪✫✬✭✮✯✰✱✲✳✴✵·•●○◌◎◐◑◒◓◔◕⊙⊚⊛⊜⊝★☆]/g;
+const ANIMATION_CHARS = /[⏺✶✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆✢✣✤✥✦✧✩✪✫✬✭✮✯✰✱✲✳✴✵·•●○◦◌◎◐◑◒◓◔◕⊙⊚⊛⊜⊝★☆⠀-⣿]/g;
 
 // Max chars to keep in the rolling stripped-text buffer for detection.
 const DETECT_BUFFER_SIZE = 1000;
