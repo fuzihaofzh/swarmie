@@ -10,7 +10,7 @@ export interface TerminalPanelParams {
 }
 
 export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<TerminalPanelParams>) {
-  const { sendInput, sendResize, sendRedraw } = useWsContext();
+  const { sendInput, sendResize, sendRedraw, sendLoadHistory } = useWsContext();
   const sessionId = params.sessionId;
   const [active, setActive] = useState(api.isActive);
 
@@ -34,6 +34,7 @@ export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<Termi
       onInput={(data) => sendInput(sessionId, data)}
       onResize={(cols, rows) => sendResize(sessionId, cols, rows)}
       onRedraw={() => sendRedraw(sessionId)}
+      onLoadHistory={(fromOffset) => sendLoadHistory(sessionId, fromOffset)}
     />
   );
 }

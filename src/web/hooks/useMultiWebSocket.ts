@@ -98,6 +98,10 @@ export function useMultiWebSocket() {
     getConnectionForSession(sessionId)?.sendRedraw(sessionId);
   }, [getConnectionForSession]);
 
+  const sendLoadHistory = useCallback((sessionId: string, fromOffset: number) => {
+    getConnectionForSession(sessionId)?.sendLoadHistory(sessionId, fromOffset);
+  }, [getConnectionForSession]);
+
   const createSession = useCallback(async (opts: {
     tool?: string;
     args?: string[];
@@ -123,5 +127,5 @@ export function useMultiWebSocket() {
     return connectionsRef.current.get(serverUrl);
   }, []);
 
-  return { sendInput, sendResize, sendRedraw, createSession, killSession, getConnection };
+  return { sendInput, sendResize, sendRedraw, sendLoadHistory, createSession, killSession, getConnection };
 }

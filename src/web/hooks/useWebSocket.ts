@@ -1,5 +1,5 @@
 import { useSessionStore, type SessionSummary, type NormalizedEvent, type SessionSettingsPatch } from './useSessions';
-import { writeToTerminal, clearTerminalBuffer } from '../terminalBus';
+import { writeToTerminal, clearTerminalBuffer, applyHistorySnapshot } from '../terminalBus';
 import { useServerStore, LOCAL_SERVER } from './useServers';
 import { useUIStore } from './useUI';
 
@@ -172,6 +172,10 @@ export class ServerConnection {
 
   sendRedraw(sessionId: string): void {
     this.send({ type: 'redraw', sessionId });
+  }
+
+  sendLoadHistory(sessionId: string, fromOffset: number): void {
+    this.send({ type: 'history:load', sessionId, fromOffset });
   }
 
   sendAutoApprove(sessionId: string, value: boolean): void {
@@ -371,8 +375,8 @@ export class ServerConnection {
       case 'event': {
         const evt = msg.event as NormalizedEvent;
         if (evt.type === 'raw:output') {
-          const b64 = (evt.data as { data: string }).data;
-          writeToTerminal(evt.sessionId, b64);
+          const data = evt.data as { data: string; offsetEnd?: number };
+          writeToTerminal(evt.sessionId, data.data, data.offsetEnd);
         } else {
           store.addEvent(evt);
         }
@@ -383,19 +387,39 @@ export class ServerConnection {
         const all = msg.events as NormalizedEvent[];
         const structured: NormalizedEvent[] = [];
         const rawChunks: string[] = [];
+        let mergedOffsetEnd: number | undefined;
         for (const evt of all) {
           if (evt.type === 'raw:output') {
-            rawChunks.push((evt.data as { data: string }).data);
+            const data = evt.data as { data: string; offsetEnd?: number };
+            rawChunks.push(data.data);
+            if (typeof data.offsetEnd === 'number') {
+              // The merged blob's offsetEnd is the last chunk's offsetEnd.
+              mergedOffsetEnd = data.offsetEnd;
+            }
           } else {
             structured.push(evt);
           }
         }
         if (rawChunks.length > 0) {
-          writeToTerminal(sid, mergeBase64Chunks(rawChunks));
+          writeToTerminal(sid, mergeBase64Chunks(rawChunks), mergedOffsetEnd);
         }
         if (structured.length > 0) {
           store.addEventBatch(sid, structured);
         }
+        break;
+      }
+      case 'history:snapshot': {
+        const sid = msg.sessionId as string;
+        const startOffset = Number(msg.startOffset);
+        const endOffset = Number(msg.endOffset);
+        const data = Array.isArray(msg.data) ? (msg.data as string[]) : [];
+        const reachedEarliest = !!msg.reachedEarliest;
+        applyHistorySnapshot(sid, {
+          startOffset,
+          endOffset,
+          chunks: data,
+          reachedEarliest,
+        });
         break;
       }
     }

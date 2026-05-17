@@ -19,6 +19,7 @@ const BROWSER_MESSAGE_TYPES = new Set([
   'input',
   'resize',
   'redraw',
+  'history:load',
   'set:autoApprove',
   'set:autoCompact',
   'set:repeat',
@@ -411,6 +412,25 @@ function handleMessage(
         const session = manager.getSession(sessionId);
         session?.redraw();
       }
+      break;
+    }
+    case 'history:load': {
+      const sessionId = msg.sessionId as string;
+      const fromOffset = typeof msg.fromOffset === 'number'
+        ? msg.fromOffset
+        : Number(msg.fromOffset);
+      if (!sessionId || !Number.isFinite(fromOffset)) break;
+      const session = manager.getSession(sessionId);
+      if (!session) break;
+      const snapshot = session.getRawHistorySnapshot(fromOffset);
+      send(socket, {
+        type: 'history:snapshot',
+        sessionId,
+        startOffset: snapshot.startOffset,
+        endOffset: snapshot.endOffset,
+        data: snapshot.chunks,
+        reachedEarliest: snapshot.reachedEarliest,
+      });
       break;
     }
     case 'set:autoApprove': {

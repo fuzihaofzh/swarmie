@@ -1,14 +1,20 @@
 import { EventEmitter } from 'node:events';
 import { hostname as osHostname } from 'node:os';
 import type { BaseAdapter } from '../adapters/base.js';
-import type { NormalizedEvent, MetadataData, SessionStatus } from '../adapters/types.js';
+import type { NormalizedEvent, MetadataData, RawOutputData, SessionStatus } from '../adapters/types.js';
 import type { SessionInfo, SessionSummary } from './types.js';
 import { getDefaultHostTag } from './host.js';
 
 const _hostname = osHostname();
 
 const MAX_RECENT_EVENTS = 1000;
-const MAX_RAW_BYTES = 512 * 1024; // 512KB cap for raw terminal output per session
+// In-memory cap for raw terminal output per session. Held so the dashboard
+// can scroll back through history on demand without persisting to disk.
+const MAX_RAW_BYTES = 16 * 1024 * 1024; // 16MB
+// Cap on raw bytes returned by getRecentEvents() (initial subscribe / route
+// replay). Larger than this is fetched on demand via history:load so clients
+// don't pay a 16MB transfer on every connect.
+const INITIAL_RAW_REPLAY_BYTES = 2 * 1024 * 1024; // 2MB
 const DEFAULT_AUTO_COMPACT_MINUTES = 60;
 const DEFAULT_REPEAT_INTERVAL_SECONDS = 60;
 const AUTO_COMPACT_COMMAND = '/compact';
@@ -82,6 +88,8 @@ export class Session extends EventEmitter {
   private events: NormalizedEvent[] = [];
   private rawEvents: NormalizedEvent[] = [];
   private rawBytes = 0;
+  /** Monotonic total raw bytes ever written; never decreases (even after eviction). */
+  private _rawBytesEverWritten = 0;
   private _endTime?: number;
   private _metadata: SessionInfo['metadata'] = {};
   private _command: string[] = [];
@@ -233,18 +241,72 @@ export class Session extends EventEmitter {
 
   getRecentEvents(): NormalizedEvent[] {
     const structured = this.events.slice(-MAX_RECENT_EVENTS);
-    return [...this.rawEvents, ...structured].sort((a, b) => a.timestamp - b.timestamp);
+    const rawSubset = this._rawTailUpTo(INITIAL_RAW_REPLAY_BYTES);
+    return [...rawSubset, ...structured].sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  /**
+   * Snapshot of raw chunks from `fromOffset` (inclusive) up to the current end.
+   * Returns the actual start (may be > fromOffset if older bytes were evicted
+   * from the in-memory ring) and a flag indicating whether the start matches
+   * the earliest data the server still retains.
+   */
+  getRawHistorySnapshot(fromOffset: number): {
+    startOffset: number;
+    endOffset: number;
+    chunks: string[];
+    reachedEarliest: boolean;
+  } {
+    const earliest = this._rawBytesEverWritten - this.rawBytes;
+    const requested = Math.max(0, Math.floor(fromOffset));
+    const startTarget = Math.max(earliest, requested);
+    const chunks: string[] = [];
+    let startOffset = this._rawBytesEverWritten;
+    for (const evt of this.rawEvents) {
+      const data = evt.data as RawOutputData;
+      const offsetEnd = data.offsetEnd ?? 0;
+      const size = Math.ceil(data.data.length * 3 / 4);
+      const chunkStart = offsetEnd - size;
+      if (offsetEnd <= startTarget) continue;
+      if (chunks.length === 0) startOffset = Math.max(chunkStart, startTarget);
+      chunks.push(data.data);
+    }
+    return {
+      startOffset,
+      endOffset: this._rawBytesEverWritten,
+      chunks,
+      reachedEarliest: startOffset <= earliest,
+    };
+  }
+
+  /** Tail of rawEvents covering at most `maxBytes` from the end. */
+  private _rawTailUpTo(maxBytes: number): NormalizedEvent[] {
+    if (this.rawBytes <= maxBytes) return this.rawEvents.slice();
+    const out: NormalizedEvent[] = [];
+    let bytes = 0;
+    for (let i = this.rawEvents.length - 1; i >= 0; i--) {
+      const evt = this.rawEvents[i];
+      const b64 = (evt.data as RawOutputData).data;
+      const size = Math.ceil(b64.length * 3 / 4);
+      if (bytes + size > maxBytes && out.length > 0) break;
+      out.unshift(evt);
+      bytes += size;
+    }
+    return out;
   }
 
   private handleEvent(event: NormalizedEvent): void {
     if (event.type === 'raw:output') {
-      const b64 = (event.data as { data: string }).data;
+      const rawData = event.data as RawOutputData;
+      const b64 = rawData.data;
       const size = Math.ceil(b64.length * 3 / 4);
+      this._rawBytesEverWritten += size;
+      rawData.offsetEnd = this._rawBytesEverWritten;
       this.rawEvents.push(event);
       this.rawBytes += size;
       while (this.rawBytes > MAX_RAW_BYTES && this.rawEvents.length > 0) {
         const old = this.rawEvents.shift()!;
-        const oldB64 = (old.data as { data: string }).data;
+        const oldB64 = (old.data as RawOutputData).data;
         this.rawBytes -= Math.ceil(oldB64.length * 3 / 4);
       }
     } else {

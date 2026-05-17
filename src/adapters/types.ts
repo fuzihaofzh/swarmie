@@ -82,6 +82,12 @@ export interface ErrorData {
 export interface RawOutputData {
   /** base64-encoded PTY output */
   data: string;
+  /**
+   * Server-attached absolute byte offset where this chunk ends in the
+   * session's lifetime raw stream. Lets clients identify gaps and request
+   * older history without de-duping by content.
+   */
+  offsetEnd?: number;
 }
 
 export interface StatusChangeData {

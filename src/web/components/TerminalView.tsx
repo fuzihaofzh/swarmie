@@ -6,7 +6,14 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { useUIStore } from '../hooks/useUI';
 import { themes } from '../themes';
-import { registerTerminalWriter, unregisterTerminalWriter } from '../terminalBus';
+import {
+  registerTerminalWriter,
+  unregisterTerminalWriter,
+  getSessionMeta,
+  subscribeSessionMeta,
+  subscribeHistorySnapshot,
+  type SessionMeta,
+} from '../terminalBus';
 import { MobileToolbar } from './MobileToolbar';
 import { useKeybindingStore, matchesBinding } from '../hooks/useKeybindings';
 import {
@@ -20,9 +27,15 @@ interface TerminalViewProps {
   onInput?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
   onRedraw?: () => void;
+  onLoadHistory?: (fromOffset: number) => void;
 }
 
 const MAX_TERMINAL_WRITE_BYTES_PER_FRAME = 256 * 1024;
+const TERMINAL_SCROLLBACK_LINES = 10000;
+/** How many bytes earlier to fetch each time the user asks for more history. */
+const HISTORY_CHUNK_BYTES = 2 * 1024 * 1024;
+/** Auto-trigger only fires if the user wheel/touch-swiped up within this window. */
+const AUTO_LOAD_RECENT_WINDOW_MS = 600;
 
 function estimateBase64Bytes(b64Data: string): number {
   return Math.ceil((b64Data.length * 3) / 4);
@@ -59,7 +72,7 @@ function decodeBase64Chunks(chunks: string[]): Uint8Array {
   return merged;
 }
 
-export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw }: TerminalViewProps) {
+export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw, onLoadHistory }: TerminalViewProps) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -78,6 +91,17 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
   const fontSize = useUIStore((s) => s.fontSize);
   const fontFamily = useUIStore((s) => s.fontFamily);
   const currentTheme = themes[themeName] ?? themes['github-dark'];
+
+  // History-load state. `historyLoading` drives the UI overlay + input lock.
+  // The refs are used by the writer + auto-trigger paths where reading React
+  // state would race with the render cycle.
+  const [sessionMeta, setSessionMeta] = useState<SessionMeta>(() => getSessionMeta(sessionId));
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const historyLoadingRef = useRef(false);
+  const capturedDuringLoadRef = useRef<Array<{ b64: string; offsetEnd?: number }>>([]);
+  const pendingChunksRef = useRef<string[]>([]);
+  const scrolledUpAtRef = useRef(0);
+  const handleLoadEarlierRef = useRef<(() => void) | null>(null);
 
   // Refs for latest values (used in callback ref closure)
   const themeRef = useRef(currentTheme);
@@ -137,6 +161,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         rescaleOverlappingGlyphs: true,
         macOptionIsMeta: false,
         scrollOnOutput: false,
+        scrollback: TERMINAL_SCROLLBACK_LINES,
       });
 
       const fitAddon = new FitAddon();
@@ -154,6 +179,10 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
       searchRef.current = searchAddon;
 
       term.attachCustomKeyEventHandler((e) => {
+        // During history rebuild we lock input — swallow keys so they don't
+        // race the snapshot apply.
+        if (historyLoadingRef.current) return false;
+
         const { getBinding } = useKeybindingStore.getState();
         const newLineBinding = getBinding('new-line');
         const searchBinding = getBinding('search');
@@ -209,7 +238,10 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
       });
 
       if (onInput) {
-        term.onData(onInput);
+        term.onData((data) => {
+          if (historyLoadingRef.current) return;
+          onInput(data);
+        });
       }
 
       const ro = new ResizeObserver(() => {
@@ -335,6 +367,70 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     setSearchOpen(false);
   }, []);
 
+  const handleLoadEarlier = useCallback(() => {
+    if (historyLoadingRef.current) return;
+    if (sessionMeta.reachedEarliest) return;
+    if (sessionMeta.lowestOffset <= 0) return;
+    const fromOffset = Math.max(0, sessionMeta.lowestOffset - HISTORY_CHUNK_BYTES);
+    if (fromOffset >= sessionMeta.lowestOffset) return;
+    historyLoadingRef.current = true;
+    capturedDuringLoadRef.current = [];
+    setHistoryLoading(true);
+    onLoadHistory?.(fromOffset);
+  }, [sessionMeta, onLoadHistory]);
+
+  // Keep the latest handler reachable from imperative paths (onScroll, wheel)
+  // without re-binding listeners every render.
+  useEffect(() => {
+    handleLoadEarlierRef.current = handleLoadEarlier;
+  }, [handleLoadEarlier]);
+
+  // Auto-trigger: when the user actively scrolls UP and lands at the top of
+  // xterm's scrollback, request older history. Gating on a recent wheel/touch
+  // UP gesture avoids firing on initial render or on programmatic scrolls
+  // (e.g. when the active-tab effect snaps to bottom).
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const root = term.element;
+    if (!root) return;
+
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) scrolledUpAtRef.current = performance.now();
+    };
+    const touchStartY: { y: number } = { y: 0 };
+    const onTouchStart = (e: TouchEvent) => {
+      touchStartY.y = e.touches[0]?.pageY ?? 0;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.pageY ?? 0;
+      // Finger moving DOWN reveals OLDER content in xterm scrollback.
+      if (y - touchStartY.y > 8) scrolledUpAtRef.current = performance.now();
+    };
+
+    root.addEventListener('wheel', onWheel, { passive: true });
+    root.addEventListener('touchstart', onTouchStart, { passive: true });
+    root.addEventListener('touchmove', onTouchMove, { passive: true });
+
+    const scrollDisp = term.onScroll(() => {
+      const buf = term.buffer.active;
+      if (buf.baseY === 0) return;
+      if (buf.viewportY > 0) return;
+      if (performance.now() - scrolledUpAtRef.current > AUTO_LOAD_RECENT_WINDOW_MS) return;
+      // Consume the gesture timestamp so we don't refire each frame while the
+      // viewport sits at the top.
+      scrolledUpAtRef.current = 0;
+      handleLoadEarlierRef.current?.();
+    });
+
+    return () => {
+      root.removeEventListener('wheel', onWheel);
+      root.removeEventListener('touchstart', onTouchStart);
+      root.removeEventListener('touchmove', onTouchMove);
+      scrollDisp.dispose();
+    };
+  }, [termReady]);
+
   // xterm.js handles touch by directly mutating viewport.scrollTop and calls
   // preventDefault, which kills native iOS momentum. We observe the gesture
   // and run a simple deceleration animation after release.
@@ -428,14 +524,24 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     };
   }, [termReady]);
 
+  // Subscribe to session-level offset metadata for the "load earlier" UI.
+  useEffect(() => {
+    setSessionMeta(getSessionMeta(sessionId));
+    return subscribeSessionMeta(sessionId, (m) => setSessionMeta({ ...m }));
+  }, [sessionId]);
+
   // Register this terminal as a writer on the terminalBus so raw:output
   // data is written directly from useWebSocket without going through Zustand.
+  // Also subscribes to history:snapshot so rebuild + replay happens inside
+  // the same closure as the writer (so we can coordinate the pending queue,
+  // captured-during-load queue, and the snapshot apply atomically).
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
 
-    const pendingChunks: string[] = [];
-    const pendingBytes = { current: 0 };
+    const pendingChunks = pendingChunksRef.current;
+    pendingChunks.length = 0;
+    let pendingBytes = 0;
     let flushFrame: number | null = null;
     let writeInFlight = false;
     let disposed = false;
@@ -458,7 +564,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
           const chunk = pendingChunks.shift();
           if (!chunk) break;
           const chunkBytes = estimateBase64Bytes(chunk);
-          pendingBytes.current -= chunkBytes;
+          pendingBytes -= chunkBytes;
           batch.push(chunk);
           batchBytes += chunkBytes;
         }
@@ -483,11 +589,49 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
       });
     };
 
-    registerTerminalWriter(sessionId, (b64Data: string) => {
+    registerTerminalWriter(sessionId, (b64Data: string, offsetEnd?: number) => {
       if (disposed) return;
+      if (historyLoadingRef.current) {
+        // Park new chunks until the snapshot is applied; we'll filter them by
+        // offset and replay the ones newer than the snapshot afterwards.
+        capturedDuringLoadRef.current.push({ b64: b64Data, offsetEnd });
+        return;
+      }
       pendingChunks.push(b64Data);
-      pendingBytes.current += estimateBase64Bytes(b64Data);
+      pendingBytes += estimateBase64Bytes(b64Data);
       scheduleFlush();
+    });
+
+    // Apply a server snapshot: reset xterm, replay snapshot bytes, then any
+    // live chunks that arrived during the load (filtered by offset so we
+    // don't double-write the ones already inside the snapshot).
+    const unsubscribeSnapshot = subscribeHistorySnapshot(sessionId, (snapshot) => {
+      if (disposed) return;
+      // Drop pending chunks — anything in there is already inside the snapshot
+      // window (offsetEnd <= snapshot.endOffset).
+      pendingChunks.length = 0;
+      pendingBytes = 0;
+
+      const tail = capturedDuringLoadRef.current.filter((c) =>
+        typeof c.offsetEnd !== 'number' || c.offsetEnd > snapshot.endOffset,
+      );
+      capturedDuringLoadRef.current = [];
+
+      term.reset();
+      if (snapshot.chunks.length > 0) {
+        term.write(decodeBase64Chunks(snapshot.chunks));
+      }
+      for (const c of tail) {
+        term.write(decodeBase64Chunks([c.b64]));
+      }
+      // After rebuild, leave the viewport at the top so the user sees the
+      // newly loaded older content rather than getting yanked to the bottom.
+      term.write('', () => {
+        if (disposed) return;
+        try { term.scrollToTop(); } catch { /* ignore */ }
+        historyLoadingRef.current = false;
+        setHistoryLoading(false);
+      });
     });
 
     const cleanupFlush = () => {
@@ -496,7 +640,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         flushFrame = null;
       }
       pendingChunks.length = 0;
-      pendingBytes.current = 0;
+      pendingBytes = 0;
     };
 
     // After (re)connecting, trigger a SIGWINCH on the PTY (at its current size)
@@ -510,6 +654,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     return () => {
       disposed = true;
       cleanupFlush();
+      unsubscribeSnapshot();
       unregisterTerminalWriter(sessionId);
     };
   }, [sessionId, termReady]);
@@ -548,6 +693,23 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
         ref={containerCallbackRef}
         style={{ width: '100%', height: '100%', minHeight: 0, padding: '4px' }}
       />
+      {!sessionMeta.reachedEarliest && sessionMeta.lowestOffset > 0 && (
+        <button
+          type="button"
+          className="terminal-load-earlier-btn"
+          onClick={handleLoadEarlier}
+          disabled={historyLoading}
+          title="Load earlier history (or scroll up at the top)"
+        >
+          {historyLoading ? 'Loading…' : '↑ Load earlier'}
+        </button>
+      )}
+      {historyLoading && (
+        <div className="terminal-history-overlay" aria-busy="true" aria-live="polite">
+          <div className="terminal-history-spinner" />
+          <div className="terminal-history-overlay-label">Loading history…</div>
+        </div>
+      )}
     </div>
     <MobileToolbar onInput={onInput} />
     </div>
