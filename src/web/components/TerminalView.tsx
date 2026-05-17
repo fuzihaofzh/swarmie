@@ -84,19 +84,26 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
   const fontSizeRef = useRef(fontSize);
   const fontFamilyRef = useRef(fontFamily);
 
-  useEffect(() => {
-    themeRef.current = currentTheme;
-    fontSizeRef.current = fontSize;
-    fontFamilyRef.current = fontFamily;
-    isActiveRef.current = isActive;
-  });
-
   const reportResize = useCallback((term: Terminal) => {
     const previous = lastReportedSizeRef.current;
     if (previous?.cols === term.cols && previous.rows === term.rows) return;
     lastReportedSizeRef.current = { cols: term.cols, rows: term.rows };
     onResize?.(term.cols, term.rows);
   }, [onResize]);
+
+  // Latest reportResize via ref so the active-tab effect doesn't re-run every
+  // parent render (parent passes an inline `onResize` arrow → new identity each
+  // render → effect would refit/scrollToBottom on every render, dragging the
+  // viewport away from scrolled-up users).
+  const reportResizeRef = useRef(reportResize);
+
+  useEffect(() => {
+    themeRef.current = currentTheme;
+    fontSizeRef.current = fontSize;
+    fontFamilyRef.current = fontFamily;
+    isActiveRef.current = isActive;
+    reportResizeRef.current = reportResize;
+  });
 
   const containerCallbackRef = useCallback((el: HTMLDivElement | null) => {
     containerRef.current = el;
@@ -210,9 +217,15 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
           if (!isActiveRef.current) return;
           if (!el.clientWidth || !el.clientHeight) return;
           try {
+            // Preserve scroll position for users reading scrollback — only
+            // snap to bottom on resize if they were already following live.
+            const buf = term.buffer.active;
+            const wasAtBottom = buf.viewportY >= buf.baseY;
             fitAddon.fit();
             reportResize(term);
-            term.scrollToBottom();
+            if (wasAtBottom) {
+              term.scrollToBottom();
+            }
           } catch { /* ignore */ }
         });
       });
@@ -256,6 +269,11 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
   // Fit, scroll, and focus when tab becomes active or terminal initializes.
   // New panels can become active before xterm is ready, so termReady must
   // retrigger this path after termRef has been assigned.
+  //
+  // Deliberately excluded from deps: reportResize (parent passes a new inline
+  // arrow each render, so listing it here re-fired the effect on every render
+  // and yanked scrolled-up users back to the bottom). Latest reportResize is
+  // pulled via reportResizeRef. getFocusPolicyEnv is also pulled fresh inside.
   useEffect(() => {
     if (!isActive) return;
     const term = termRef.current;
@@ -265,14 +283,15 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw 
     requestAnimationFrame(() => {
       try {
         fitAddon?.fit();
-        reportResize(term);
+        reportResizeRef.current(term);
       } catch { /* ignore */ }
       term.scrollToBottom();
       if (autoFocus) {
         term.focus();
       }
     });
-  }, [isActive, termReady, getFocusPolicyEnv, reportResize]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, termReady]);
 
   // Update terminal when theme/font changes
   useEffect(() => {
