@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { ServerConnection } from './useWebSocket';
-import { useServerStore, LOCAL_SERVER } from './useServers';
+import { useServerStore, LOCAL_SERVER, type ConnectionStatus } from './useServers';
 import { useSessionStore, registerAutoApproveSync, registerSessionSettingsSync, type SessionSettingsPatch } from './useSessions';
 import { registerAutoCompactMinutesSync, useUIStore } from './useUI';
 
@@ -61,6 +61,18 @@ export function useMultiWebSocket() {
       connectionsRef.current.clear();
     };
   }, [getConnectionForSession]);
+
+  // Lazily request per-session history when the user activates a session.
+  // Subscribing to `subscribe:all` only enrols for live events; raw replay
+  // is fetched on demand so we don't blast N×2MB across the WS on connect.
+  // Also retried when the owning server reconnects (ws.onopen clears the
+  // per-connection requestedReplay set), so the active session re-fetches.
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const connectionStatus: Record<string, ConnectionStatus> = useServerStore((s) => s.connectionStatus);
+  useEffect(() => {
+    if (!activeSessionId) return;
+    getConnectionForSession(activeSessionId)?.requestReplayOnce(activeSessionId);
+  }, [activeSessionId, connectionStatus, getConnectionForSession]);
 
   // Sync remote server connections when server list changes
   useEffect(() => {

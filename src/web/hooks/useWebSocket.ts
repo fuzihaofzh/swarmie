@@ -55,6 +55,9 @@ export class ServerConnection {
   private shutdown = false;
   private disposed = false;
   private retryPaused = false;
+  /** sessionIds whose history we've already requested over the current ws.
+   *  Cleared on every reconnect — the server tracks subscriptions per-socket. */
+  private requestedReplay = new Set<string>();
 
   constructor(serverUrl: string, token?: string) {
     this.serverUrl = serverUrl;
@@ -82,6 +85,7 @@ export class ServerConnection {
     ws.onopen = () => {
       this.retryPaused = false;
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'connected');
+      this.requestedReplay.clear();
       ws.send(JSON.stringify({ type: 'subscribe:all' }));
       // Heartbeat to keep connection alive in background tabs
       clearInterval(this.pingTimer);
@@ -176,6 +180,17 @@ export class ServerConnection {
 
   sendLoadHistory(sessionId: string, fromOffset: number): void {
     this.send({ type: 'history:load', sessionId, fromOffset });
+  }
+
+  /** Request the initial raw-output replay for a session, but only once per
+   *  ws lifetime. Server's `subscribe:all` no longer pushes per-session
+   *  replays (would blast N×2MB on connect), so callers ask for the active
+   *  session's history on demand. */
+  requestReplayOnce(sessionId: string): void {
+    if (this.requestedReplay.has(sessionId)) return;
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.requestedReplay.add(sessionId);
+    this.send({ type: 'subscribe', sessionId });
   }
 
   sendAutoApprove(sessionId: string, value: boolean): void {

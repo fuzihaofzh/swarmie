@@ -370,14 +370,13 @@ function handleMessage(
       break;
     }
     case 'subscribe:all': {
+      // Subscribe to live events for every session (used for status/settings
+      // updates across the dashboard) but DO NOT replay raw history here.
+      // Replaying N × 2MB on every connect saturates bandwidth-limited
+      // tunnels (e.g. SSH -L) and stalls the WS write loop. Clients request
+      // per-session replay via `subscribe { sessionId }` when the user
+      // actually views that session.
       subs.add('*');
-      // Send recent events for all existing sessions
-      for (const session of manager.getAllSessions()) {
-        const events = session.getRecentEvents();
-        if (events.length > 0) {
-          send(socket, { type: 'event:batch', sessionId: session.id, events });
-        }
-      }
       break;
     }
     case 'unsubscribe': {
@@ -513,10 +512,27 @@ function sessionSettingsPayload(session: NonNullable<ReturnType<SessionManager['
   };
 }
 
-function send(ws: WebSocket, data: unknown): void {
-  if (ws.readyState === 1) { // WebSocket.OPEN
-    ws.send(JSON.stringify(data));
+// Soft cap on per-socket buffered bytes. Above this we log a warning so we
+// can spot pathological cases; we don't drop messages — the underlying ws
+// library will continue to queue, and the callback form of ws.send() lets
+// callers chain large replays serially instead of blasting them at once.
+const WS_BUFFERED_WARN_BYTES = 4 * 1024 * 1024;
+
+function send(ws: WebSocket, data: unknown, onWritten?: (err?: Error) => void): void {
+  if (ws.readyState !== 1) { // not OPEN
+    onWritten?.(new Error('ws not open'));
+    return;
   }
+  if (ws.bufferedAmount > WS_BUFFERED_WARN_BYTES) {
+    logObservabilityEvent('ws.backpressure', {
+      level: 'warn',
+      requestId: null,
+      sessionId: null,
+      errorCode: 'WS_BACKPRESSURE',
+      details: { bufferedAmount: ws.bufferedAmount },
+    });
+  }
+  ws.send(JSON.stringify(data), (err?: Error) => onWritten?.(err));
 }
 
 function broadcast(clients: Set<WebSocket>, data: unknown): void {

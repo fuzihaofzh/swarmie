@@ -100,6 +100,10 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
   // state would race with the render cycle.
   const [sessionMeta, setSessionMeta] = useState<SessionMeta>(() => getSessionMeta(sessionId));
   const [historyLoading, setHistoryLoading] = useState(false);
+  /** xterm viewport is scrolled to the very top with scrollback available.
+   *  Used to gate the "Load earlier" button so it only appears as an
+   *  affordance once the user has actually scrolled all the way up. */
+  const [atTop, setAtTop] = useState(false);
   const historyLoadingRef = useRef(false);
   const capturedDuringLoadRef = useRef<Array<{ b64: string; offsetEnd?: number }>>([]);
   const pendingChunksRef = useRef<string[]>([]);
@@ -417,9 +421,9 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       if (y - touchStartY.y > 8) scrolledUpAtRef.current = performance.now();
     };
     const onScroll = () => {
-      if (viewport.scrollTop > 0) return;
-      // baseY check via xterm — if no scrollback yet, ignore.
-      if (term.buffer.active.baseY === 0) return;
+      const isTop = viewport.scrollTop === 0 && term.buffer.active.baseY > 0;
+      setAtTop(isTop);
+      if (!isTop) return;
       if (performance.now() - scrolledUpAtRef.current > AUTO_LOAD_RECENT_WINDOW_MS) return;
       // Consume the gesture timestamp so we don't refire each frame while
       // the viewport sits at the top.
@@ -702,13 +706,13 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
         ref={containerCallbackRef}
         style={{ width: '100%', height: '100%', minHeight: 0, padding: '4px' }}
       />
-      {!sessionMeta.reachedEarliest && sessionMeta.lowestOffset > 0 && (
+      {atTop && !sessionMeta.reachedEarliest && sessionMeta.lowestOffset > 0 && (
         <button
           type="button"
           className="terminal-load-earlier-btn"
           onClick={handleLoadEarlier}
           disabled={historyLoading}
-          title="Load earlier history (or scroll up at the top)"
+          title="Load earlier history"
         >
           {historyLoading ? 'Loading…' : '↑ Load earlier'}
         </button>
