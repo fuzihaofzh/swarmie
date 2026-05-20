@@ -162,6 +162,18 @@ export abstract class BaseAdapter extends EventEmitter {
   /** Send input to the tool (for interactive mode) */
   abstract write(data: string): void;
 
+  /**
+   * Send keystrokes WITHOUT marking the session as a user-submitted command.
+   * Used by auto-approve: routing its Enter through write() runs the
+   * user-input state machine, which for a remote session locally flips status
+   * to "running" even though the remote prompt may not have been accepted —
+   * masking that we're still waiting and defeating retries. Defaults to
+   * write(); RemoteAdapter overrides to forward without touching input state.
+   */
+  forwardKeys(data: string): void {
+    this.write(data);
+  }
+
   /** Resize the PTY */
   abstract resize(cols: number, rows: number): void;
 

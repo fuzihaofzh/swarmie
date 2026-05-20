@@ -16,6 +16,12 @@ const MAX_RAW_BYTES = 16 * 1024 * 1024; // 16MB
 // don't pay a 16MB transfer on every connect.
 const INITIAL_RAW_REPLAY_BYTES = 2 * 1024 * 1024; // 2MB
 const DEFAULT_AUTO_COMPACT_MINUTES = 60;
+// Auto-approve presses Enter to accept the default ("Yes") option. The first
+// press can be missed if the prompt is still rendering or (for remote
+// sessions) in flight, so retry a few times while we stay in waiting_input.
+const AUTO_APPROVE_INITIAL_DELAY_MS = 1000;
+const AUTO_APPROVE_RETRY_DELAY_MS = 2000;
+const MAX_AUTO_APPROVE_ATTEMPTS = 3;
 const DEFAULT_REPEAT_INTERVAL_SECONDS = 60;
 const AUTO_COMPACT_COMMAND = '/compact';
 const REPEAT_CLEAR_COMMAND = '/clear';
@@ -98,6 +104,7 @@ export class Session extends EventEmitter {
   private _initialHostname: string;
   private _autoCompactMinutes = DEFAULT_AUTO_COMPACT_MINUTES;
   private _autoApproveTimer: ReturnType<typeof setTimeout> | null = null;
+  private _autoApproveAttempts = 0;
   private _autoCompactTimer: ReturnType<typeof setTimeout> | null = null;
   private _repeatTimer: ReturnType<typeof setTimeout> | null = null;
   private _repeatClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -194,7 +201,11 @@ export class Session extends EventEmitter {
     if (patch.autoApprove !== undefined) {
       this.autoApprove = patch.autoApprove;
       if (this.autoApprove && this.adapter.status === 'waiting_input') {
+        this._autoApproveAttempts = 0;
         this.scheduleAutoApprove();
+      } else if (!this.autoApprove) {
+        this.clearAutoApproveTimer();
+        this._autoApproveAttempts = 0;
       }
     }
     if (patch.autoCompact !== undefined) {
@@ -380,7 +391,12 @@ export class Session extends EventEmitter {
       case 'status:change': {
         const data = event.data as { from: SessionStatus; to: SessionStatus };
         if (data.to === 'waiting_input' && this.autoApprove) {
+          this._autoApproveAttempts = 0; // fresh prompt
           this.scheduleAutoApprove();
+        } else if (data.from === 'waiting_input' && data.to !== 'waiting_input') {
+          // Prompt was accepted (or the user acted) — stop retrying.
+          this.clearAutoApproveTimer();
+          this._autoApproveAttempts = 0;
         }
         if (isAutoCompactBusyStatus(data.to) && this._autoCompactBlockedUntilBusy && !this._autoCompactWaitingForRunToIdle) {
           this._autoCompactBlockedUntilBusy = false;
@@ -417,12 +433,26 @@ export class Session extends EventEmitter {
 
   private scheduleAutoApprove(): void {
     if (this._autoApproveTimer) return;
+    const delay = this._autoApproveAttempts === 0
+      ? AUTO_APPROVE_INITIAL_DELAY_MS
+      : AUTO_APPROVE_RETRY_DELAY_MS;
     this._autoApproveTimer = setTimeout(() => {
       this._autoApproveTimer = null;
-      if (this.autoApprove && this.adapter.status === 'waiting_input') {
-        this.write('\r');
+      if (!this.autoApprove || this.adapter.status !== 'waiting_input') {
+        this._autoApproveAttempts = 0;
+        return;
       }
-    }, 1000);
+      // forwardKeys (not write) so a remote session's status stays waiting_input
+      // until the remote actually moves past the prompt — otherwise the local
+      // input state machine flips us to "running" and we'd never retry.
+      this.adapter.forwardKeys('\r');
+      this._autoApproveAttempts++;
+      if (this._autoApproveAttempts < MAX_AUTO_APPROVE_ATTEMPTS) {
+        this.scheduleAutoApprove(); // retry if the prompt is still up
+      } else {
+        this._autoApproveAttempts = 0;
+      }
+    }, delay);
   }
 
   private clearAutoApproveTimer(): void {

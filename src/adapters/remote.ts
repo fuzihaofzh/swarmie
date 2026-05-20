@@ -64,6 +64,12 @@ export class RemoteAdapter extends BaseAdapter {
     this.onWrite?.(data);
   }
 
+  /** Forward keys to the remote PTY without running the local input state
+   *  machine — the remote's own detection drives status. */
+  forwardKeys(data: string): void {
+    this.onWrite?.(data);
+  }
+
   resize(cols: number, rows: number): void {
     this.onResize?.(cols, rows);
   }
