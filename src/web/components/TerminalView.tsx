@@ -42,6 +42,23 @@ const HISTORY_CHUNK_BYTES = 2 * 1024 * 1024;
 /** Auto-trigger only fires if the user wheel/touch-swiped up within this window. */
 const AUTO_LOAD_RECENT_WINDOW_MS = 600;
 
+// Dev inspector for client-side freezes: run `__swarmieTerm()` in the browser
+// console to dump each mounted terminal's xterm buffer size. The server debug
+// endpoint can't see browser state, so this is how we check whether a giant
+// client scrollback is the culprit.
+const mountedTerms = new Map<string, Terminal>();
+if (typeof window !== 'undefined') {
+  (window as unknown as { __swarmieTerm?: () => unknown }).__swarmieTerm = () =>
+    [...mountedTerms.entries()].map(([id, t]) => ({
+      session: id,
+      bufferLines: t.buffer.active.length,
+      viewportY: t.buffer.active.viewportY,
+      baseY: t.buffer.active.baseY,
+      cols: t.cols,
+      rows: t.rows,
+    }));
+}
+
 export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw, onLoadHistory }: TerminalViewProps) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -240,6 +257,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
 
       termRef.current = term;
       fitRef.current = fitAddon;
+      mountedTerms.set(sessionId, term);
 
       // Fit first, THEN signal ready — ensures buffered data is replayed
       // at the correct terminal dimensions, not the default 80x24.
@@ -266,10 +284,12 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
   useEffect(() => {
     return () => {
       observerRef.current?.disconnect();
+      mountedTerms.delete(sessionId);
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fit, scroll, and focus when tab becomes active or terminal initializes.
@@ -569,8 +589,21 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
         const wasAtBottom = buf.viewportY >= buf.baseY;
 
         writeInFlight = true;
+        const writeStart = performance.now();
+        const writeBytes = batchBytes;
         term.write(decodeBase64Chunks(batch), () => {
           if (disposed) return;
+          // Client-side jank visibility: a slow term.write is the main suspect
+          // for a "frozen" tab. Log it with buffer size so we can see whether
+          // xterm parse/layout is the bottleneck (server endpoint can't).
+          const dur = performance.now() - writeStart;
+          if (dur > 50) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[swarmie] slow term.write ${dur.toFixed(0)}ms bytes=${writeBytes} ` +
+              `bufferLines=${term.buffer.active.length} pending=${pendingChunks.length} session=${sessionId}`,
+            );
+          }
           if (wasAtBottom) {
             term.scrollToBottom();
           }
