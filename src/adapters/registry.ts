@@ -12,10 +12,6 @@ export function registerAdapter(name: string, ctor: AdapterConstructor): void {
   registry.set(name, ctor);
 }
 
-export function getAdapter(name: string): AdapterConstructor | undefined {
-  return registry.get(name);
-}
-
 export function getAdapterNames(): string[] {
   return Array.from(registry.keys());
 }

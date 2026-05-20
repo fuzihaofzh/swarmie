@@ -6,4 +6,4 @@ export { CodexAdapter } from './codex.js';
 export { GeminiAdapter } from './gemini.js';
 export { GenericAdapter } from './generic.js';
 export { RemoteAdapter } from './remote.js';
-export { registerAdapter, getAdapter, getAdapterNames, createAdapter } from './registry.js';
+export { registerAdapter, getAdapterNames, createAdapter } from './registry.js';

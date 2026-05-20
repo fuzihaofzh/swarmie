@@ -27,11 +27,8 @@ export interface SwarmieOptions {
   port: number;
   host: string;
   web: boolean;
-  log: boolean;
-  theme: string;
   sessionName?: string;
   record: boolean;
-  share: boolean;
   server?: string;
   password?: string;
 }
@@ -55,11 +52,8 @@ export function createProgram(): Command {
     .option('--port <number>', 'Web dashboard port', '3200')
     .option('--host <address>', 'Web dashboard listen address', '127.0.0.1')
     .option('--no-web', 'Disable web dashboard')
-    .option('--log', 'Enable file logging', false)
-    .option('--theme <name>', 'Dashboard theme', 'dark')
     .option('--session-name <name>', 'Custom session name')
     .option('--record', 'Record session to JSONL', false)
-    .option('--share', 'Generate shareable HTML after session', false)
     .option('--server <host:port>', 'Connect to a remote coordinator')
     .option('--password <string>', 'Password for web dashboard');
 
@@ -97,11 +91,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       port: parseInt(opts.port, 10),
       host: opts.host,
       web: opts.web !== false,
-      log: opts.log,
-      theme: opts.theme,
       sessionName: opts.sessionName,
       record: opts.record,
-      share: opts.share,
       server: opts.server,
       password: opts.password,
     },

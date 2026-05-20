@@ -72,3 +72,16 @@ export class RemoteAdapter extends BaseAdapter {
     this.onKill?.(signal);
   }
 }
+
+/**
+ * Resolve a session's adapter to a RemoteAdapter, or null if the session is
+ * missing or backed by a local adapter. Typed structurally so this helper
+ * doesn't pull SessionManager into the adapter layer.
+ */
+export function getRemoteAdapter(
+  manager: { getSession(id: string): { adapter: BaseAdapter } | undefined },
+  sessionId: string,
+): RemoteAdapter | null {
+  const adapter = manager.getSession(sessionId)?.adapter;
+  return adapter instanceof RemoteAdapter ? adapter : null;
+}

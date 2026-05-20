@@ -4,13 +4,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { hostname as osHostname } from 'node:os';
 import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, SessionStatus, CwdChangeData } from './types.js';
+import {
+  ESC_CHAR, BEL_CHAR, NUL_CHAR, US_CHAR,
+  OSC_ANY_RE, CSI_RE, ESC_OTHER_RE, CONTROL_CHARS_RE,
+} from './ansi.js';
 
 const execFileAsync = promisify(execFile);
 
-const ESC_CHAR = String.fromCharCode(0x1b);
-const BEL_CHAR = String.fromCharCode(0x07);
-const NUL_CHAR = String.fromCharCode(0x00);
-const US_CHAR = String.fromCharCode(0x1f);
 const COMMAND_IDLE_TIMEOUT_MS = 30_000;
 const ACTIVITY_CHECK_INTERVAL_MS = 2_000;
 const USER_INPUT_ACTIVE_MS = 3_000;
@@ -47,10 +47,6 @@ const OSC_TITLE_RE = new RegExp(
   `${ESC_CHAR}\\][02];([^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
   'g',
 );
-const OSC_ANY_RE = new RegExp(`${ESC_CHAR}\\].*?(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`, 'g');
-const CSI_RE = new RegExp(`${ESC_CHAR}\\[[0-9;:?]*[A-Za-z~]`, 'g');
-const ESC_OTHER_RE = new RegExp(`${ESC_CHAR}[^\\[].?`, 'g');
-const CONTROL_CHARS_RE = new RegExp(`[${NUL_CHAR}-${US_CHAR}]`, 'g');
 const CSI_FRAGMENT_RE = /\[(?:\??\d{1,3}[A-Za-z~]|(?:\d{1,3}[;:?]){1,16}\d{0,3}(?:[A-Za-z~])?)/g;
 const SGR_TAIL_FRAGMENT_RE = /(?:^|\s)(?:\d{1,3}[;:]){2,}\d{1,3}m/g;
 const SGR_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[<\\d+;\\d+;\\d+[mM]`);

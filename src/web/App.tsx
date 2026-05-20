@@ -15,6 +15,7 @@ import { useDockviewSync } from './hooks/useDockviewSync';
 import { useMRU } from './hooks/useMRU';
 import { TabSwitcher } from './components/TabSwitcher';
 import { TagSwitcher } from './components/TagSwitcher';
+import { sessionMatchesTagFilter } from './tagFilter';
 
 const components = {
   terminal: DockviewTerminalPanel,
@@ -100,8 +101,8 @@ export function App() {
         ? group.panels
         : group.panels.filter((p) => {
             const session = sessions.find((s) => s.id === p.id);
-            if (!session) return true;
-            return (session.tags ?? []).some((tag) => tagFilter.includes(tag));
+            // Non-session panels (e.g. the new-session panel) always pass.
+            return !session || sessionMatchesTagFilter(session, tagFilter);
           });
       if (panels.length < 2) return;
       e.preventDefault();
@@ -313,7 +314,7 @@ function TagFilterSettings() {
 
   const visibleCount = tagFilter.length === 0
     ? sessions.length
-    : sessions.filter((session) => (session.tags ?? []).some((tag) => tagFilter.includes(tag))).length;
+    : sessions.filter((session) => sessionMatchesTagFilter(session, tagFilter)).length;
 
   return (
     <div className="settings-section">

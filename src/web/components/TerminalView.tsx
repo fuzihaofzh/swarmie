@@ -20,6 +20,7 @@ import {
   shouldAutoFocusTerminal,
   shouldRestoreTerminalFocusAfterSearchClose,
 } from '../focusPolicy';
+import { decodeBase64Chunks, estimateBase64Bytes } from '../base64';
 
 interface TerminalViewProps {
   sessionId: string;
@@ -39,41 +40,6 @@ const TERMINAL_SCROLLBACK_LINES = 200000;
 const HISTORY_CHUNK_BYTES = 2 * 1024 * 1024;
 /** Auto-trigger only fires if the user wheel/touch-swiped up within this window. */
 const AUTO_LOAD_RECENT_WINDOW_MS = 600;
-
-function estimateBase64Bytes(b64Data: string): number {
-  return Math.ceil((b64Data.length * 3) / 4);
-}
-
-function decodeBase64Chunks(chunks: string[]): Uint8Array {
-  if (chunks.length === 1) {
-    const binary = atob(chunks[0]);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  }
-
-  const parts: Uint8Array[] = [];
-  let totalLen = 0;
-  for (const b64Data of chunks) {
-    const binary = atob(b64Data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    parts.push(bytes);
-    totalLen += bytes.length;
-  }
-
-  const merged = new Uint8Array(totalLen);
-  let offset = 0;
-  for (const part of parts) {
-    merged.set(part, offset);
-    offset += part.length;
-  }
-  return merged;
-}
 
 export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw, onLoadHistory }: TerminalViewProps) {
   const termRef = useRef<Terminal | null>(null);

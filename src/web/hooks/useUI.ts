@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 
 interface UIState {
-  drawerOpen: boolean;
   theme: string;
   fontSize: number;
   fontFamily: string;
@@ -10,9 +9,6 @@ interface UIState {
   settingsOpen: boolean;
   autoCompactMinutes: number;
   tagFilter: string[];
-  openDrawer: () => void;
-  closeDrawer: () => void;
-  toggleDrawer: () => void;
   openSettings: () => void;
   closeSettings: () => void;
   setTheme: (theme: string) => void;
@@ -52,7 +48,6 @@ function clampAutoCompactMinutes(minutes: number): number {
 }
 
 export const useUIStore = create<UIState>((set) => ({
-  drawerOpen: false,
   theme: savedTheme,
   fontSize: savedFontSize,
   fontFamily: savedFontFamily,
@@ -64,10 +59,7 @@ export const useUIStore = create<UIState>((set) => ({
     : 60,
   tagFilter: loadTagFilter(),
 
-  openDrawer: () => set({ drawerOpen: true }),
-  closeDrawer: () => set({ drawerOpen: false }),
-  toggleDrawer: () => set((s) => ({ drawerOpen: !s.drawerOpen })),
-  openSettings: () => set({ settingsOpen: true, drawerOpen: false }),
+  openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
 
   setTheme: (theme) => {

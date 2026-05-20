@@ -9,6 +9,7 @@ import { loadConfig } from '../cli/config.js';
 import { createAdapter, getAdapterNames } from '../adapters/registry.js';
 import { nanoid } from 'nanoid';
 import { logObservabilityEvent, resolveRequestId } from './observability.js';
+import { stripAnsiToText } from '../adapters/ansi.js';
 
 function resolveRecordingFilePath(recordDir: string, rawFilename: string): string | null {
   if (!rawFilename || rawFilename.includes('\0')) {
@@ -364,19 +365,7 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
       const recentRaw = rawEvents.slice(-5).map((e) => {
         const b64 = (e.data as { data: string }).data;
         try {
-          const esc = String.fromCharCode(0x1b);
-          const bel = String.fromCharCode(0x07);
-          const nul = String.fromCharCode(0x00);
-          const us = String.fromCharCode(0x1f);
-          const bytes = Buffer.from(b64, 'base64');
-          // Strip ANSI for readability
-          const text = bytes.toString('utf-8')
-            .replace(new RegExp(`${esc}\\].*?(?:${bel}|${esc}\\\\)`, 'g'), '')
-            .replace(new RegExp(`${esc}\\[[0-9;?]*[A-Za-z~]`, 'g'), '')
-            .replace(new RegExp(`${esc}[^\\[].?`, 'g'), '')
-            .replace(new RegExp(`[${nul}-${us}]`, 'g'), ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
+          const text = stripAnsiToText(Buffer.from(b64, 'base64').toString('utf-8'));
           return { time: new Date(e.timestamp).toISOString(), text: text.slice(-200) };
         } catch {
           return { time: new Date(e.timestamp).toISOString(), text: '(decode error)' };

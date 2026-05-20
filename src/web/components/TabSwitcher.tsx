@@ -3,6 +3,7 @@ import { useSessionStore } from '../hooks/useSessions';
 import { ToolIcon } from './ToolIcon';
 import { useKeybindingStore, matchesAction } from '../hooks/useKeybindings';
 import { useUIStore } from '../hooks/useUI';
+import { sessionMatchesTagFilter } from '../tagFilter';
 
 interface TabSwitcherProps {
   mruRef: React.RefObject<string[]>;

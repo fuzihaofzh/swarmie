@@ -5,6 +5,7 @@ import { useSessionStore } from '../hooks/useSessions';
 import { useUIStore } from '../hooks/useUI';
 import { useWsContext } from '../contexts/WsContext';
 import { ToolIcon } from './ToolIcon';
+import { sessionMatchesTagFilter } from '../tagFilter';
 
 const NEW_SESSION_PANEL_ID = '__new_session__';
 
@@ -15,20 +16,6 @@ function shortPath(p: string): string {
   const lastSlash = name.lastIndexOf('/');
   if (lastSlash === -1) return name;
   return name.slice(lastSlash + 1) || p;
-}
-
-function _shortPathFull(p: string): string {
-  // macOS: /Users/name/... → ~/...
-  // Linux: /home/name/... → ~/...
-  for (const prefix of ['/Users/', '/home/']) {
-    if (p.startsWith(prefix)) {
-      const rest = p.slice(prefix.length);
-      const slashIdx = rest.indexOf('/');
-      if (slashIdx === -1) return '~';
-      return '~' + rest.slice(slashIdx);
-    }
-  }
-  return p;
 }
 
 function formatRemaining(target: number | null | undefined, now: number): string {
@@ -122,8 +109,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
 
   if (!session) return null;
 
-  const filteredOut = tagFilter.length > 0
-    && !(session.tags ?? []).some((tag) => tagFilter.includes(tag));
+  const filteredOut = tagFilter.length > 0 && !sessionMatchesTagFilter(session, tagFilter);
 
   const active = !!session.autoApprove;
   const isRemote = !!session.serverUrl;

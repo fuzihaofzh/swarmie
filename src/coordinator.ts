@@ -3,7 +3,7 @@ import type { SwarmieOptions } from './cli/index.js';
 import { ensureConfigDir, getSocketPath, getLockPath } from './cli/config.js';
 import type { BaseAdapter } from './adapters/index.js';
 import type { NormalizedEvent } from './adapters/types.js';
-import { RemoteAdapter } from './adapters/remote.js';
+import { RemoteAdapter, getRemoteAdapter } from './adapters/remote.js';
 import { SessionManager } from './session/manager.js';
 import { createServer } from './server/index.js';
 import { SessionRecorder } from './session/recorder.js';
@@ -324,10 +324,3 @@ function isProcessRunning(pid: number): boolean {
   }
 }
 
-function getRemoteAdapter(manager: SessionManager, sessionId: string): RemoteAdapter | null {
-  const session = manager.getSession(sessionId);
-  if (!session) return null;
-  const adapter = session.adapter;
-  if (adapter instanceof RemoteAdapter) return adapter;
-  return null;
-}

@@ -3,6 +3,7 @@ import type { DockviewApi } from 'dockview';
 import { useSessionStore, type SessionSummary } from './useSessions';
 import { useUIStore } from './useUI';
 import { NEW_SESSION_PANEL_ID } from '../components/DockviewCustomTab';
+import { sessionMatchesTagFilter } from '../tagFilter';
 
 const LAYOUT_KEY_DESKTOP = 'swarmie-dockview-layout';
 const LAYOUT_KEY_MOBILE = 'swarmie-dockview-layout-mobile';
@@ -11,11 +12,6 @@ const MOBILE_VIEWPORT_BREAKPOINT = 768;
 function getLayoutKey(): string {
   if (typeof window === 'undefined') return LAYOUT_KEY_DESKTOP;
   return window.innerWidth < MOBILE_VIEWPORT_BREAKPOINT ? LAYOUT_KEY_MOBILE : LAYOUT_KEY_DESKTOP;
-}
-
-function sessionMatchesTagFilter(session: SessionSummary, tagFilter: string[]): boolean {
-  if (tagFilter.length === 0) return true;
-  return (session.tags ?? []).some((tag) => tagFilter.includes(tag));
 }
 
 /**

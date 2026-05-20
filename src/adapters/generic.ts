@@ -7,6 +7,7 @@ import type {
   SessionEndData,
   ToolDetectData,
 } from './types.js';
+import { ESC_CHAR, BEL_CHAR, OSC_ANY_RE, CSI_RE, ESC_OTHER_RE, CONTROL_CHARS_RE } from './ansi.js';
 
 const TOOL_SIGNATURES: { pattern: RegExp; tool: string; displayName: string }[] = [
   { pattern: /claude/i, tool: 'claude', displayName: 'Claude Code' },
@@ -14,18 +15,10 @@ const TOOL_SIGNATURES: { pattern: RegExp; tool: string; displayName: string }[] 
   { pattern: /gemini/i, tool: 'gemini', displayName: 'Gemini' },
 ];
 
-const ESC_CHAR = String.fromCharCode(0x1b);
-const BEL_CHAR = String.fromCharCode(0x07);
-const NUL_CHAR = String.fromCharCode(0x00);
-const US_CHAR = String.fromCharCode(0x1f);
 const OSC_PAYLOAD_RE = new RegExp(
   `${ESC_CHAR}\\]\\d+;([^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
   'g',
 );
-const OSC_ANY_RE = new RegExp(`${ESC_CHAR}\\].*?(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`, 'g');
-const CSI_RE = new RegExp(`${ESC_CHAR}\\[[0-9;?]*[A-Za-z~]`, 'g');
-const ESC_OTHER_RE = new RegExp(`${ESC_CHAR}[^\\[].?`, 'g');
-const CONTROL_CHARS_RE = new RegExp(`[${NUL_CHAR}-${US_CHAR}]`, 'g');
 
 /**
  * Generic adapter — runs any command via PTY.

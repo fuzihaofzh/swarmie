@@ -11,6 +11,8 @@
  * older remains in its buffer).
  */
 
+import { estimateBase64Bytes } from './base64';
+
 type Writer = (b64Data: string, offsetEnd?: number) => void;
 type SnapshotListener = (snapshot: HistorySnapshot) => void;
 type MetaListener = (meta: SessionMeta) => void;
@@ -37,10 +39,6 @@ export interface HistorySnapshot {
   endOffset: number;
   chunks: string[];
   reachedEarliest: boolean;
-}
-
-function estimateBase64Bytes(b64Data: string): number {
-  return Math.ceil((b64Data.length * 3) / 4);
 }
 
 function getOrCreateMeta(sessionId: string): SessionMeta {

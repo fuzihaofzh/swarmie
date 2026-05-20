@@ -3,7 +3,7 @@ import type { WebSocket } from '@fastify/websocket';
 import type { SessionManager } from '../session/manager.js';
 import type { NormalizedEvent } from '../adapters/types.js';
 import type { SessionSummary } from '../session/types.js';
-import { RemoteAdapter } from '../adapters/remote.js';
+import { RemoteAdapter, getRemoteAdapter } from '../adapters/remote.js';
 import type { BaseAdapter } from '../adapters/base.js';
 import { logObservabilityEvent, resolveRequestId } from './observability.js';
 
@@ -396,20 +396,23 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     broadcast(clients, { type: 'session:removed', sessionId });
   });
 
-  // Broadcast events to subscribed clients
+  // Broadcast events to subscribed clients. raw:output fires constantly, so
+  // serialize each message ONCE here rather than per subscribed client.
   manager.on('event', (event: NormalizedEvent) => {
+    const eventPayload = JSON.stringify({ type: 'event', event });
     const session = event.type === 'status:change' ? manager.getSession(event.sessionId) : undefined;
+    const settingsPayload = session
+      ? JSON.stringify({
+          type: 'session:settings',
+          sessionId: event.sessionId,
+          settings: sessionSettingsPayload(session),
+        })
+      : null;
     for (const [ws, subs] of subscriptions) {
       // Send if subscribed to this session or subscribed to '*' (all)
       if (subs.has(event.sessionId) || subs.has('*')) {
-        send(ws, { type: 'event', event });
-        if (session) {
-          send(ws, {
-            type: 'session:settings',
-            sessionId: event.sessionId,
-            settings: sessionSettingsPayload(session),
-          });
-        }
+        sendRaw(ws, eventPayload);
+        if (settingsPayload) sendRaw(ws, settingsPayload);
       }
     }
   });
@@ -602,11 +605,7 @@ function sessionSettingsPayload(session: NonNullable<ReturnType<SessionManager['
 // callers chain large replays serially instead of blasting them at once.
 const WS_BUFFERED_WARN_BYTES = 4 * 1024 * 1024;
 
-function send(ws: WebSocket, data: unknown, onWritten?: (err?: Error) => void): void {
-  if (ws.readyState !== 1) { // not OPEN
-    onWritten?.(new Error('ws not open'));
-    return;
-  }
+function warnIfBackpressured(ws: WebSocket): void {
   if (ws.bufferedAmount > WS_BUFFERED_WARN_BYTES) {
     logObservabilityEvent('ws.backpressure', {
       level: 'warn',
@@ -616,15 +615,29 @@ function send(ws: WebSocket, data: unknown, onWritten?: (err?: Error) => void): 
       details: { bufferedAmount: ws.bufferedAmount },
     });
   }
+}
+
+/** Send an already-serialized payload — lets callers stringify once and fan
+ *  the same string out to many sockets instead of re-encoding per client. */
+function sendRaw(ws: WebSocket, payload: string): void {
+  if (ws.readyState !== 1) return; // not OPEN
+  warnIfBackpressured(ws);
+  ws.send(payload);
+}
+
+function send(ws: WebSocket, data: unknown, onWritten?: (err?: Error) => void): void {
+  if (ws.readyState !== 1) { // not OPEN
+    onWritten?.(new Error('ws not open'));
+    return;
+  }
+  warnIfBackpressured(ws);
   ws.send(JSON.stringify(data), (err?: Error) => onWritten?.(err));
 }
 
 function broadcast(clients: Set<WebSocket>, data: unknown): void {
   const payload = JSON.stringify(data);
   for (const ws of clients) {
-    if (ws.readyState === 1) {
-      ws.send(payload);
-    }
+    sendRaw(ws, payload);
   }
 }
 
@@ -689,14 +702,6 @@ function handleRemoteEvent(
 
   const remoteAdapter = getRemoteAdapter(manager, event.sessionId);
   remoteAdapter?.pushEvent(event);
-}
-
-function getRemoteAdapter(manager: SessionManager, sessionId: string): RemoteAdapter | null {
-  const session = manager.getSession(sessionId);
-  if (!session) return null;
-  const adapter = session.adapter;
-  if (adapter instanceof RemoteAdapter) return adapter;
-  return null;
 }
 
 function isWSMessage(value: unknown): value is WSMessage {
