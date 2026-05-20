@@ -90,11 +90,29 @@ export function App() {
       if (!api) return;
       const group = api.activeGroup;
       if (!group) return;
-      const panels = group.panels;
+      // Skip panels hidden by the tag filter — otherwise arrow-switching
+      // lands on tabs whose headers are CSS-hidden, which looks like jumping
+      // to nowhere. Non-session panels (e.g. the new-session panel) always
+      // pass since they have no tags to match against.
+      const tagFilter = useUIStore.getState().tagFilter;
+      const sessions = useSessionStore.getState().sessions;
+      const panels = tagFilter.length === 0
+        ? group.panels
+        : group.panels.filter((p) => {
+            const session = sessions.find((s) => s.id === p.id);
+            if (!session) return true;
+            return (session.tags ?? []).some((tag) => tagFilter.includes(tag));
+          });
       if (panels.length < 2) return;
       e.preventDefault();
       const activePanel = api.activePanel;
       const idx = panels.findIndex((p) => p === activePanel);
+      // Active panel itself filtered out (shouldn't normally happen, the sync
+      // hook reconciles it) — fall back to the first visible panel.
+      if (idx === -1) {
+        panels[0].api.setActive();
+        return;
+      }
       const next = e.key === 'ArrowRight'
         ? (idx + 1) % panels.length
         : (idx - 1 + panels.length) % panels.length;
