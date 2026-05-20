@@ -12,9 +12,10 @@ const MAX_RECENT_EVENTS = 1000;
 // can scroll back through history on demand without persisting to disk.
 const MAX_RAW_BYTES = 16 * 1024 * 1024; // 16MB
 // Cap on raw bytes returned by getRecentEvents() (initial subscribe / route
-// replay). Larger than this is fetched on demand via history:load so clients
-// don't pay a 16MB transfer on every connect.
-const INITIAL_RAW_REPLAY_BYTES = 2 * 1024 * 1024; // 2MB
+// replay). Kept small so opening a tab on a large session is fast — over a
+// remote tunnel the transfer of this blob dominates open latency. Older
+// history is fetched on demand via history:load.
+const INITIAL_RAW_REPLAY_BYTES = 512 * 1024; // 512KB
 const DEFAULT_AUTO_COMPACT_MINUTES = 60;
 // Auto-approve presses Enter to accept the default ("Yes") option. The first
 // press can be missed if the prompt is still rendering or (for remote

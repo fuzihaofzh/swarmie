@@ -367,25 +367,34 @@ export class ServerConnection {
         const sid = msg.sessionId as string;
         const all = msg.events as NormalizedEvent[];
         const structured: NormalizedEvent[] = [];
-        const rawChunks: string[] = [];
-        let mergedOffsetEnd: number | undefined;
+        // Replay the raw history in ~frame-sized groups rather than one merged
+        // multi-MB blob. A single big term.write blocks the main thread while
+        // xterm parses it — the "tab takes forever to open" symptom on large
+        // sessions. Grouped writes let the TerminalView flush spread them
+        // across animation frames. isReplay=true strips stale device queries.
+        const REPLAY_GROUP_BYTES = 256 * 1024;
+        let group: string[] = [];
+        let groupBytes = 0;
+        let groupOffsetEnd: number | undefined;
+        const flushGroup = () => {
+          if (group.length === 0) return;
+          writeToTerminal(sid, mergeBase64Chunks(group), groupOffsetEnd, true);
+          group = [];
+          groupBytes = 0;
+          groupOffsetEnd = undefined;
+        };
         for (const evt of all) {
           if (evt.type === 'raw:output') {
             const data = evt.data as { data: string; offsetEnd?: number };
-            rawChunks.push(data.data);
-            if (typeof data.offsetEnd === 'number') {
-              // The merged blob's offsetEnd is the last chunk's offsetEnd.
-              mergedOffsetEnd = data.offsetEnd;
-            }
+            group.push(data.data);
+            groupBytes += Math.ceil((data.data.length * 3) / 4);
+            if (typeof data.offsetEnd === 'number') groupOffsetEnd = data.offsetEnd;
+            if (groupBytes >= REPLAY_GROUP_BYTES) flushGroup();
           } else {
             structured.push(evt);
           }
         }
-        if (rawChunks.length > 0) {
-          // Replay: strip device queries so xterm doesn't answer stale
-          // historical queries into the live PTY.
-          writeToTerminal(sid, mergeBase64Chunks(rawChunks), mergedOffsetEnd, true);
-        }
+        flushGroup();
         if (structured.length > 0) {
           store.addEventBatch(sid, structured);
         }
