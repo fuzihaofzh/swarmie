@@ -596,21 +596,36 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       );
       capturedDuringLoadRef.current = [];
 
-      term.reset();
-      if (snapshot.chunks.length > 0) {
-        term.write(decodeBase64Chunks(snapshot.chunks));
-      }
-      for (const c of tail) {
-        term.write(decodeBase64Chunks([c.b64]));
-      }
-      // After rebuild, leave the viewport at the top so the user sees the
-      // newly loaded older content rather than getting yanked to the bottom.
-      term.write('', () => {
+      // The buffer the user is currently reading. During the load, live chunks
+      // are parked (not written), so this is stable. The old buffer is a suffix
+      // of the snapshot (same raw bytes up to endOffset), so the snapshot adds
+      // exactly (snapshotLines − oldLineCount) older lines ABOVE the old top.
+      const oldLineCount = term.buffer.active.length;
+
+      const afterSnapshot = () => {
         if (disposed) return;
-        try { term.scrollToTop(); } catch { /* ignore */ }
+        // Anchor: keep the line the user was viewing (the old top, since the
+        // auto-load only fires at scrollTop 0) in the same place by scrolling
+        // down past exactly the freshly-prepended older lines — instead of
+        // yanking to the absolute top, which buried their reading position
+        // below the newly loaded content.
+        const prependedLines = Math.max(0, term.buffer.active.length - oldLineCount);
+        try { term.scrollToLine(prependedLines); } catch { /* ignore */ }
+        // Replay live tail at the bottom; with scrollOnOutput off this leaves
+        // the anchored viewport untouched.
+        for (const c of tail) {
+          term.write(decodeBase64Chunks([c.b64]));
+        }
         historyLoadingRef.current = false;
         setHistoryLoading(false);
-      });
+      };
+
+      term.reset();
+      if (snapshot.chunks.length > 0) {
+        term.write(decodeBase64Chunks(snapshot.chunks), afterSnapshot);
+      } else {
+        afterSnapshot();
+      }
     });
 
     const cleanupFlush = () => {
