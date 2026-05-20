@@ -144,6 +144,22 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     }
   }, 10_000);
 
+  // Event-loop lag sampler. A setInterval that fires late means the loop was
+  // blocked by synchronous work (huge JSON.stringify, history snapshot, etc.).
+  // We keep the peak so a single debug snapshot reveals a stall that already
+  // happened — if maxEventLoopLagMs is in the hundreds, the freeze is the
+  // server blocking, not the network or the browser.
+  const LAG_SAMPLE_MS = 1000;
+  let eventLoopLagMs = 0;
+  let maxEventLoopLagMs = 0;
+  let lastLagTick = Date.now();
+  const lagTimer = setInterval(() => {
+    const now = Date.now();
+    eventLoopLagMs = Math.max(0, now - lastLagTick - LAG_SAMPLE_MS);
+    if (eventLoopLagMs > maxEventLoopLagMs) maxEventLoopLagMs = eventLoopLagMs;
+    lastLagTick = now;
+  }, LAG_SAMPLE_MS);
+
   app.get('/ws', { websocket: true }, (socket, request) => {
     const requestId = resolveRequestId(request);
     clients.add(socket);
@@ -334,6 +350,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     const sessions = manager.getAllSessions().map((s) => {
       const stats = s.getBufferStats();
       totalSessionRawBytes += stats.rawBytes;
+      const bytesLast5s = s.getRecentRawBytes(5000);
       return {
         id: s.id,
         name: s.name,
@@ -346,6 +363,10 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
         rawBytesEverWritten: stats.rawBytesEverWritten,
         rawEverMB: mb(stats.rawBytesEverWritten),
         detectBufferLen: stats.detectBufferLen,
+        // Instantaneous output throughput. A session pushing MB/s is what
+        // overwhelms the browser's xterm and looks like a freeze.
+        bytesPerSec: Math.round(bytesLast5s / 5),
+        kbPerSec: Math.round((bytesLast5s / 5 / 1024) * 10) / 10,
       };
     });
 
@@ -353,6 +374,10 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     return {
       now: new Date(now).toISOString(),
       uptimeSec: Math.round((now - serverStart) / 1000),
+      // Hundreds of ms here means the Node event loop was blocked — the freeze
+      // is server-side synchronous work, not the network or the browser.
+      eventLoopLagMs,
+      maxEventLoopLagMs,
       memory: {
         rssMB: mb(mem.rss),
         heapUsedMB: mb(mem.heapUsed),
@@ -423,6 +448,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     },
     stop: () => {
       clearInterval(livenessTimer);
+      clearInterval(lagTimer);
       for (const timer of resizeTimers.values()) clearTimeout(timer);
       resizeTimers.clear();
     },

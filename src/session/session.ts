@@ -300,6 +300,23 @@ export class Session extends EventEmitter {
     };
   }
 
+  /**
+   * Raw bytes written within the last `windowMs` — instantaneous output
+   * throughput. A session flooding the dashboard (MB/s) is the signature of a
+   * client-side freeze: the bytes drain from the server fine but overwhelm
+   * xterm. Computed from the existing rawEvents ring, no extra bookkeeping.
+   */
+  getRecentRawBytes(windowMs: number): number {
+    const cutoff = Date.now() - windowMs;
+    let bytes = 0;
+    for (let i = this.rawEvents.length - 1; i >= 0; i--) {
+      const evt = this.rawEvents[i];
+      if (evt.timestamp < cutoff) break;
+      bytes += Math.ceil((evt.data as RawOutputData).data.length * 3 / 4);
+    }
+    return bytes;
+  }
+
   /** Tail of rawEvents covering at most `maxBytes` from the end. */
   private _rawTailUpTo(maxBytes: number): NormalizedEvent[] {
     if (this.rawBytes <= maxBytes) return this.rawEvents.slice();
