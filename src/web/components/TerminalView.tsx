@@ -386,8 +386,16 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       // Finger moving DOWN reveals OLDER content in xterm scrollback.
       if (y - touchStartY.y > 8) scrolledUpAtRef.current = performance.now();
     };
+    // xterm's own viewportY is the authoritative scroll position. The DOM
+    // `.xterm-viewport.scrollTop` transiently reads 0 while scrolling against
+    // concurrent live output (and on sub-pixel rounding), which false-positived
+    // "at top" — showing the Load-earlier button and firing the auto-load
+    // before the user actually reached the top.
+    const isAtScrollbackTop = () =>
+      term.buffer.active.viewportY === 0 && term.buffer.active.baseY > 0;
+
     const onScroll = () => {
-      const isTop = viewport.scrollTop === 0 && term.buffer.active.baseY > 0;
+      const isTop = isAtScrollbackTop();
       setAtTop(isTop);
       if (!isTop) return;
       if (performance.now() - scrolledUpAtRef.current > AUTO_LOAD_RECENT_WINDOW_MS) return;
@@ -401,12 +409,17 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
     root.addEventListener('touchstart', onTouchStart, { passive: true });
     root.addEventListener('touchmove', onTouchMove, { passive: true });
     viewport.addEventListener('scroll', onScroll, { passive: true });
+    // term.onScroll fires on output-driven and programmatic scroll where the
+    // DOM 'scroll' event may not — keep the button's atTop state accurate, but
+    // don't auto-load here (no user gesture drove it).
+    const scrollDisposable = term.onScroll(() => setAtTop(isAtScrollbackTop()));
 
     return () => {
       root.removeEventListener('wheel', onWheel);
       root.removeEventListener('touchstart', onTouchStart);
       root.removeEventListener('touchmove', onTouchMove);
       viewport.removeEventListener('scroll', onScroll);
+      scrollDisposable.dispose();
     };
   }, [termReady]);
 
@@ -596,21 +609,22 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       );
       capturedDuringLoadRef.current = [];
 
-      // The buffer the user is currently reading. During the load, live chunks
-      // are parked (not written), so this is stable. The old buffer is a suffix
-      // of the snapshot (same raw bytes up to endOffset), so the snapshot adds
-      // exactly (snapshotLines − oldLineCount) older lines ABOVE the old top.
-      const oldLineCount = term.buffer.active.length;
+      // Anchor by distance-from-bottom. The snapshot ends at the same content
+      // the user already had at the bottom, so the number of lines they were
+      // scrolled up from the bottom maps to the same content after the rebuild.
+      // This is robust to how many older lines get prepended AND to the
+      // scrollback cap (counting prepended lines from the top breaks once the
+      // buffer is already at the cap — old and new line counts match, so the
+      // diff is 0 and the view jumps to the top, the original bug). During the
+      // load live chunks are parked, so this reading is stable.
+      const buf0 = term.buffer.active;
+      const linesFromBottom = Math.max(0, buf0.baseY - buf0.viewportY);
 
       const afterSnapshot = () => {
         if (disposed) return;
-        // Anchor: keep the line the user was viewing (the old top, since the
-        // auto-load only fires at scrollTop 0) in the same place by scrolling
-        // down past exactly the freshly-prepended older lines — instead of
-        // yanking to the absolute top, which buried their reading position
-        // below the newly loaded content.
-        const prependedLines = Math.max(0, term.buffer.active.length - oldLineCount);
-        try { term.scrollToLine(prependedLines); } catch { /* ignore */ }
+        const buf = term.buffer.active;
+        const target = Math.max(0, buf.baseY - linesFromBottom);
+        try { term.scrollToLine(target); } catch { /* ignore */ }
         // Replay live tail at the bottom; with scrollOnOutput off this leaves
         // the anchored viewport untouched.
         for (const c of tail) {
