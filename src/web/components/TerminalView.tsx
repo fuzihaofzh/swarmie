@@ -21,6 +21,7 @@ import {
   shouldRestoreTerminalFocusAfterSearchClose,
 } from '../focusPolicy';
 import { decodeBase64Chunks, estimateBase64Bytes } from '../base64';
+import { stripDeviceQueries } from '../terminalQueries';
 
 interface TerminalViewProps {
   sessionId: string;
@@ -581,16 +582,22 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       });
     };
 
-    registerTerminalWriter(sessionId, (b64Data: string, offsetEnd?: number) => {
+    registerTerminalWriter(sessionId, (b64Data: string, offsetEnd?: number, isReplay?: boolean) => {
       if (disposed) return;
+      let data = b64Data;
+      if (isReplay) {
+        // Strip device queries from replayed history so xterm doesn't answer
+        // stale cursor/DA/color queries into the live PTY (idle-shell garbage).
+        try { data = btoa(stripDeviceQueries(atob(b64Data))); } catch { /* keep original */ }
+      }
       if (historyLoadingRef.current) {
         // Park new chunks until the snapshot is applied; we'll filter them by
         // offset and replay the ones newer than the snapshot afterwards.
-        capturedDuringLoadRef.current.push({ b64: b64Data, offsetEnd });
+        capturedDuringLoadRef.current.push({ b64: data, offsetEnd });
         return;
       }
-      pendingChunks.push(b64Data);
-      pendingBytes += estimateBase64Bytes(b64Data);
+      pendingChunks.push(data);
+      pendingBytes += estimateBase64Bytes(data);
       scheduleFlush();
     });
 
@@ -636,7 +643,12 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
 
       term.reset();
       if (snapshot.chunks.length > 0) {
-        term.write(decodeBase64Chunks(snapshot.chunks), afterSnapshot);
+        // Strip device queries — this is historical output; answering its
+        // stale cursor/DA/color queries into the live PTY produces garbage.
+        const cleaned = snapshot.chunks.map((c) => {
+          try { return btoa(stripDeviceQueries(atob(c))); } catch { return c; }
+        });
+        term.write(decodeBase64Chunks(cleaned), afterSnapshot);
       } else {
         afterSnapshot();
       }

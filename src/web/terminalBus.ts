@@ -13,14 +13,14 @@
 
 import { estimateBase64Bytes } from './base64';
 
-type Writer = (b64Data: string, offsetEnd?: number) => void;
+type Writer = (b64Data: string, offsetEnd?: number, isReplay?: boolean) => void;
 type SnapshotListener = (snapshot: HistorySnapshot) => void;
 type MetaListener = (meta: SessionMeta) => void;
 
 const MAX_BUFFERED_BYTES_PER_SESSION = 512 * 1024;
 
 const writers = new Map<string, Writer>();
-const buffers = new Map<string, { chunks: Array<{ b64: string; offsetEnd?: number }>; bytes: number }>();
+const buffers = new Map<string, { chunks: Array<{ b64: string; offsetEnd?: number; isReplay?: boolean }>; bytes: number }>();
 const meta = new Map<string, SessionMeta>();
 const metaListeners = new Map<string, Set<MetaListener>>();
 const snapshotListeners = new Map<string, Set<SnapshotListener>>();
@@ -58,14 +58,14 @@ function emitMeta(sessionId: string): void {
   for (const l of listeners) l(m);
 }
 
-function appendBufferedChunk(sessionId: string, b64Data: string, offsetEnd?: number): void {
+function appendBufferedChunk(sessionId: string, b64Data: string, offsetEnd?: number, isReplay?: boolean): void {
   let buffer = buffers.get(sessionId);
   if (!buffer) {
     buffer = { chunks: [], bytes: 0 };
     buffers.set(sessionId, buffer);
   }
 
-  buffer.chunks.push({ b64: b64Data, offsetEnd });
+  buffer.chunks.push({ b64: b64Data, offsetEnd, isReplay });
   buffer.bytes += estimateBase64Bytes(b64Data);
 
   while (buffer.bytes > MAX_BUFFERED_BYTES_PER_SESSION && buffer.chunks.length > 1) {
@@ -94,7 +94,7 @@ export function registerTerminalWriter(sessionId: string, writer: Writer): void 
   const buffer = buffers.get(sessionId);
   if (buffer && buffer.chunks.length > 0) {
     for (const chunk of buffer.chunks) {
-      writer(chunk.b64, chunk.offsetEnd);
+      writer(chunk.b64, chunk.offsetEnd, chunk.isReplay);
     }
     buffers.delete(sessionId);
   }
@@ -106,7 +106,7 @@ export function unregisterTerminalWriter(sessionId: string): void {
 }
 
 /** Returns true if a writer was found and data was delivered */
-export function writeToTerminal(sessionId: string, b64Data: string, offsetEnd?: number): boolean {
+export function writeToTerminal(sessionId: string, b64Data: string, offsetEnd?: number, isReplay = false): boolean {
   // Track offsets regardless of whether a writer is present — keeps history
   // metadata accurate even if the terminal is still mounting.
   if (typeof offsetEnd === 'number' && Number.isFinite(offsetEnd)) {
@@ -122,12 +122,12 @@ export function writeToTerminal(sessionId: string, b64Data: string, offsetEnd?: 
 
   const writer = writers.get(sessionId);
   if (writer) {
-    writer(b64Data, offsetEnd);
+    writer(b64Data, offsetEnd, isReplay);
     return true;
   }
 
   // No writer yet — buffer bounded recent output for remounts.
-  appendBufferedChunk(sessionId, b64Data, offsetEnd);
+  appendBufferedChunk(sessionId, b64Data, offsetEnd, isReplay);
   return false;
 }
 

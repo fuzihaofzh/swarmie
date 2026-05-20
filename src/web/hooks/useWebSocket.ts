@@ -382,7 +382,9 @@ export class ServerConnection {
           }
         }
         if (rawChunks.length > 0) {
-          writeToTerminal(sid, mergeBase64Chunks(rawChunks), mergedOffsetEnd);
+          // Replay: strip device queries so xterm doesn't answer stale
+          // historical queries into the live PTY.
+          writeToTerminal(sid, mergeBase64Chunks(rawChunks), mergedOffsetEnd, true);
         }
         if (structured.length > 0) {
           store.addEventBatch(sid, structured);
