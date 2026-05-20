@@ -279,6 +279,27 @@ export class Session extends EventEmitter {
     };
   }
 
+  /**
+   * In-memory buffer sizes for diagnostics (debug endpoint). Lets us see
+   * whether a session is hoarding raw output (toward the 16MB cap) which
+   * inflates every subscribe/replay and can stall slow tunnels.
+   */
+  getBufferStats(): {
+    events: number;
+    rawEvents: number;
+    rawBytes: number;
+    rawBytesEverWritten: number;
+    detectBufferLen: number;
+  } {
+    return {
+      events: this.events.length,
+      rawEvents: this.rawEvents.length,
+      rawBytes: this.rawBytes,
+      rawBytesEverWritten: this._rawBytesEverWritten,
+      detectBufferLen: this.adapter.detectBuffer.length,
+    };
+  }
+
   /** Tail of rawEvents covering at most `maxBytes` from the end. */
   private _rawTailUpTo(maxBytes: number): NormalizedEvent[] {
     if (this.rawBytes <= maxBytes) return this.rawEvents.slice();

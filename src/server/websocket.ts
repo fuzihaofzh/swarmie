@@ -294,6 +294,90 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     });
   });
 
+  // Diagnostics: snapshot of live WS / buffer state. The remote dashboard
+  // freezing "after a while" almost always means data is queueing faster than
+  // the tunnel drains it — `ws.bufferedAmount` climbing without bound — or a
+  // session's 16MB raw ring inflating every replay. This endpoint surfaces
+  // both so we can tell which it is instead of guessing. Open /api/debug/ws.
+  const serverStart = Date.now();
+  app.get('/api/debug/ws', async () => {
+    const now = Date.now();
+    const mb = (bytes: number) => Math.round((bytes / (1024 * 1024)) * 100) / 100;
+
+    // Reverse-map sockets to the remote-CLI session they own (if any).
+    const remoteBySocket = new Map<WebSocket, string>();
+    for (const [sessionId, client] of remoteClients) {
+      remoteBySocket.set(client.ws, sessionId);
+    }
+
+    let totalBuffered = 0;
+    const clientList = [...clients].map((ws, i) => {
+      const buffered = ws.bufferedAmount ?? 0;
+      totalBuffered += buffered;
+      const subs = subscriptions.get(ws);
+      const remoteSessionId = remoteBySocket.get(ws);
+      return {
+        index: i,
+        readyState: ws.readyState, // 1 = OPEN
+        bufferedBytes: buffered,
+        bufferedMB: mb(buffered),
+        backpressured: buffered > WS_BUFFERED_WARN_BYTES,
+        subscriptions: subs ? [...subs] : [],
+        subCount: subs ? subs.size : 0,
+        lastSeenMsAgo: now - (lastSeen.get(ws) ?? now),
+        kind: remoteSessionId ? 'remote-cli' : 'browser',
+        remoteSessionId: remoteSessionId ?? null,
+      };
+    });
+
+    let totalSessionRawBytes = 0;
+    const sessions = manager.getAllSessions().map((s) => {
+      const stats = s.getBufferStats();
+      totalSessionRawBytes += stats.rawBytes;
+      return {
+        id: s.id,
+        name: s.name,
+        status: s.status,
+        isLocal: s.isLocal,
+        events: stats.events,
+        rawEvents: stats.rawEvents,
+        rawBytes: stats.rawBytes,
+        rawMB: mb(stats.rawBytes),
+        rawBytesEverWritten: stats.rawBytesEverWritten,
+        rawEverMB: mb(stats.rawBytesEverWritten),
+        detectBufferLen: stats.detectBufferLen,
+      };
+    });
+
+    const mem = process.memoryUsage();
+    return {
+      now: new Date(now).toISOString(),
+      uptimeSec: Math.round((now - serverStart) / 1000),
+      memory: {
+        rssMB: mb(mem.rss),
+        heapUsedMB: mb(mem.heapUsed),
+        heapTotalMB: mb(mem.heapTotal),
+        externalMB: mb(mem.external),
+        arrayBuffersMB: mb(mem.arrayBuffers),
+      },
+      ws: {
+        totalClients: clients.size,
+        totalBufferedBytes: totalBuffered,
+        totalBufferedMB: mb(totalBuffered),
+        backpressuredWarnBytes: WS_BUFFERED_WARN_BYTES,
+        clients: clientList,
+      },
+      remoteClients: remoteClients.size,
+      pendingResizeTimers: resizeTimers.size,
+      sessions: {
+        count: sessions.length,
+        totalRawBytes: totalSessionRawBytes,
+        totalRawMB: mb(totalSessionRawBytes),
+        list: sessions,
+      },
+    };
+  });
+
   // Broadcast new sessions
   manager.on('session:added', (summary: SessionSummary) => {
     broadcast(clients, { type: 'session:added', session: summary });
