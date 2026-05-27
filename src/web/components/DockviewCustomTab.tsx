@@ -9,6 +9,44 @@ import { sessionMatchesTagFilter } from '../tagFilter';
 
 const NEW_SESSION_PANEL_ID = '__new_session__';
 
+// Touch swipe threshold (px) above which a touch is treated as a scroll, not a tap.
+const TAP_MOVE_THRESHOLD = 10;
+
+/**
+ * Distinguish a tap from a swipe on touch devices. Swiping horizontally to
+ * scroll the tab strip still synthesizes a `click` on touchend, which would
+ * otherwise activate whatever tab the finger landed on. We track touch
+ * movement and swallow the click when the finger moved past the threshold.
+ */
+function useTapActivate(onTap: () => void) {
+  const startRef = useRef<{ x: number; y: number } | null>(null);
+  const movedRef = useRef(false);
+  return {
+    onTouchStart: (e: React.TouchEvent) => {
+      const t = e.touches[0];
+      startRef.current = { x: t.clientX, y: t.clientY };
+      movedRef.current = false;
+    },
+    onTouchMove: (e: React.TouchEvent) => {
+      if (!startRef.current) return;
+      const t = e.touches[0];
+      if (
+        Math.abs(t.clientX - startRef.current.x) > TAP_MOVE_THRESHOLD ||
+        Math.abs(t.clientY - startRef.current.y) > TAP_MOVE_THRESHOLD
+      ) {
+        movedRef.current = true;
+      }
+    },
+    onClick: () => {
+      if (movedRef.current) {
+        movedRef.current = false; // it was a scroll/swipe — ignore
+        return;
+      }
+      onTap();
+    },
+  };
+}
+
 function shortPath(p: string): string {
   if (p === '~' || p === '/') return p;
   // Show only the last directory name
@@ -71,6 +109,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
     });
     return () => disposable.dispose();
   }, [api]);
+  const tapActivate = useTapActivate(() => api.setActive());
   const setSessionAutoApprove = useSessionStore((s) => s.setSessionAutoApprove);
   const setSessionAutoCompact = useSessionStore((s) => s.setSessionAutoCompact);
   const setSessionRepeat = useSessionStore((s) => s.setSessionRepeat);
@@ -188,7 +227,9 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
       className={`dv-custom-tab${filteredOut ? ' dv-custom-tab-hidden' : ''}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={() => api.setActive()}
+      onTouchStart={tapActivate.onTouchStart}
+      onTouchMove={tapActivate.onTouchMove}
+      onClick={tapActivate.onClick}
     >
       <ToolIcon tool={session.tool} status={session.status} />
       <span className="dv-tab-name">
@@ -352,10 +393,13 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
 }
 
 export function DockviewNewSessionTab({ api }: IDockviewPanelHeaderProps) {
+  const tapActivate = useTapActivate(() => api.setActive());
   return (
     <div
       className="dv-custom-tab dv-new-session-tab"
-      onClick={() => api.setActive()}
+      onTouchStart={tapActivate.onTouchStart}
+      onTouchMove={tapActivate.onTouchMove}
+      onClick={tapActivate.onClick}
     >
       <span style={{ fontSize: 16, fontWeight: 'bold' }}>+</span>
       <span className="dv-tab-name">New Session</span>
