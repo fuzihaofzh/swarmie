@@ -33,6 +33,13 @@ interface TerminalViewProps {
 }
 
 const MAX_TERMINAL_WRITE_BYTES_PER_FRAME = 256 * 1024;
+// Hard cap on the unwritten write queue. When a tab is backgrounded the flush
+// rAF pauses while the WS keeps pushing, so pendingChunks can balloon to
+// hundreds of MB; on return each term.write blocks the main thread for seconds
+// and the tab never catches up (full freeze). Capped at the server's 16MB raw
+// ring — that is the most history a fresh replay could ever produce anyway, so
+// dropping older queued bytes loses nothing the backend can still show.
+const MAX_PENDING_WRITE_BYTES = 16 * 1024 * 1024;
 // Sized to comfortably hold a full MAX_RAW_BYTES (16MB) snapshot at typical
 // terminal line widths. xterm only allocates per actual line written, so the
 // cap is essentially free when usage is small.
@@ -568,19 +575,22 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
         if (writeInFlight) return;
         if (pendingChunks.length === 0) return;
 
-        const batch: string[] = [];
+        // Count how many leading chunks fit this frame's byte budget, then
+        // remove them in a single splice. Repeated shift() on a queue that has
+        // ballooned to hundreds of thousands of chunks is O(n²) (every shift
+        // reindexes the whole array) — that alone stalls recovery from a big
+        // backlog. One splice is O(n).
         let batchBytes = 0;
+        let batchCount = 0;
         while (
-          pendingChunks.length > 0 &&
-          (batch.length === 0 || batchBytes < MAX_TERMINAL_WRITE_BYTES_PER_FRAME)
+          batchCount < pendingChunks.length &&
+          (batchCount === 0 || batchBytes < MAX_TERMINAL_WRITE_BYTES_PER_FRAME)
         ) {
-          const chunk = pendingChunks.shift();
-          if (!chunk) break;
-          const chunkBytes = estimateBase64Bytes(chunk);
-          pendingBytes -= chunkBytes;
-          batch.push(chunk);
-          batchBytes += chunkBytes;
+          batchBytes += estimateBase64Bytes(pendingChunks[batchCount]);
+          batchCount++;
         }
+        const batch = pendingChunks.splice(0, batchCount);
+        pendingBytes -= batchBytes;
 
         // Capture bottom state from xterm's own buffer right before writing.
         // Works for any input method (wheel, touch, keyboard) — no need to
@@ -631,6 +641,18 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       }
       pendingChunks.push(data);
       pendingBytes += estimateBase64Bytes(data);
+      // Drop the oldest queued bytes once the backlog exceeds the cap. A
+      // terminal only cares about its tail; keeping a giant backlog just makes
+      // each frame's term.write block for seconds. Dropping mid-stream may cut
+      // an escape sequence, so reset attributes once after a drop — the next
+      // statusline redraw repaints cleanly.
+      if (pendingBytes > MAX_PENDING_WRITE_BYTES) {
+        while (pendingBytes > MAX_PENDING_WRITE_BYTES && pendingChunks.length > 1) {
+          const dropped = pendingChunks.shift()!;
+          pendingBytes -= estimateBase64Bytes(dropped);
+        }
+        try { pendingChunks.unshift(btoa('\x1b[0m')); } catch { /* ignore */ }
+      }
       scheduleFlush();
     });
 

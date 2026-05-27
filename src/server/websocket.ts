@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from '@fastify/websocket';
 import type { SessionManager } from '../session/manager.js';
-import type { NormalizedEvent } from '../adapters/types.js';
+import type { NormalizedEvent, RawOutputData } from '../adapters/types.js';
 import type { SessionSummary } from '../session/types.js';
 import { RemoteAdapter, getRemoteAdapter } from '../adapters/remote.js';
 import type { BaseAdapter } from '../adapters/base.js';
@@ -421,9 +421,67 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     broadcast(clients, { type: 'session:removed', sessionId });
   });
 
-  // Broadcast events to subscribed clients. raw:output fires constantly, so
-  // serialize each message ONCE here rather than per subscribed client.
+  // Coalesce per-session raw output into ~one-frame batches before broadcasting.
+  // A redrawing statusline emits dozens of tiny raw:output events per second;
+  // forwarding each as its own WS message floods slow/backgrounded browsers with
+  // thousands of micro-chunks (the 76k-rawEvents / 200-MB-queue freeze). Merging
+  // a frame's worth into one chunk slashes message count and per-message overhead
+  // without changing terminal semantics: the merged bytes are contiguous, so the
+  // last event's offsetEnd still marks the batch's true end for replay de-dup.
+  const RAW_COALESCE_MS = 16;
+  interface RawPending {
+    buffers: Buffer[];
+    offsetEnd: number;
+    timestamp: number;
+    timer: ReturnType<typeof setTimeout>;
+  }
+  const rawPending = new Map<string, RawPending>();
+
+  const flushRawPending = (sessionId: string): void => {
+    const pending = rawPending.get(sessionId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    rawPending.delete(sessionId);
+    const merged = Buffer.concat(pending.buffers).toString('base64');
+    const payload = JSON.stringify({
+      type: 'event',
+      event: {
+        type: 'raw:output',
+        sessionId,
+        timestamp: pending.timestamp,
+        data: { data: merged, offsetEnd: pending.offsetEnd },
+      },
+    });
+    for (const [ws, subs] of subscriptions) {
+      if (subs.has(sessionId) || subs.has('*')) sendRaw(ws, payload);
+    }
+  };
+
+  // Broadcast events to subscribed clients. serialize each message ONCE here
+  // rather than per subscribed client.
   manager.on('event', (event: NormalizedEvent) => {
+    if (event.type === 'raw:output') {
+      const rawData = event.data as RawOutputData;
+      let pending = rawPending.get(event.sessionId);
+      if (!pending) {
+        const sid = event.sessionId;
+        pending = {
+          buffers: [],
+          offsetEnd: 0,
+          timestamp: event.timestamp,
+          timer: setTimeout(() => flushRawPending(sid), RAW_COALESCE_MS),
+        };
+        rawPending.set(sid, pending);
+      }
+      pending.buffers.push(Buffer.from(rawData.data, 'base64'));
+      if (typeof rawData.offsetEnd === 'number') pending.offsetEnd = rawData.offsetEnd;
+      return;
+    }
+
+    // Non-raw event: flush this session's buffered raw first so ordering holds
+    // (e.g. a status:change must not overtake the output that triggered it).
+    flushRawPending(event.sessionId);
+
     const eventPayload = JSON.stringify({ type: 'event', event });
     const session = event.type === 'status:change' ? manager.getSession(event.sessionId) : undefined;
     const settingsPayload = session
