@@ -16,8 +16,12 @@ export const US_CHAR = String.fromCharCode(0x1f);
 // OSC (Operating System Command): ESC ] ... (BEL | ST)
 export const OSC_ANY_RE = new RegExp(`${ESC_CHAR}\\].*?(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`, 'g');
 // CSI (Control Sequence Introducer): ESC [ params final. Params may include
-// ':' subparameter separators, so keep ':' in the character class.
-export const CSI_RE = new RegExp(`${ESC_CHAR}\\[[0-9;:?]*[A-Za-z~]`, 'g');
+// ':' subparameter separators, so keep ':' in the character class. Also keep
+// the private-prefix bytes '<' '=' '>' (ECMA-48 0x3C-0x3F) so private CSI
+// sequences like the kitty keyboard protocol (ESC[>1u / ESC[<u) and xterm
+// modifyOtherKeys (ESC[>4;2m) are stripped — otherwise their literal tails
+// ([>1u, [<u, [>4;2m) leak into the detect buffer and break prompt matching.
+export const CSI_RE = new RegExp(`${ESC_CHAR}\\[[0-9;:<=>?]*[A-Za-z~]`, 'g');
 // Any other two-char ESC sequence.
 export const ESC_OTHER_RE = new RegExp(`${ESC_CHAR}[^\\[].?`, 'g');
 // C0 control characters.

@@ -87,6 +87,30 @@ describe('activity detection', () => {
     expect(adapter.status).toBe('waiting_input');
   });
 
+  it('detects prompts when kitty keyboard / modifyOtherKeys sequences are interleaved', () => {
+    const adapter = createAdapter();
+
+    // Apps that enable the kitty keyboard protocol (CSI > 1 u / CSI < u) or
+    // xterm modifyOtherKeys (CSI > 4 ; 2 m) spam these private-prefix CSI
+    // sequences around their redraws. They must be stripped, or their literal
+    // tails ([>1u, [<u, [>4;2m) wedge between prompt words and break the
+    // ".{0,10}"-gap matching, so the session never reaches waiting_input.
+    adapter.feed('\x1b[>1u\x1b[>4;2mDo \x1b[<uyou \x1b[>1uwant \x1b[>4;2mto proceed?\x1b[<u');
+
+    expect(adapter.status).toBe('waiting_input');
+  });
+
+  it('strips kitty/modifyOtherKeys sequences split across PTY chunks', () => {
+    const adapter = createAdapter();
+
+    // The ESC lands at the tail of one chunk; the "[>1u" fragment arrives in
+    // the next. CSI_FRAGMENT_RE must cover the private-prefix form too.
+    adapter.feed('Do you want \x1b');
+    adapter.feed('[>1u\x1b[>4;2mto proceed?');
+
+    expect(adapter.status).toBe('waiting_input');
+  });
+
   it('strips braille spinner glyphs so they do not crowd out prompt text', () => {
     const adapter = createAdapter();
 

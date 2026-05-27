@@ -47,7 +47,7 @@ const OSC_TITLE_RE = new RegExp(
   `${ESC_CHAR}\\][02];([^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
   'g',
 );
-const CSI_FRAGMENT_RE = /\[(?:\??\d{1,3}[A-Za-z~]|(?:\d{1,3}[;:?]){1,16}\d{0,3}(?:[A-Za-z~])?)/g;
+const CSI_FRAGMENT_RE = /\[(?:[<=>][0-9;:]*[A-Za-z~]|\??\d{1,3}[A-Za-z~]|(?:\d{1,3}[;:?]){1,16}\d{0,3}(?:[A-Za-z~])?)/g;
 const SGR_TAIL_FRAGMENT_RE = /(?:^|\s)(?:\d{1,3}[;:]){2,}\d{1,3}m/g;
 const SGR_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[<\\d+;\\d+;\\d+[mM]`);
 const X10_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[M[\\s\\S]{3}`);
