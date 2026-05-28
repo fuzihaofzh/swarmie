@@ -4,6 +4,15 @@ import type { AdapterInfo, NormalizedEvent, RawOutputData, SessionStatus } from 
 /**
  * A virtual adapter that represents a session from a remote swarmie instance.
  * Events are pushed in via `pushEvent()` rather than spawning a process.
+ *
+ * Status policy: the local headless screen is authoritative for whether a
+ * prompt is currently visible (it runs on the forwarded raw output, same as
+ * any local adapter). The remote also forwards its own status:change events,
+ * but its "running" detection is just busy-output spam (e.g. sub-agents
+ * streaming during a prompt) and would mask the prompt — so we drop remote
+ * "running" events entirely. Other remote statuses (thinking, tool_executing,
+ * idle, completed, error) carry information local detection can't derive,
+ * so we apply and re-emit those.
  */
 export class RemoteAdapter extends BaseAdapter {
   private _info: AdapterInfo;
@@ -45,11 +54,19 @@ export class RemoteAdapter extends BaseAdapter {
     if (event.type === 'status:change') {
       const data = event.data as { to: string };
       const nextStatus = data.to as SessionStatus;
+      // Remote "running" is busy-output spam — local detection (waiting_input
+      // / idle) is more accurate. Drop the event entirely so it can't kick
+      // Session out of waiting_input mid-prompt.
       if (nextStatus === 'running' && this._status !== 'starting' && !this.isCommandExecuting) {
-        this.emit('event', event);
         return;
       }
+      // For other statuses, apply locally without re-emitting (we synthesize
+      // status:change ourselves when _status actually changes), then forward
+      // the original event so upstream consumers see the transition.
       this.applyExternalStatus(nextStatus);
+    }
+    if (event.type === 'session:end') {
+      this.disposeScreen();
     }
     this.emit('event', event);
   }
@@ -70,7 +87,7 @@ export class RemoteAdapter extends BaseAdapter {
     this.onWrite?.(data);
   }
 
-  resize(cols: number, rows: number): void {
+  protected applyResize(cols: number, rows: number): void {
     this.onResize?.(cols, rows);
   }
 

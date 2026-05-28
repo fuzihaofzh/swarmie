@@ -90,6 +90,7 @@ export class GenericAdapter extends BaseAdapter {
         signal: signal !== undefined ? String(signal) : null,
       } satisfies SessionEndData);
       this.ptyProcess = null;
+      this.disposeScreen();
     });
   }
 
@@ -103,9 +104,7 @@ export class GenericAdapter extends BaseAdapter {
     }
   }
 
-  resize(cols: number, rows: number): void {
-    this.cols = cols;
-    this.rows = rows;
+  protected applyResize(cols: number, rows: number): void {
     this.ptyProcess?.resize(cols, rows);
   }
 

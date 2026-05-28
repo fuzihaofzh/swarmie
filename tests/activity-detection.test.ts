@@ -223,4 +223,34 @@ describe('activity detection', () => {
       vi.useRealTimers();
     }
   });
+
+  it('keeps waiting_input set across cursor-only redraw frames (Codex static prompt)', () => {
+    const adapter = createAdapter();
+
+    // Paint the prompt on row 5, then put streaming sub-agent output on row 10.
+    adapter.feed('\x1b[5;1H\x1b[KPress enter to confirm or esc to cancel');
+    expect(adapter.status).toBe('waiting_input');
+
+    // Subsequent frames rewrite a different row only — the prompt text on row 5
+    // stays in the headless buffer. With the old rolling stripped-text detector
+    // the prompt would have been aged out of the 1000-char window and the next
+    // prompt detection would never re-fire. With the screen-based detector,
+    // the prompt is still visible so status is sticky.
+    for (let i = 0; i < 1000; i++) {
+      adapter.feed(`\x1b[10;1H\x1b[Kspinner frame ${i}`);
+    }
+    expect(adapter.status).toBe('waiting_input');
+  });
+
+  it('leaves waiting_input once the prompt is cleared from the screen', () => {
+    const adapter = createAdapter();
+
+    adapter.feed('Press enter to confirm or esc to cancel');
+    expect(adapter.status).toBe('waiting_input');
+
+    // Full screen clear + new content overwriting the prompt area.
+    adapter.feed('\x1b[2J\x1b[H');
+    adapter.feed('Working on it…');
+    expect(adapter.status).toBe('idle');
+  });
 });

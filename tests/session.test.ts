@@ -97,9 +97,151 @@ describe('Session', () => {
       });
 
       session.setSettings({ autoApprove: true });
+      // Initial dwell (750ms) + a tick to fire.
       await vi.advanceTimersByTimeAsync(1000);
 
       expect(onWrite).toHaveBeenCalledWith('\r');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps auto-approve armed even when sub-agent output flicks status to running mid-prompt', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-livelock');
+      const session = new Session('sess-livelock', 'test', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+
+      // Real Claude prompt with sub-agents streaming. Push prompt text via
+      // raw:output so the headless screen sees it (this is what RemoteAdapter
+      // does in production).
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-livelock',
+        timestamp: Date.now(),
+        data: { data: Buffer.from('Do you want to proceed?\r\n  1. Yes\r\n  2. No\r\n').toString('base64') },
+      });
+      // Local detection should have set waiting_input from screen scan.
+      expect(adapter.status).toBe('waiting_input');
+
+      session.setSettings({ autoApprove: true });
+
+      // While we're waiting for auto-approve to fire, a stream of sub-agent
+      // output arrives. The remote forwards "running" status:change events —
+      // RemoteAdapter must drop those (not just suppress the apply), so the
+      // ticker still sees waiting_input + the prompt on screen.
+      for (let i = 0; i < 5; i++) {
+        adapter.pushEvent({
+          type: 'status:change',
+          sessionId: 'sess-livelock',
+          timestamp: Date.now(),
+          data: { from: 'waiting_input', to: 'running' },
+        });
+        await vi.advanceTimersByTimeAsync(100);
+      }
+
+      // After initial dwell + a tick, Enter should still be sent.
+      await vi.advanceTimersByTimeAsync(1500);
+
+      expect(onWrite).toHaveBeenCalledWith('\r');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds auto-approve to 3 presses per prompt, with cooldown between presses', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-bound');
+      const session = new Session('sess-bound', 'test', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-bound',
+        timestamp: Date.now(),
+        data: { data: Buffer.from('Do you want to proceed?').toString('base64') },
+      });
+      expect(adapter.status).toBe('waiting_input');
+
+      session.setSettings({ autoApprove: true });
+
+      // 10 seconds of the prompt staying up — way more than enough for 3 presses
+      // even with the 1.5s cooldown, but never more than 3.
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      const enters = onWrite.mock.calls.filter(c => c[0] === '\r');
+      expect(enters.length).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resets the press budget when a new prompt appears after the old one clears', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-reset');
+      const session = new Session('sess-reset', 'test', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+
+      // First prompt — burn the 3-press budget.
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-reset',
+        timestamp: Date.now(),
+        data: { data: Buffer.from('Do you want to proceed?').toString('base64') },
+      });
+      session.setSettings({ autoApprove: true });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(onWrite.mock.calls.filter(c => c[0] === '\r').length).toBe(3);
+
+      // Prompt is cleared.
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-reset',
+        timestamp: Date.now(),
+        data: { data: Buffer.from('\x1b[2J\x1b[HWorking…').toString('base64') },
+      });
+      // Wait past the reset window so the ticker forgets the old prompt.
+      await vi.advanceTimersByTimeAsync(3000);
+
+      // Second prompt appears — budget should be refreshed.
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-reset',
+        timestamp: Date.now(),
+        data: { data: Buffer.from('Do you want to proceed?').toString('base64') },
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(onWrite.mock.calls.filter(c => c[0] === '\r').length).toBeGreaterThanOrEqual(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not press Enter when auto-approve is enabled but no prompt is on screen', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-noprompt');
+      const session = new Session('sess-noprompt', 'test', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-noprompt',
+        timestamp: Date.now(),
+        data: { data: Buffer.from('Just some streaming output, no prompt here.').toString('base64') },
+      });
+      session.setSettings({ autoApprove: true });
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(onWrite.mock.calls.find(c => c[0] === '\r')).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }

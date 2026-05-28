@@ -4,10 +4,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { hostname as osHostname } from 'node:os';
 import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, SessionStatus, CwdChangeData } from './types.js';
-import {
-  ESC_CHAR, BEL_CHAR, NUL_CHAR, US_CHAR,
-  OSC_ANY_RE, CSI_RE, ESC_OTHER_RE, CONTROL_CHARS_RE,
-} from './ansi.js';
+import { ESC_CHAR, BEL_CHAR } from './ansi.js';
+import { HeadlessScreen } from './screen.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -15,27 +13,22 @@ const COMMAND_IDLE_TIMEOUT_MS = 30_000;
 const ACTIVITY_CHECK_INTERVAL_MS = 2_000;
 const USER_INPUT_ACTIVE_MS = 3_000;
 
-// Regexes that indicate the tool is waiting for user input.
-// Use .{0,N} between words to tolerate Ink's cursor-based rendering
-// which may insert unrelated characters between words of a single phrase.
+// Patterns that indicate a tool is waiting for user input. Matched against
+// the rendered screen text from the headless terminal — not against the raw
+// PTY stream — so cursor-positioned redraws, animations, kitty/modifyOtherKeys
+// sequences, and chunk fragmentation all wash out before we look.
 const WAITING_INPUT_PATTERNS = [
-  /Do.{0,10}you.{0,10}want.{0,10}to/i,
-  /Esc.{0,10}to.{0,10}cancel/i,
-  /Tab.{0,10}to.{0,10}amend/i,
+  /Do.{0,40}you.{0,40}want.{0,40}to/i,
+  /Esc.{0,40}to.{0,40}cancel/i,
+  /Tab.{0,40}to.{0,40}amend/i,
+  /Would.{0,40}you.{0,40}like.{0,40}to/i,
   /proceed\?/i,
-  /Yes,.{0,10}allow/i,
-  /Yes,.{0,20}proceed.{0,10}\(y\)/i,
-  /Press.{0,10}enter.{0,10}to.{0,10}confirm/i,
+  /Yes,.{0,40}allow/i,
+  /Yes,.{0,40}proceed/i,
+  /Press.{0,40}enter.{0,40}to.{0,40}confirm/i,
   /\(y\/n\)/i,
   /\(yes\/no\)/i,
 ];
-
-// Characters that are purely decorative / animation and should not
-// pollute the detect buffer (Ink thinking spinners, bullet chars, etc.)
-const ANIMATION_CHARS = /[⏺✶✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆✢✣✤✥✦✧✩✪✫✬✭✮✯✰✱✲✳✴✵·•●○◦◌◎◐◑◒◓◔◕⊙⊚⊛⊜⊝★☆⠀-⣿]/g;
-
-// Max chars to keep in the rolling stripped-text buffer for detection.
-const DETECT_BUFFER_SIZE = 1000;
 
 // OSC 7: file://hostname/path — shell reports cwd (+ hostname for SSH)
 const OSC7_RE = new RegExp(
@@ -47,8 +40,6 @@ const OSC_TITLE_RE = new RegExp(
   `${ESC_CHAR}\\][02];([^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
   'g',
 );
-const CSI_FRAGMENT_RE = /\[(?:[<=>][0-9;:]*[A-Za-z~]|\??\d{1,3}[A-Za-z~]|(?:\d{1,3}[;:?]){1,16}\d{0,3}(?:[A-Za-z~])?)/g;
-const SGR_TAIL_FRAGMENT_RE = /(?:^|\s)(?:\d{1,3}[;:]){2,}\d{1,3}m/g;
 const SGR_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[<\\d+;\\d+;\\d+[mM]`);
 const X10_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[M[\\s\\S]{3}`);
 const URXVT_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[\\d+;\\d+;\\d+M`);
@@ -112,6 +103,16 @@ export function buildSpawnEnv(extraExclude: string[] = []): Record<string, strin
   return env;
 }
 
+/** Snapshot of detection-relevant state, for diagnostics + the Session-level poller. */
+export interface ScreenSnapshot {
+  /** Text currently visible in the viewport. */
+  viewport: string;
+  /** Viewport + a small scrollback window. */
+  recent: string;
+  /** Whether any waiting-input pattern matches recent screen text right now. */
+  promptVisible: boolean;
+}
+
 export abstract class BaseAdapter extends EventEmitter {
   readonly sessionId: string;
   protected toolArgs: string[];
@@ -128,10 +129,8 @@ export abstract class BaseAdapter extends EventEmitter {
   private _commandExecuting = false;
   private _lastActivity = Date.now();
   private _cwdTimer: ReturnType<typeof setInterval> | null = null;
-  /** Rolling buffer of ANSI-stripped text for waiting_input detection */
-  private _detectBuffer: string = '';
-  /** Expose detect buffer for debugging */
-  get detectBuffer(): string { return this._detectBuffer; }
+  /** Headless terminal that mirrors the rendered screen. */
+  private _screen: HeadlessScreen;
   /** True when cwd is being tracked via OSC sequences (e.g. SSH session) */
   private _oscCwdActive: boolean = false;
 
@@ -146,6 +145,7 @@ export abstract class BaseAdapter extends EventEmitter {
     this._initialHostname = this.hostname;
     this.cols = options.cols ?? (process.stdout.columns || 80);
     this.rows = options.rows ?? (process.stdout.rows || 24);
+    this._screen = new HeadlessScreen(this.cols, this.rows);
   }
 
   get status(): SessionStatus {
@@ -154,6 +154,27 @@ export abstract class BaseAdapter extends EventEmitter {
 
   get startTime(): number {
     return this._startTime;
+  }
+
+  /**
+   * Current screen text — what the user would see. Used by the Session-level
+   * auto-approve poller and by debug endpoints.
+   */
+  getScreenSnapshot(): ScreenSnapshot {
+    const recent = this._screen.getRecentText(20);
+    const viewport = this._screen.getViewportText();
+    const promptVisible = matchesWaitingPrompt(recent);
+    return { viewport, recent, promptVisible };
+  }
+
+  /**
+   * Back-compat alias. The old detectBuffer was a rolling stripped-text buffer;
+   * callers (server /api/debug/auto-approve and getBufferStats) only ever read
+   * its `.length` and last 500 chars for diagnostics, so returning the current
+   * screen text is a strictly better substitute.
+   */
+  get detectBuffer(): string {
+    return this._screen.getRecentText(20);
   }
 
   /** Start the underlying tool process */
@@ -174,8 +195,19 @@ export abstract class BaseAdapter extends EventEmitter {
     this.write(data);
   }
 
-  /** Resize the PTY */
-  abstract resize(cols: number, rows: number): void;
+  /**
+   * Centralized resize: keeps the headless screen in sync with whatever the
+   * subclass does to the real (or virtual) PTY. Subclasses implement
+   * applyResize for tool-specific behavior.
+   */
+  resize(cols: number, rows: number): void {
+    this.cols = cols;
+    this.rows = rows;
+    this._screen.resize(cols, rows);
+    this.applyResize(cols, rows);
+  }
+
+  protected abstract applyResize(cols: number, rows: number): void;
 
   /** Kill the underlying process */
   abstract kill(signal?: string): void;
@@ -222,55 +254,53 @@ export abstract class BaseAdapter extends EventEmitter {
   }
 
   /**
-   * Call from subclass onData handler to auto-detect idle / waiting_input.
-   * Uses a rolling buffer of stripped text so that prompts split across
-   * multiple PTY chunks are still detected.
+   * Feed a PTY chunk through the detection pipeline. Writes to the headless
+   * screen, then samples the rendered screen to decide between
+   * waiting_input / idle. Synchronous because the headless terminal supports
+   * a synchronous write path — chunks are reflected on the screen before we
+   * read it.
    */
   protected handleActivityDetection(chunk: string): void {
-    // Strip ANSI codes (replacing with space) and normalize whitespace.
-    // Ink renders text with cursor positioning between words, so a single
-    // prompt may arrive as many small chunks with embedded escape sequences.
-    const stripped = chunk
-      .replace(OSC_ANY_RE, ' ')                          // OSC
-      .replace(CSI_RE, ' ')                              // CSI
-      .replace(ESC_OTHER_RE, ' ')                        // other ESC
-      .replace(CONTROL_CHARS_RE, ' ')                    // control chars
-      .replace(CSI_FRAGMENT_RE, ' ')                     // CSI fragments split across PTY chunks
-      .replace(SGR_TAIL_FRAGMENT_RE, ' ')                // truecolor SGR tails split across chunks
-      .replace(ANIMATION_CHARS, ' ')                      // thinking spinners
-      .replace(/\s+/g, ' ');                              // normalize whitespace
+    // Apply ANSI / cursor moves / alt-buffer toggles to the virtual screen.
+    this._screen.write(chunk);
 
-    // Append to rolling buffer, trim to max size
-    this._detectBuffer += stripped;
-    if (this._detectBuffer.length > DETECT_BUFFER_SIZE) {
-      this._detectBuffer = this._detectBuffer.slice(-DETECT_BUFFER_SIZE);
-    }
-
-    // Check for waiting-for-input prompts (from any active state).
-    if (this._status !== 'waiting_input' && this._status !== 'completed' && this._status !== 'error') {
-      for (const pattern of WAITING_INPUT_PATTERNS) {
-        if (pattern.test(this._detectBuffer)) {
-          this.setStatus('waiting_input');
-          this._detectBuffer = ''; // Reset so we don't re-trigger
-          return;
-        }
-      }
-    }
-
-    // claudemonitor-style busy detection:
-    // commandExecuting starts only when Swarmie submits a command. Any PTY
-    // output while it is true refreshes lastActivity; output by itself never
-    // starts a busy period.
+    // commandExecuting refreshes its activity timer on any output, including
+    // pure ANSI redraws — that's what keeps long-running commands marked busy.
     if (this._commandExecuting) {
       this._lastActivity = Date.now();
     }
 
-    if (stripped.trim().length === 0) {
+    if (this._status === 'completed' || this._status === 'error') return;
+
+    const screen = this._screen.getRecentText(20);
+    const promptVisible = matchesWaitingPrompt(screen);
+
+    if (promptVisible) {
+      if (this._status !== 'waiting_input') {
+        this.setStatus('waiting_input');
+      }
       return;
     }
 
-    if (!this._commandExecuting && !this._userInputActive && (this._status === 'starting' || this._status === 'running')) {
-      this.setStatus('idle');
+    // No prompt on screen. If we were in waiting_input, the prompt was
+    // dismissed (by Enter we sent, by the user, or by the app moving on).
+    if (this._status === 'waiting_input') {
+      if (this._commandExecuting) {
+        this.setStatus('running');
+      } else {
+        this.setStatus('idle');
+      }
+      return;
+    }
+
+    // Idle settling: in starting/running with no submitted command and no
+    // active user typing, output activity means the app is just redrawing —
+    // call it idle.
+    if (!this._commandExecuting && !this._userInputActive
+        && (this._status === 'starting' || this._status === 'running')) {
+      if (hasVisibleText(screen)) {
+        this.setStatus('idle');
+      }
     }
   }
 
@@ -381,21 +411,23 @@ export abstract class BaseAdapter extends EventEmitter {
     this.stopUserInputTracking();
     this._commandExecuting = true;
     this._lastActivity = Date.now();
-    this._detectBuffer = '';
     this.setStatus('running');
     this.startCommandTimeout();
   }
 
-  /** Call from subclass onExit to clean up timers */
+  /** Call from subclass onExit to clean up timers + dispose screen */
   protected clearIdleTimer(): void {
     this.stopCommandTracking();
     this.stopUserInputTracking();
     this.stopCwdPolling();
   }
 
+  protected disposeScreen(): void {
+    try { this._screen.dispose(); } catch { /* terminate is best-effort */ }
+  }
+
   private markUserInputActive(): void {
     this._userInputActive = true;
-    this._detectBuffer = '';
     this.setStatus('running');
     this.stopUserInputTimer();
     this._userInputTimer = setTimeout(() => {
@@ -448,4 +480,16 @@ export abstract class BaseAdapter extends EventEmitter {
       this._activityCheckInterval = null;
     }
   }
+}
+
+/** Exposed so the Session-level auto-approve poller can share the same logic. */
+export function matchesWaitingPrompt(screenText: string): boolean {
+  for (const pattern of WAITING_INPUT_PATTERNS) {
+    if (pattern.test(screenText)) return true;
+  }
+  return false;
+}
+
+function hasVisibleText(screenText: string): boolean {
+  return screenText.replace(/\s+/g, '').length > 0;
 }

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { hostname as osHostname } from 'node:os';
-import type { BaseAdapter } from '../adapters/base.js';
+import { type BaseAdapter, matchesWaitingPrompt } from '../adapters/base.js';
 import type { NormalizedEvent, MetadataData, RawOutputData, SessionStatus } from '../adapters/types.js';
 import type { SessionInfo, SessionSummary } from './types.js';
 import { getDefaultHostTag } from './host.js';
@@ -17,11 +17,23 @@ const MAX_RAW_BYTES = 16 * 1024 * 1024; // 16MB
 // history is fetched on demand via history:load.
 const INITIAL_RAW_REPLAY_BYTES = 512 * 1024; // 512KB
 const DEFAULT_AUTO_COMPACT_MINUTES = 60;
-// Auto-approve presses Enter to accept the default ("Yes") option. The first
-// press can be missed if the prompt is still rendering or (for remote
-// sessions) in flight, so retry a few times while we stay in waiting_input.
-const AUTO_APPROVE_INITIAL_DELAY_MS = 1000;
-const AUTO_APPROVE_RETRY_DELAY_MS = 2000;
+// Auto-approve presses Enter to accept the default ("Yes") option. We poll
+// the headless screen (the source of truth for "is a prompt visible right
+// now") on a tick, so neither status:change events nor a rolling stripped-
+// text buffer can lead us astray.
+//
+// - AUTO_APPROVE_TICK_MS: how often we check the screen.
+// - AUTO_APPROVE_INITIAL_DELAY_MS: minimum dwell before the first press, so
+//   the app finishes rendering the prompt and a stray pre-prompt frame
+//   doesn't trigger us.
+// - AUTO_APPROVE_PRESS_COOLDOWN_MS: minimum gap between Enter presses so we
+//   don't spam keys faster than the app can react.
+// - MAX_AUTO_APPROVE_ATTEMPTS: cap on consecutive presses for the *same*
+//   prompt; reset when the prompt disappears for AUTO_APPROVE_RESET_MS.
+const AUTO_APPROVE_TICK_MS = 250;
+const AUTO_APPROVE_INITIAL_DELAY_MS = 750;
+const AUTO_APPROVE_PRESS_COOLDOWN_MS = 1500;
+const AUTO_APPROVE_RESET_MS = 2000;
 const MAX_AUTO_APPROVE_ATTEMPTS = 3;
 const DEFAULT_REPEAT_INTERVAL_SECONDS = 60;
 const AUTO_COMPACT_COMMAND = '/compact';
@@ -104,8 +116,26 @@ export class Session extends EventEmitter {
   private _hostname: string;
   private _initialHostname: string;
   private _autoCompactMinutes = DEFAULT_AUTO_COMPACT_MINUTES;
-  private _autoApproveTimer: ReturnType<typeof setTimeout> | null = null;
-  private _autoApproveAttempts = 0;
+  /**
+   * Auto-approve state machine. Driven by a tick that polls the headless
+   * screen — completely independent of status:change events, which historically
+   * raced with sub-agent output and got the Enter key cancelled at the
+   * worst possible moment.
+   *
+   * - _autoApproveTicker: setInterval handle (null when disabled).
+   * - _autoApprovePromptFirstSeenAt: when we first saw the current prompt;
+   *   used to enforce the initial-dwell delay.
+   * - _autoApproveLastPressAt: timestamp of the last \r we sent, for cooldown.
+   * - _autoApprovePressCount: consecutive presses for THIS prompt instance.
+   * - _autoApprovePromptLastSeenAt: when the prompt last looked visible; if
+   *   it stays gone for AUTO_APPROVE_RESET_MS, we consider this prompt done
+   *   and reset the counters for the next one.
+   */
+  private _autoApproveTicker: ReturnType<typeof setInterval> | null = null;
+  private _autoApprovePromptFirstSeenAt: number | null = null;
+  private _autoApprovePromptLastSeenAt: number | null = null;
+  private _autoApproveLastPressAt = 0;
+  private _autoApprovePressCount = 0;
   private _autoCompactTimer: ReturnType<typeof setTimeout> | null = null;
   private _repeatTimer: ReturnType<typeof setTimeout> | null = null;
   private _repeatClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -201,12 +231,10 @@ export class Session extends EventEmitter {
   setSettings(patch: SessionSettingsPatch): void {
     if (patch.autoApprove !== undefined) {
       this.autoApprove = patch.autoApprove;
-      if (this.autoApprove && this.adapter.status === 'waiting_input') {
-        this._autoApproveAttempts = 0;
-        this.scheduleAutoApprove();
-      } else if (!this.autoApprove) {
-        this.clearAutoApproveTimer();
-        this._autoApproveAttempts = 0;
+      if (this.autoApprove) {
+        this.startAutoApproveTicker();
+      } else {
+        this.stopAutoApproveTicker();
       }
     }
     if (patch.autoCompact !== undefined) {
@@ -377,7 +405,7 @@ export class Session extends EventEmitter {
       }
       case 'session:end': {
         this._endTime = event.timestamp;
-        this.clearAutoApproveTimer();
+        this.stopAutoApproveTicker();
         this.clearAutoCompactTimer();
         this.clearRepeatTimers();
         this.clearSubmitTimers();
@@ -391,14 +419,10 @@ export class Session extends EventEmitter {
       }
       case 'status:change': {
         const data = event.data as { from: SessionStatus; to: SessionStatus };
-        if (data.to === 'waiting_input' && this.autoApprove) {
-          this._autoApproveAttempts = 0; // fresh prompt
-          this.scheduleAutoApprove();
-        } else if (data.from === 'waiting_input' && data.to !== 'waiting_input') {
-          // Prompt was accepted (or the user acted) — stop retrying.
-          this.clearAutoApproveTimer();
-          this._autoApproveAttempts = 0;
-        }
+        // Auto-approve no longer reacts to status transitions; the ticker
+        // started in setSettings polls the screen directly. That avoids a
+        // class of bugs where sub-agent output flicked status:change → running
+        // mid-prompt and cancelled the pending Enter.
         if (isAutoCompactBusyStatus(data.to) && this._autoCompactBlockedUntilBusy && !this._autoCompactWaitingForRunToIdle) {
           this._autoCompactBlockedUntilBusy = false;
         }
@@ -432,35 +456,98 @@ export class Session extends EventEmitter {
     this.emit('event', event);
   }
 
-  private scheduleAutoApprove(): void {
-    if (this._autoApproveTimer) return;
-    const delay = this._autoApproveAttempts === 0
-      ? AUTO_APPROVE_INITIAL_DELAY_MS
-      : AUTO_APPROVE_RETRY_DELAY_MS;
-    this._autoApproveTimer = setTimeout(() => {
-      this._autoApproveTimer = null;
-      if (!this.autoApprove || this.adapter.status !== 'waiting_input') {
-        this._autoApproveAttempts = 0;
-        return;
-      }
-      // forwardKeys (not write) so a remote session's status stays waiting_input
-      // until the remote actually moves past the prompt — otherwise the local
-      // input state machine flips us to "running" and we'd never retry.
-      this.adapter.forwardKeys('\r');
-      this._autoApproveAttempts++;
-      if (this._autoApproveAttempts < MAX_AUTO_APPROVE_ATTEMPTS) {
-        this.scheduleAutoApprove(); // retry if the prompt is still up
-      } else {
-        this._autoApproveAttempts = 0;
-      }
-    }, delay);
+  private startAutoApproveTicker(): void {
+    if (this._autoApproveTicker) return;
+    this.resetAutoApproveState();
+    // Run a tick once immediately so tests / fresh enables don't wait an
+    // extra interval before noticing an already-visible prompt.
+    this.tickAutoApprove();
+    this._autoApproveTicker = setInterval(() => this.tickAutoApprove(), AUTO_APPROVE_TICK_MS);
+    (this._autoApproveTicker as { unref?: () => void }).unref?.();
   }
 
-  private clearAutoApproveTimer(): void {
-    if (this._autoApproveTimer) {
-      clearTimeout(this._autoApproveTimer);
-      this._autoApproveTimer = null;
+  private stopAutoApproveTicker(): void {
+    if (this._autoApproveTicker) {
+      clearInterval(this._autoApproveTicker);
+      this._autoApproveTicker = null;
     }
+    this.resetAutoApproveState();
+  }
+
+  private resetAutoApproveState(): void {
+    this._autoApprovePromptFirstSeenAt = null;
+    this._autoApprovePromptLastSeenAt = null;
+    this._autoApproveLastPressAt = 0;
+    this._autoApprovePressCount = 0;
+  }
+
+  /**
+   * One tick: ask "is a prompt visible right now?" and decide whether to
+   * press Enter. The two signals are:
+   *
+   *   1. Adapter status is `waiting_input` (the detection layer set it from
+   *      either local screen scan or a remote status forward).
+   *   2. The headless screen text matches a waiting-input pattern.
+   *
+   * Either one is enough. (1) covers cases where the prompt text scrolled
+   * out of the screen window we sample but the detection layer still
+   * believes we're at a prompt; (2) covers cases where the status got
+   * spuriously flipped to running by some other path but the prompt is
+   * clearly still on screen.
+   */
+  private tickAutoApprove(): void {
+    if (!this.autoApprove) return;
+
+    const now = Date.now();
+    const status = this.adapter.status;
+    if (status === 'completed' || status === 'error') {
+      this.stopAutoApproveTicker();
+      return;
+    }
+
+    const screenText = this.adapter.getScreenSnapshot().recent;
+    const promptVisible = status === 'waiting_input' || matchesWaitingPrompt(screenText);
+
+    if (!promptVisible) {
+      // Reset only after the prompt has been gone for a while, so a single
+      // frame of mid-redraw blank doesn't lose our press counter.
+      if (this._autoApprovePromptLastSeenAt
+          && now - this._autoApprovePromptLastSeenAt >= AUTO_APPROVE_RESET_MS) {
+        this.resetAutoApproveState();
+      }
+      return;
+    }
+
+    this._autoApprovePromptLastSeenAt = now;
+    if (this._autoApprovePromptFirstSeenAt == null) {
+      this._autoApprovePromptFirstSeenAt = now;
+    }
+
+    // Wait for initial dwell — gives the app a moment to finish rendering
+    // before we press the default option.
+    if (now - this._autoApprovePromptFirstSeenAt < AUTO_APPROVE_INITIAL_DELAY_MS) {
+      return;
+    }
+
+    // Cooldown between presses for the same prompt.
+    if (this._autoApproveLastPressAt
+        && now - this._autoApproveLastPressAt < AUTO_APPROVE_PRESS_COOLDOWN_MS) {
+      return;
+    }
+
+    if (this._autoApprovePressCount >= MAX_AUTO_APPROVE_ATTEMPTS) {
+      // Tried our budget; assume this prompt needs human attention. Stay
+      // armed — if the prompt disappears and a new one shows up, the reset
+      // path above will give us a fresh budget.
+      return;
+    }
+
+    // forwardKeys (not write) so a remote session's status stays
+    // waiting_input until the remote actually moves past the prompt —
+    // otherwise the local input state machine flips us to "running".
+    this.adapter.forwardKeys('\r');
+    this._autoApproveLastPressAt = now;
+    this._autoApprovePressCount++;
   }
 
   private scheduleAutoCompact(delayMs?: number): void {

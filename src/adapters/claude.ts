@@ -90,6 +90,7 @@ export class ClaudeAdapter extends BaseAdapter {
         signal: signal !== undefined ? String(signal) : null,
       } satisfies SessionEndData);
       this.ptyProcess = null;
+      this.disposeScreen();
     });
   }
 
@@ -98,9 +99,7 @@ export class ClaudeAdapter extends BaseAdapter {
     this.handleUserInput(data);
   }
 
-  resize(cols: number, rows: number): void {
-    this.cols = cols;
-    this.rows = rows;
+  protected applyResize(cols: number, rows: number): void {
     this.ptyProcess?.resize(cols, rows);
   }
 
