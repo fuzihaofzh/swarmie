@@ -384,6 +384,7 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
         tags: s.tags,
         isLocal: s.isLocal,
         detectBuffer: s.adapter.detectBuffer.slice(-500),
+        autoApproveDebug: s.getAutoApproveDebug(),
         recentStatusChanges: statusEvents.slice(-5).map((e) => ({
           ...e.data,
           time: new Date(e.timestamp).toISOString(),

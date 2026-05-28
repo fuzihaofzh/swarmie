@@ -151,7 +151,7 @@ describe('Session', () => {
     }
   });
 
-  it('bounds auto-approve to 3 presses per prompt, with cooldown between presses', async () => {
+  it('keeps pressing Enter while the prompt stays up, rate-limited by cooldown', async () => {
     vi.useFakeTimers();
     try {
       const adapter = createMockAdapter('sess-bound');
@@ -169,56 +169,16 @@ describe('Session', () => {
 
       session.setSettings({ autoApprove: true });
 
-      // 10 seconds of the prompt staying up — way more than enough for 3 presses
-      // even with the 1.5s cooldown, but never more than 3.
+      // 10 seconds of an unyielding prompt: cooldown is 1500ms, so we should
+      // see roughly 10/1.5 = ~6 presses. We don't cap — if Codex isn't
+      // accepting our \r, the user wants us to keep trying.
       await vi.advanceTimersByTimeAsync(10_000);
 
       const enters = onWrite.mock.calls.filter(c => c[0] === '\r');
-      expect(enters.length).toBe(3);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('resets the press budget when a new prompt appears after the old one clears', async () => {
-    vi.useFakeTimers();
-    try {
-      const adapter = createMockAdapter('sess-reset');
-      const session = new Session('sess-reset', 'test', adapter);
-      const onWrite = vi.fn();
-      adapter.onWrite = onWrite;
-
-      // First prompt — burn the 3-press budget.
-      adapter.pushEvent({
-        type: 'raw:output',
-        sessionId: 'sess-reset',
-        timestamp: Date.now(),
-        data: { data: Buffer.from('Do you want to proceed?').toString('base64') },
-      });
-      session.setSettings({ autoApprove: true });
-      await vi.advanceTimersByTimeAsync(10_000);
-      expect(onWrite.mock.calls.filter(c => c[0] === '\r').length).toBe(3);
-
-      // Prompt is cleared.
-      adapter.pushEvent({
-        type: 'raw:output',
-        sessionId: 'sess-reset',
-        timestamp: Date.now(),
-        data: { data: Buffer.from('\x1b[2J\x1b[HWorking…').toString('base64') },
-      });
-      // Wait past the reset window so the ticker forgets the old prompt.
-      await vi.advanceTimersByTimeAsync(3000);
-
-      // Second prompt appears — budget should be refreshed.
-      adapter.pushEvent({
-        type: 'raw:output',
-        sessionId: 'sess-reset',
-        timestamp: Date.now(),
-        data: { data: Buffer.from('Do you want to proceed?').toString('base64') },
-      });
-      await vi.advanceTimersByTimeAsync(2000);
-
-      expect(onWrite.mock.calls.filter(c => c[0] === '\r').length).toBeGreaterThanOrEqual(4);
+      expect(enters.length).toBeGreaterThan(3);
+      // Sanity: cooldown should be honored — no more than one press per
+      // ~AUTO_APPROVE_PRESS_COOLDOWN_MS (1500ms). 10s / 1.5s = 6.67.
+      expect(enters.length).toBeLessThanOrEqual(8);
     } finally {
       vi.useRealTimers();
     }

@@ -28,13 +28,17 @@ const DEFAULT_AUTO_COMPACT_MINUTES = 60;
 //   doesn't trigger us.
 // - AUTO_APPROVE_PRESS_COOLDOWN_MS: minimum gap between Enter presses so we
 //   don't spam keys faster than the app can react.
-// - MAX_AUTO_APPROVE_ATTEMPTS: cap on consecutive presses for the *same*
-//   prompt; reset when the prompt disappears for AUTO_APPROVE_RESET_MS.
+// - AUTO_APPROVE_RESET_MS: how long the prompt must stay GONE before we
+//   consider the next sighting "a new prompt" (resets dwell + press count).
+//
+// We intentionally don't cap the press count — if a prompt sticks around
+// and isn't responding to \r, the user wants us to keep trying (e.g.
+// because the app is briefly slow, or because we're racing a child render).
+// The cooldown alone bounds us at ~40 presses/minute which is harmless.
 const AUTO_APPROVE_TICK_MS = 250;
 const AUTO_APPROVE_INITIAL_DELAY_MS = 750;
 const AUTO_APPROVE_PRESS_COOLDOWN_MS = 1500;
 const AUTO_APPROVE_RESET_MS = 2000;
-const MAX_AUTO_APPROVE_ATTEMPTS = 3;
 const DEFAULT_REPEAT_INTERVAL_SECONDS = 60;
 const AUTO_COMPACT_COMMAND = '/compact';
 const REPEAT_CLEAR_COMMAND = '/clear';
@@ -535,19 +539,40 @@ export class Session extends EventEmitter {
       return;
     }
 
-    if (this._autoApprovePressCount >= MAX_AUTO_APPROVE_ATTEMPTS) {
-      // Tried our budget; assume this prompt needs human attention. Stay
-      // armed — if the prompt disappears and a new one shows up, the reset
-      // path above will give us a fresh budget.
-      return;
-    }
-
     // forwardKeys (not write) so a remote session's status stays
     // waiting_input until the remote actually moves past the prompt —
     // otherwise the local input state machine flips us to "running".
     this.adapter.forwardKeys('\r');
     this._autoApproveLastPressAt = now;
     this._autoApprovePressCount++;
+  }
+
+  /** Diagnostic snapshot of the auto-approve ticker state. */
+  getAutoApproveDebug(): {
+    enabled: boolean;
+    tickerActive: boolean;
+    promptFirstSeenAt: number | null;
+    promptLastSeenAt: number | null;
+    lastPressAt: number;
+    pressCount: number;
+    sinceFirstSeenMs: number | null;
+    sinceLastPressMs: number | null;
+  } {
+    const now = Date.now();
+    return {
+      enabled: this.autoApprove,
+      tickerActive: this._autoApproveTicker !== null,
+      promptFirstSeenAt: this._autoApprovePromptFirstSeenAt,
+      promptLastSeenAt: this._autoApprovePromptLastSeenAt,
+      lastPressAt: this._autoApproveLastPressAt,
+      pressCount: this._autoApprovePressCount,
+      sinceFirstSeenMs: this._autoApprovePromptFirstSeenAt
+        ? now - this._autoApprovePromptFirstSeenAt
+        : null,
+      sinceLastPressMs: this._autoApproveLastPressAt
+        ? now - this._autoApproveLastPressAt
+        : null,
+    };
   }
 
   private scheduleAutoCompact(delayMs?: number): void {
