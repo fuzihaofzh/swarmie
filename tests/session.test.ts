@@ -151,7 +151,7 @@ describe('Session', () => {
     }
   });
 
-  it('keeps pressing Enter while the prompt stays up, rate-limited by cooldown', async () => {
+  it('presses Enter a few times fast, then backs off to a slow recovery rate', async () => {
     vi.useFakeTimers();
     try {
       const adapter = createMockAdapter('sess-bound');
@@ -169,16 +169,23 @@ describe('Session', () => {
 
       session.setSettings({ autoApprove: true });
 
-      // 10 seconds of an unyielding prompt: cooldown is 1500ms, so we should
-      // see roughly 10/1.5 = ~6 presses. We don't cap — if Codex isn't
-      // accepting our \r, the user wants us to keep trying.
-      await vi.advanceTimersByTimeAsync(10_000);
+      // First 5 seconds: should see the "fast" budget burn (2 presses at
+      // 1.5s cooldown), then stop.
+      await vi.advanceTimersByTimeAsync(5_000);
+      const fastEnters = onWrite.mock.calls.filter(c => c[0] === '\r').length;
+      expect(fastEnters).toBe(2);
 
-      const enters = onWrite.mock.calls.filter(c => c[0] === '\r');
-      expect(enters.length).toBeGreaterThan(3);
-      // Sanity: cooldown should be honored — no more than one press per
-      // ~AUTO_APPROVE_PRESS_COOLDOWN_MS (1500ms). 10s / 1.5s = 6.67.
-      expect(enters.length).toBeLessThanOrEqual(8);
+      // Now ride out the slow phase — 30s cooldown means at most 1 extra
+      // press over the next 25s.
+      await vi.advanceTimersByTimeAsync(25_000);
+      const afterSlow = onWrite.mock.calls.filter(c => c[0] === '\r').length;
+      expect(afterSlow).toBeGreaterThanOrEqual(2);
+      expect(afterSlow).toBeLessThanOrEqual(3);
+
+      // Continue another 35s — should add about one more press.
+      await vi.advanceTimersByTimeAsync(35_000);
+      const total = onWrite.mock.calls.filter(c => c[0] === '\r').length;
+      expect(total).toBeLessThanOrEqual(4);
     } finally {
       vi.useRealTimers();
     }

@@ -26,18 +26,25 @@ const DEFAULT_AUTO_COMPACT_MINUTES = 60;
 // - AUTO_APPROVE_INITIAL_DELAY_MS: minimum dwell before the first press, so
 //   the app finishes rendering the prompt and a stray pre-prompt frame
 //   doesn't trigger us.
-// - AUTO_APPROVE_PRESS_COOLDOWN_MS: minimum gap between Enter presses so we
-//   don't spam keys faster than the app can react.
+// - AUTO_APPROVE_PRESS_COOLDOWN_MS: gap between Enter presses while we're
+//   still in the "fast" phase (first AUTO_APPROVE_FAST_PRESSES presses for
+//   a single prompt instance).
+// - AUTO_APPROVE_FAST_PRESSES: how many quick presses before we back off.
+//   If the prompt accepts our Enter, it disappears within a frame or two;
+//   needing more than 2–3 attempts means \r isn't being consumed and
+//   spamming more would just stack up actions when it eventually does
+//   (e.g. dispatching the same agent N times if the prompt is "launch
+//   agent? Yes/No").
+// - AUTO_APPROVE_SLOW_COOLDOWN_MS: cooldown once we've burned the fast
+//   budget. We keep trying so the user never gets stuck forever, but at
+//   a rate that's clearly "polling for recovery" not "spamming keys."
 // - AUTO_APPROVE_RESET_MS: how long the prompt must stay GONE before we
 //   consider the next sighting "a new prompt" (resets dwell + press count).
-//
-// We intentionally don't cap the press count — if a prompt sticks around
-// and isn't responding to \r, the user wants us to keep trying (e.g.
-// because the app is briefly slow, or because we're racing a child render).
-// The cooldown alone bounds us at ~40 presses/minute which is harmless.
 const AUTO_APPROVE_TICK_MS = 250;
 const AUTO_APPROVE_INITIAL_DELAY_MS = 750;
 const AUTO_APPROVE_PRESS_COOLDOWN_MS = 1500;
+const AUTO_APPROVE_FAST_PRESSES = 2;
+const AUTO_APPROVE_SLOW_COOLDOWN_MS = 30_000;
 const AUTO_APPROVE_RESET_MS = 2000;
 const DEFAULT_REPEAT_INTERVAL_SECONDS = 60;
 const AUTO_COMPACT_COMMAND = '/compact';
@@ -534,8 +541,16 @@ export class Session extends EventEmitter {
     }
 
     // Cooldown between presses for the same prompt.
+    // Cooldown widens once the fast budget is spent: if the first couple of
+    // Enters didn't take, the next press won't either, and spamming \r can
+    // accidentally accept whatever new prompt the app eventually does show
+    // (e.g. dispatching the same agent multiple times). Stay armed but poll
+    // at a recovery rate.
+    const cooldown = this._autoApprovePressCount >= AUTO_APPROVE_FAST_PRESSES
+      ? AUTO_APPROVE_SLOW_COOLDOWN_MS
+      : AUTO_APPROVE_PRESS_COOLDOWN_MS;
     if (this._autoApproveLastPressAt
-        && now - this._autoApproveLastPressAt < AUTO_APPROVE_PRESS_COOLDOWN_MS) {
+        && now - this._autoApproveLastPressAt < cooldown) {
       return;
     }
 
