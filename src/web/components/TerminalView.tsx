@@ -97,6 +97,8 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
   const historyLoadingRef = useRef(false);
   const capturedDuringLoadRef = useRef<Array<{ b64: string; offsetEnd?: number }>>([]);
   const pendingChunksRef = useRef<string[]>([]);
+  const scheduleFlushRef = useRef<(() => void) | null>(null);
+  const cancelScheduledFlushRef = useRef<(() => void) | null>(null);
   const scrolledUpAtRef = useRef(0);
   const handleLoadEarlierRef = useRef<(() => void) | null>(null);
 
@@ -561,10 +563,12 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
 
     const scheduleFlush = () => {
       if (disposed) return;
+      if (!isActiveRef.current) return;
       if (flushFrame !== null) return;
       flushFrame = requestAnimationFrame(() => {
         flushFrame = null;
         if (disposed) return;
+        if (!isActiveRef.current) return;
         if (writeInFlight) return;
         if (pendingChunks.length === 0) return;
 
@@ -617,6 +621,14 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
         });
       });
     };
+    const cancelScheduledFlush = () => {
+      if (flushFrame !== null) {
+        cancelAnimationFrame(flushFrame);
+        flushFrame = null;
+      }
+    };
+    scheduleFlushRef.current = scheduleFlush;
+    cancelScheduledFlushRef.current = cancelScheduledFlush;
 
     const writer = (b64Data: string, offsetEnd?: number, isReplay?: boolean) => {
       if (disposed) return;
@@ -724,9 +736,24 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       disposed = true;
       cleanupFlush();
       unsubscribeSnapshot();
+      if (scheduleFlushRef.current === scheduleFlush) scheduleFlushRef.current = null;
+      if (cancelScheduledFlushRef.current === cancelScheduledFlush) cancelScheduledFlushRef.current = null;
       unregisterTerminalWriter(sessionId, writer);
     };
   }, [sessionId, termReady]);
+
+  // Do not let an inactive terminal keep draining a large xterm parse queue.
+  // Switching away already unsubscribes raw WS output; this also stops any
+  // bytes that were queued before the unsubscribe from blocking input in the
+  // newly active tab. When the user comes back, we resume from the same queue
+  // and the WS replay request is offset-based so it does not duplicate bytes.
+  useEffect(() => {
+    if (isActive) {
+      scheduleFlushRef.current?.();
+    } else {
+      cancelScheduledFlushRef.current?.();
+    }
+  }, [isActive]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, width: '100%', height: '100%', minHeight: 0 }}>

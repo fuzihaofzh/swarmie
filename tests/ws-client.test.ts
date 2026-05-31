@@ -308,6 +308,68 @@ describe('WebSocket observability', () => {
     });
   });
 
+  it('filters subscribe replay by raw output offset', async () => {
+    const sessionId = `raw-offset-${Date.now()}`;
+    const adapter = new RemoteAdapter(
+      { sessionId, toolArgs: [], cwd: '/tmp' },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: 'C',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+    manager.addSession(sessionId, 'Raw Offset Session', adapter, { cwd: '/tmp', hostname: 'test-host' });
+
+    adapter.pushEvent({
+      type: 'raw:output',
+      sessionId,
+      timestamp: Date.now(),
+      data: { data: Buffer.from('already rendered\n').toString('base64') },
+    });
+    adapter.pushEvent({
+      type: 'raw:output',
+      sessionId,
+      timestamp: Date.now() + 1,
+      data: { data: Buffer.from('catch up only\n').toString('base64') },
+    });
+
+    const session = manager.getSession(sessionId);
+    const rawEvents = session?.getRecentEvents().filter((event) => event.type === 'raw:output') ?? [];
+    const firstOffset = (rawEvents[0]?.data as { offsetEnd?: number } | undefined)?.offsetEnd;
+    expect(typeof firstOffset).toBe('number');
+
+    const ws = trackSocket(new WebSocket(wsUrl, [WS_PROTOCOL]));
+    const batchPromise = new Promise<{ events: Array<{ type: string; data: { data: string } }> }>((resolve) => {
+      ws.on('message', (raw: WebSocket.RawData) => {
+        const payload = JSON.parse(raw.toString()) as {
+          type?: string;
+          sessionId?: string;
+          events?: Array<{ type: string; data: { data: string } }>;
+        };
+        if (payload.type === 'event:batch' && payload.sessionId === sessionId) {
+          resolve({ events: payload.events ?? [] });
+        }
+      });
+    });
+
+    await waitForSocketOpen(ws);
+    ws.send(JSON.stringify({ type: 'subscribe', sessionId, fromOffset: firstOffset }));
+    const batch = await batchPromise;
+    const replayText = batch.events
+      .filter((event) => event.type === 'raw:output')
+      .map((event) => Buffer.from(event.data.data, 'base64').toString('utf-8'))
+      .join('');
+
+    expect(replayText).not.toContain('already rendered');
+    expect(replayText).toContain('catch up only');
+    ws.close();
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve());
+    });
+  });
+
   it('accepts dashboard ping heartbeats without invalid-message logs', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {

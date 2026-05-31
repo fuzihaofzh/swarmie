@@ -1,5 +1,5 @@
 import { useSessionStore, type SessionSummary, type NormalizedEvent, type SessionSettingsPatch } from './useSessions';
-import { writeToTerminal, clearTerminalBuffer, applyHistorySnapshot } from '../terminalBus';
+import { writeToTerminal, clearTerminalBuffer, applyHistorySnapshot, getSessionMeta } from '../terminalBus';
 import { useServerStore, LOCAL_SERVER } from './useServers';
 import { useUIStore } from './useUI';
 import { mergeBase64Chunks } from '../base64';
@@ -193,7 +193,8 @@ export class ServerConnection {
     if (this.requestedReplay.has(sessionId)) return;
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.requestedReplay.add(sessionId);
-    this.send({ type: 'subscribe', sessionId });
+    const { highestOffset } = getSessionMeta(sessionId);
+    this.send({ type: 'subscribe', sessionId, fromOffset: highestOffset > 0 ? highestOffset : undefined });
   }
 
   setActiveRawSession(sessionId: string | null): void {

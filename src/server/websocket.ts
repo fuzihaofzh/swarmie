@@ -537,7 +537,16 @@ function handleMessage(
         // Send recent events for this session
         const session = manager.getSession(sessionId);
         if (session) {
-          const events = session.getRecentEvents();
+          const fromOffset = typeof msg.fromOffset === 'number'
+            ? msg.fromOffset
+            : Number(msg.fromOffset);
+          const events = Number.isFinite(fromOffset) && fromOffset > 0
+            ? session.getRecentEvents().filter((event) => {
+              if (event.type !== 'raw:output') return true;
+              const data = event.data as RawOutputData;
+              return typeof data.offsetEnd !== 'number' || data.offsetEnd > fromOffset;
+            })
+            : session.getRecentEvents();
           send(socket, { type: 'event:batch', sessionId, events });
         }
       }
