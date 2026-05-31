@@ -10,41 +10,157 @@ import { sessionMatchesTagFilter } from '../tagFilter';
 const NEW_SESSION_PANEL_ID = '__new_session__';
 
 // Touch swipe threshold (px) above which a touch is treated as a scroll, not a tap.
-const TAP_MOVE_THRESHOLD = 10;
+const TAP_MOVE_THRESHOLD = 14;
+const SUPPRESS_CLICK_MS = 700;
 
 /**
  * Distinguish a tap from a swipe on touch devices. Swiping horizontally to
- * scroll the tab strip still synthesizes a `click` on touchend, which would
- * otherwise activate whatever tab the finger landed on. We track touch
- * movement and swallow the click when the finger moved past the threshold.
+ * scroll the tab strip still fires Dockview's parent `pointerdown` handler
+ * before the finger has moved. For touch pointers we intercept that event in
+ * the capture phase, then activate the tab ourselves only if the gesture ends
+ * as a tap.
  */
-function useTapActivate(onTap: () => void) {
-  const startRef = useRef<{ x: number; y: number } | null>(null);
-  const movedRef = useRef(false);
-  return {
-    onTouchStart: (e: React.TouchEvent) => {
-      const t = e.touches[0];
-      startRef.current = { x: t.clientX, y: t.clientY };
-      movedRef.current = false;
-    },
-    onTouchMove: (e: React.TouchEvent) => {
-      if (!startRef.current) return;
-      const t = e.touches[0];
+function useSwipeSafeTabActivate(
+  tabRef: React.RefObject<HTMLElement | null>,
+  onTap: () => void,
+) {
+  const onTapRef = useRef(onTap);
+  const gestureRef = useRef<{
+    x: number;
+    y: number;
+    pointerId?: number;
+    moved: boolean;
+    interactive: boolean;
+  } | null>(null);
+  const suppressClickUntilRef = useRef(0);
+
+  useEffect(() => {
+    onTapRef.current = onTap;
+  }, [onTap]);
+
+  useEffect(() => {
+    const el = tabRef.current;
+    if (!el) return;
+
+    const isInteractiveTarget = (target: EventTarget | null): boolean =>
+      target instanceof HTMLElement &&
+      !!target.closest('.dv-tab-tools, .dv-tab-close, button, input, textarea, select, a');
+
+    const stopDockviewActivation = (event: Event) => {
+      event.stopPropagation();
+    };
+
+    const stopSyntheticClick = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if ('stopImmediatePropagation' in event) {
+        event.stopImmediatePropagation();
+      }
+    };
+
+    const updateMovement = (clientX: number, clientY: number) => {
+      const gesture = gestureRef.current;
+      if (!gesture) return;
       if (
-        Math.abs(t.clientX - startRef.current.x) > TAP_MOVE_THRESHOLD ||
-        Math.abs(t.clientY - startRef.current.y) > TAP_MOVE_THRESHOLD
+        Math.abs(clientX - gesture.x) > TAP_MOVE_THRESHOLD ||
+        Math.abs(clientY - gesture.y) > TAP_MOVE_THRESHOLD
       ) {
-        movedRef.current = true;
+        gesture.moved = true;
       }
-    },
-    onClick: () => {
-      if (movedRef.current) {
-        movedRef.current = false; // it was a scroll/swipe — ignore
-        return;
+    };
+
+    const finishGesture = (event: Event, shouldActivate: boolean) => {
+      const gesture = gestureRef.current;
+      if (!gesture) return;
+      stopDockviewActivation(event);
+      suppressClickUntilRef.current = Date.now() + SUPPRESS_CLICK_MS;
+      if (shouldActivate && !gesture.moved && !gesture.interactive) {
+        onTapRef.current();
       }
-      onTap();
-    },
-  };
+      gestureRef.current = null;
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return;
+      gestureRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+        pointerId: event.pointerId,
+        moved: false,
+        interactive: isInteractiveTarget(event.target),
+      };
+      stopDockviewActivation(event);
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      const gesture = gestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      updateMovement(event.clientX, event.clientY);
+    };
+
+    const onPointerUp = (event: PointerEvent) => {
+      const gesture = gestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      finishGesture(event, true);
+    };
+
+    const onPointerCancel = (event: PointerEvent) => {
+      const gesture = gestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      finishGesture(event, false);
+    };
+
+    const onTouchStart = (event: TouchEvent) => {
+      if (gestureRef.current?.pointerId !== undefined) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      gestureRef.current = {
+        x: touch.clientX,
+        y: touch.clientY,
+        moved: false,
+        interactive: isInteractiveTarget(event.target),
+      };
+      stopDockviewActivation(event);
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (gestureRef.current?.pointerId !== undefined) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      updateMovement(touch.clientX, touch.clientY);
+    };
+
+    const onTouchEnd = (event: TouchEvent) => {
+      if (gestureRef.current?.pointerId !== undefined) return;
+      finishGesture(event, true);
+    };
+
+    const onClick = (event: MouseEvent) => {
+      if (Date.now() < suppressClickUntilRef.current) {
+        stopSyntheticClick(event);
+      }
+    };
+
+    el.addEventListener('pointerdown', onPointerDown, { capture: true });
+    el.addEventListener('pointermove', onPointerMove, { capture: true });
+    el.addEventListener('pointerup', onPointerUp, { capture: true });
+    el.addEventListener('pointercancel', onPointerCancel, { capture: true });
+    el.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+    el.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
+    el.addEventListener('touchend', onTouchEnd, { capture: true });
+    el.addEventListener('click', onClick, { capture: true });
+
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown, { capture: true });
+      el.removeEventListener('pointermove', onPointerMove, { capture: true });
+      el.removeEventListener('pointerup', onPointerUp, { capture: true });
+      el.removeEventListener('pointercancel', onPointerCancel, { capture: true });
+      el.removeEventListener('touchstart', onTouchStart, { capture: true });
+      el.removeEventListener('touchmove', onTouchMove, { capture: true });
+      el.removeEventListener('touchend', onTouchEnd, { capture: true });
+      el.removeEventListener('click', onClick, { capture: true });
+    };
+  }, [tabRef]);
 }
 
 function shortPath(p: string): string {
@@ -109,7 +225,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
     });
     return () => disposable.dispose();
   }, [api]);
-  const tapActivate = useTapActivate(() => api.setActive());
+  useSwipeSafeTabActivate(tabRef, () => api.setActive());
   const setSessionAutoApprove = useSessionStore((s) => s.setSessionAutoApprove);
   const setSessionAutoCompact = useSessionStore((s) => s.setSessionAutoCompact);
   const setSessionRepeat = useSessionStore((s) => s.setSessionRepeat);
@@ -227,9 +343,6 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
       className={`dv-custom-tab${filteredOut ? ' dv-custom-tab-hidden' : ''}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onTouchStart={tapActivate.onTouchStart}
-      onTouchMove={tapActivate.onTouchMove}
-      onClick={tapActivate.onClick}
     >
       <ToolIcon tool={session.tool} status={session.status} />
       <span className="dv-tab-name">
@@ -393,13 +506,12 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
 }
 
 export function DockviewNewSessionTab({ api }: IDockviewPanelHeaderProps) {
-  const tapActivate = useTapActivate(() => api.setActive());
+  const tabRef = useRef<HTMLDivElement>(null);
+  useSwipeSafeTabActivate(tabRef, () => api.setActive());
   return (
     <div
+      ref={tabRef}
       className="dv-custom-tab dv-new-session-tab"
-      onTouchStart={tapActivate.onTouchStart}
-      onTouchMove={tapActivate.onTouchMove}
-      onClick={tapActivate.onClick}
     >
       <span style={{ fontSize: 16, fontWeight: 'bold' }}>+</span>
       <span className="dv-tab-name">New Session</span>
