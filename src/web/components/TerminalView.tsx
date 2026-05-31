@@ -1,7 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { CanvasAddon } from '@xterm/addon-canvas';
 import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { useUIStore } from '../hooks/useUI';
@@ -165,12 +164,6 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(el);
-
-      try {
-        term.loadAddon(new CanvasAddon());
-      } catch {
-        // Fall back to default DOM renderer
-      }
 
       const searchAddon = new SearchAddon();
       term.loadAddon(searchAddon);
