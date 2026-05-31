@@ -59,6 +59,12 @@ class ShellActivityDetectionAdapter extends ActivityDetectionAdapter {
   }
 }
 
+class DirectCommandActivityDetectionAdapter extends ActivityDetectionAdapter {
+  protected shouldSettleVisibleOutputToIdle(): boolean {
+    return false;
+  }
+}
+
 function createAdapter(): ActivityDetectionAdapter {
   const adapter = new ActivityDetectionAdapter({ sessionId: 'detect-test', toolArgs: [] });
   adapter.start();
@@ -67,6 +73,12 @@ function createAdapter(): ActivityDetectionAdapter {
 
 function createShellAdapter(): ShellActivityDetectionAdapter {
   const adapter = new ShellActivityDetectionAdapter({ sessionId: 'shell-detect-test', toolArgs: [] });
+  adapter.start();
+  return adapter;
+}
+
+function createDirectCommandAdapter(): DirectCommandActivityDetectionAdapter {
+  const adapter = new DirectCommandActivityDetectionAdapter({ sessionId: 'direct-command-test', toolArgs: [] });
   adapter.start();
   return adapter;
 }
@@ -164,6 +176,22 @@ describe('activity detection', () => {
     expect(adapter.status).toBe('idle');
   });
 
+  it('keeps direct command output running without submitted user input', () => {
+    const adapter = createDirectCommandAdapter();
+
+    adapter.feed('0123456789abcdef\n');
+
+    expect(adapter.status).toBe('running');
+  });
+
+  it('marks visible agent working status as running', () => {
+    const adapter = createAdapter();
+
+    adapter.feed('◦ Working (20m 05s • esc to interrupt)');
+
+    expect(adapter.status).toBe('running');
+  });
+
   it('does not mark idle sessions running for passive focus input', () => {
     const adapter = createAdapter();
 
@@ -232,6 +260,23 @@ describe('activity detection', () => {
 
       await vi.advanceTimersByTimeAsync(32_000);
       expect(adapter.status).toBe('idle');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not idle a submitted command while the screen still says the agent is working', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createAdapter();
+
+      adapter.feed('startup complete');
+      adapter.write('start agent\r');
+      adapter.feed('◦ Working (2m 10s • esc to interrupt)');
+
+      await vi.advanceTimersByTimeAsync(32_000);
+
+      expect(adapter.status).toBe('running');
     } finally {
       vi.useRealTimers();
     }

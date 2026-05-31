@@ -31,6 +31,27 @@ const WAITING_INPUT_PATTERNS = [
 ];
 const WAITING_PROMPT_TOOL_NAMES = new Set(['claude', 'codex', 'gemini']);
 
+// Busy state lines rendered by current agent CLIs. These are sampled from the
+// headless screen, so matching them is more reliable than relying only on
+// recent keypress/output timing; long-running agent calls can be quiet for
+// more than COMMAND_IDLE_TIMEOUT_MS while the visible status line still says
+// they are working.
+const BUSY_SCREEN_PATTERNS = [
+  /\b(?:Working|Thinking)\b.{0,80}\b(?:esc to interrupt|esc to cancel|context left|tokens?)\b/i,
+  /\b(?:Claude|Codex|Gemini)\b.{0,80}\b(?:streaming response|working|thinking)\b/i,
+  /\b(?:streaming response|tool executing|running tool|running command)\b/i,
+];
+
+// Agent idle/input prompt text. This is distinct from approval prompts above:
+// the app is alive but waiting for the user's next task, so the tab should be
+// idle rather than busy.
+const AGENT_IDLE_SCREEN_PATTERNS = [
+  /\bnew task\?\s*\/clear\b/i,
+  /\?\s*for shortcuts\b/i,
+  /\btab to queue message\b/i,
+  /(?:^|\n)\s*[›❯]\s*(?:\n|$)/,
+];
+
 // OSC 7: file://hostname/path — shell reports cwd (+ hostname for SSH)
 const OSC7_RE = new RegExp(
   `${ESC_CHAR}\\]7;file://([^/]*)(/[^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
@@ -182,6 +203,21 @@ export abstract class BaseAdapter extends EventEmitter {
     return WAITING_PROMPT_TOOL_NAMES.has(this.info.name);
   }
 
+  /**
+   * Whether visible output with no submitted-command context should be treated
+   * as the app having reached an idle prompt. Interactive shells override this
+   * behavior through their adapter; direct long-running commands should keep
+   * running until they exit instead of turning gray after their first output.
+   */
+  protected shouldSettleVisibleOutputToIdle(_screenText: string): boolean {
+    return true;
+  }
+
+  /** Whether the currently rendered screen explicitly says the tool is busy. */
+  protected shouldTreatScreenAsBusy(screenText: string): boolean {
+    return matchesBusyScreen(screenText);
+  }
+
   /** Start the underlying tool process */
   abstract start(): void;
 
@@ -279,10 +315,19 @@ export abstract class BaseAdapter extends EventEmitter {
 
     const screen = this._screen.getRecentText(20);
     const promptVisible = this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(screen);
+    const busyVisible = this.shouldTreatScreenAsBusy(screen);
 
     if (promptVisible) {
       if (this._status !== 'waiting_input') {
         this.setStatus('waiting_input');
+      }
+      return;
+    }
+
+    if (busyVisible) {
+      this._lastActivity = Date.now();
+      if (this._status !== 'running' && this._status !== 'thinking' && this._status !== 'tool_executing') {
+        this.setStatus('running');
       }
       return;
     }
@@ -299,12 +344,17 @@ export abstract class BaseAdapter extends EventEmitter {
     }
 
     // Idle settling: in starting/running with no submitted command and no
-    // active user typing, output activity means the app is just redrawing —
-    // call it idle.
+    // active user typing, some apps are just drawing an idle prompt. Direct
+    // commands are the opposite: their output is the command running, so keep
+    // them busy until the process exits.
     if (!this._commandExecuting && !this._userInputActive
-        && (this._status === 'starting' || this._status === 'running')) {
+        && (this._status === 'starting' || this._status === 'running' || this._status === 'idle')) {
       if (hasVisibleText(screen)) {
-        this.setStatus('idle');
+        if (this.shouldSettleVisibleOutputToIdle(screen)) {
+          if (this._status !== 'idle') this.setStatus('idle');
+        } else if (this._status !== 'running') {
+          this.setStatus('running');
+        }
       }
     }
   }
@@ -455,6 +505,14 @@ export abstract class BaseAdapter extends EventEmitter {
 
       const idleTime = Date.now() - this._lastActivity;
       if (idleTime > COMMAND_IDLE_TIMEOUT_MS) {
+        const screen = this._screen.getRecentText(20);
+        if (this.shouldTreatScreenAsBusy(screen)) {
+          this._lastActivity = Date.now();
+          if (this._status !== 'running' && this._status !== 'thinking' && this._status !== 'tool_executing') {
+            this.setStatus('running');
+          }
+          return;
+        }
         this.stopCommandTracking();
         this.setStatus('idle');
       }
@@ -490,6 +548,20 @@ export abstract class BaseAdapter extends EventEmitter {
 /** Exposed so the Session-level auto-approve poller can share the same logic. */
 export function matchesWaitingPrompt(screenText: string): boolean {
   for (const pattern of WAITING_INPUT_PATTERNS) {
+    if (pattern.test(screenText)) return true;
+  }
+  return false;
+}
+
+export function matchesBusyScreen(screenText: string): boolean {
+  for (const pattern of BUSY_SCREEN_PATTERNS) {
+    if (pattern.test(screenText)) return true;
+  }
+  return false;
+}
+
+export function matchesAgentIdleScreen(screenText: string): boolean {
+  for (const pattern of AGENT_IDLE_SCREEN_PATTERNS) {
     if (pattern.test(screenText)) return true;
   }
   return false;

@@ -1,5 +1,5 @@
 import * as pty from 'node-pty';
-import { BaseAdapter, buildSpawnEnv } from './base.js';
+import { BaseAdapter, buildSpawnEnv, matchesAgentIdleScreen, matchesBusyScreen } from './base.js';
 import type { AdapterInfo, RawOutputData, SessionStartData, SessionEndData } from './types.js';
 
 /**
@@ -65,6 +65,11 @@ export abstract class SimplePtyAdapter extends BaseAdapter {
 
   protected applyResize(cols: number, rows: number): void {
     this.ptyProcess?.resize(cols, rows);
+  }
+
+  protected shouldSettleVisibleOutputToIdle(screenText: string): boolean {
+    if (matchesBusyScreen(screenText)) return false;
+    return matchesAgentIdleScreen(screenText);
   }
 
   kill(signal?: string): void {

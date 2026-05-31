@@ -1,5 +1,5 @@
 import * as pty from 'node-pty';
-import { BaseAdapter, buildSpawnEnv } from './base.js';
+import { BaseAdapter, buildSpawnEnv, matchesAgentIdleScreen, matchesBusyScreen } from './base.js';
 import type {
   AdapterInfo,
   RawOutputData,
@@ -19,6 +19,15 @@ const OSC_PAYLOAD_RE = new RegExp(
   `${ESC_CHAR}\\]\\d+;([^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
   'g',
 );
+const INTERACTIVE_SHELLS = new Set(['sh', 'bash', 'zsh', 'fish', 'tcsh', 'csh', 'ksh', 'dash']);
+
+function basename(command: string): string {
+  return command.split('/').filter(Boolean).pop() ?? command;
+}
+
+function isInteractiveShellCommand(command: string): boolean {
+  return INTERACTIVE_SHELLS.has(basename(command));
+}
 
 /**
  * Generic adapter — runs any command via PTY.
@@ -74,9 +83,9 @@ export class GenericAdapter extends BaseAdapter {
     this.startCwdPolling(this.ptyProcess.pid);
 
     this.ptyProcess.onData((data: string) => {
+      this.detectTool(data);
       this.handleActivityDetection(data);
       this.parseOSC(data);
-      this.detectTool(data);
       this.emitEvent('raw:output', {
         data: Buffer.from(data).toString('base64'),
       } satisfies RawOutputData);
@@ -106,6 +115,14 @@ export class GenericAdapter extends BaseAdapter {
 
   protected applyResize(cols: number, rows: number): void {
     this.ptyProcess?.resize(cols, rows);
+  }
+
+  protected shouldSettleVisibleOutputToIdle(screenText: string): boolean {
+    if (this._detectedTool) {
+      if (matchesBusyScreen(screenText)) return false;
+      return matchesAgentIdleScreen(screenText);
+    }
+    return isInteractiveShellCommand(this.command);
   }
 
   kill(signal?: string): void {

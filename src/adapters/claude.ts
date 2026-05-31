@@ -1,5 +1,5 @@
 import * as pty from 'node-pty';
-import { BaseAdapter, buildSpawnEnv, type AdapterOptions } from './base.js';
+import { BaseAdapter, buildSpawnEnv, matchesAgentIdleScreen, matchesBusyScreen, type AdapterOptions } from './base.js';
 import type {
   AdapterInfo,
   RawOutputData,
@@ -101,6 +101,11 @@ export class ClaudeAdapter extends BaseAdapter {
 
   protected applyResize(cols: number, rows: number): void {
     this.ptyProcess?.resize(cols, rows);
+  }
+
+  protected shouldSettleVisibleOutputToIdle(screenText: string): boolean {
+    if (matchesBusyScreen(screenText)) return false;
+    return matchesAgentIdleScreen(screenText);
   }
 
   kill(signal?: string): void {
