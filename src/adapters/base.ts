@@ -29,6 +29,7 @@ const WAITING_INPUT_PATTERNS = [
   /\(y\/n\)/i,
   /\(yes\/no\)/i,
 ];
+const WAITING_PROMPT_TOOL_NAMES = new Set(['claude', 'codex', 'gemini']);
 
 // OSC 7: file://hostname/path — shell reports cwd (+ hostname for SSH)
 const OSC7_RE = new RegExp(
@@ -163,7 +164,7 @@ export abstract class BaseAdapter extends EventEmitter {
   getScreenSnapshot(): ScreenSnapshot {
     const recent = this._screen.getRecentText(20);
     const viewport = this._screen.getViewportText();
-    const promptVisible = matchesWaitingPrompt(recent);
+    const promptVisible = this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(recent);
     return { viewport, recent, promptVisible };
   }
 
@@ -175,6 +176,10 @@ export abstract class BaseAdapter extends EventEmitter {
    */
   get detectBuffer(): string {
     return this._screen.getRecentText(20);
+  }
+
+  protected shouldDetectWaitingPrompt(): boolean {
+    return WAITING_PROMPT_TOOL_NAMES.has(this.info.name);
   }
 
   /** Start the underlying tool process */
@@ -273,7 +278,7 @@ export abstract class BaseAdapter extends EventEmitter {
     if (this._status === 'completed' || this._status === 'error') return;
 
     const screen = this._screen.getRecentText(20);
-    const promptVisible = matchesWaitingPrompt(screen);
+    const promptVisible = this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(screen);
 
     if (promptVisible) {
       if (this._status !== 'waiting_input') {

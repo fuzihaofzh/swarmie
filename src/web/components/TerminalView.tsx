@@ -39,10 +39,10 @@ const MAX_TERMINAL_WRITE_BYTES_PER_FRAME = 32 * 1024;
 // ring — that is the most history a fresh replay could ever produce anyway, so
 // dropping older queued bytes loses nothing the backend can still show.
 const MAX_PENDING_WRITE_BYTES = 2 * 1024 * 1024;
-// Sized to comfortably hold a full MAX_RAW_BYTES (16MB) snapshot at typical
-// terminal line widths. xterm only allocates per actual line written, so the
-// cap is essentially free when usage is small.
-const TERMINAL_SCROLLBACK_LINES = 200000;
+// The server owns deep history; the browser only keeps enough local scrollback
+// for smooth interaction. Very large xterm buffers stay expensive even when a
+// tab is hidden, especially over remote desktop.
+const TERMINAL_SCROLLBACK_LINES = 10000;
 /** How many bytes earlier to fetch each time the user asks for more history. */
 const HISTORY_CHUNK_BYTES = 2 * 1024 * 1024;
 /** Auto-trigger only fires if the user wheel/touch-swiped up within this window. */

@@ -28,7 +28,8 @@ export function useDockviewSync(api: DockviewApi | null) {
 
   // Filter changes never add/remove panels — panels stay alive for all
   // sessions, the tab header is hidden via CSS for filtered-out sessions.
-  // Destroying the panel would dispose its xterm and lose terminal content.
+  // Terminal panels stay mounted so switching tabs does not rebuild xterm or
+  // reload history; inactive tabs stop subscribing to raw bytes separately.
   // We only enforce that the active session matches the filter, so a hidden
   // tab doesn't end up as the visible content.
   const reconcileActiveForFilter = (sessions: SessionSummary[], tagFilter: string[]) => {

@@ -37,6 +37,26 @@ class ActivityDetectionAdapter extends BaseAdapter {
   feed(chunk: string): void {
     this.handleActivityDetection(chunk);
   }
+
+  protected shouldDetectWaitingPrompt(): boolean {
+    return true;
+  }
+}
+
+class ShellActivityDetectionAdapter extends ActivityDetectionAdapter {
+  get info(): AdapterInfo {
+    return {
+      name: '/bin/zsh',
+      displayName: '/bin/zsh',
+      icon: '',
+      command: '/bin/zsh',
+      supportsStructured: false,
+    };
+  }
+
+  protected shouldDetectWaitingPrompt(): boolean {
+    return false;
+  }
 }
 
 function createAdapter(): ActivityDetectionAdapter {
@@ -45,7 +65,21 @@ function createAdapter(): ActivityDetectionAdapter {
   return adapter;
 }
 
+function createShellAdapter(): ShellActivityDetectionAdapter {
+  const adapter = new ShellActivityDetectionAdapter({ sessionId: 'shell-detect-test', toolArgs: [] });
+  adapter.start();
+  return adapter;
+}
+
 describe('activity detection', () => {
+  it('does not mark generic shell output as waiting_input', () => {
+    const adapter = createShellAdapter();
+
+    adapter.feed('Press enter to confirm or esc to cancel');
+
+    expect(adapter.status).toBe('idle');
+  });
+
   it('detects Codex proceed menus rendered by the current CLI', () => {
     const adapter = createAdapter();
 

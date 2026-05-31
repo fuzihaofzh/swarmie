@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { hostname as osHostname } from 'node:os';
-import { type BaseAdapter, matchesWaitingPrompt } from '../adapters/base.js';
+import { type BaseAdapter } from '../adapters/base.js';
 import type { NormalizedEvent, MetadataData, RawOutputData, SessionStatus } from '../adapters/types.js';
 import type { SessionInfo, SessionSummary } from './types.js';
 import { getDefaultHostTag } from './host.js';
@@ -516,8 +516,8 @@ export class Session extends EventEmitter {
       return;
     }
 
-    const screenText = this.adapter.getScreenSnapshot().recent;
-    const promptVisible = status === 'waiting_input' || matchesWaitingPrompt(screenText);
+    const screen = this.adapter.getScreenSnapshot();
+    const promptVisible = status === 'waiting_input' || screen.promptVisible;
 
     if (!promptVisible) {
       // Reset only after the prompt has been gone for a while, so a single
