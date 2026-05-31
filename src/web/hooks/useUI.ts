@@ -9,6 +9,9 @@ interface UIState {
   settingsOpen: boolean;
   agentOverlayMode: 'overview' | 'switcher' | null;
   autoCompactMinutes: number;
+  tileLayoutEnabled: boolean;
+  tileColumns: number;
+  tileHeight: number;
   tagFilter: string[];
   openSettings: () => void;
   closeSettings: () => void;
@@ -22,6 +25,9 @@ interface UIState {
   setShowNewSession: (show: boolean) => void;
   setAutoCompactMinutes: (minutes: number) => void;
   _setAutoCompactMinutesLocal: (minutes: number) => void;
+  setTileLayoutEnabled: (enabled: boolean) => void;
+  setTileColumns: (columns: number) => void;
+  setTileHeight: (height: number) => void;
   toggleTagFilter: (tag: string) => void;
   clearTagFilter: () => void;
   setTagFilter: (tags: string[]) => void;
@@ -32,6 +38,9 @@ const savedFontSize = parseInt(localStorage.getItem('swarmie-font-size') || '20'
 const savedFontFamily = localStorage.getItem('swarmie-font-family') || "'SF Mono', Monaco, Menlo, monospace";
 const savedBellSound = localStorage.getItem('swarmie-bell-sound') !== 'false'; // default on
 const savedAutoCompactMinutes = parseInt(localStorage.getItem('swarmie-auto-compact-minutes') || '60', 10);
+const savedTileLayoutEnabled = localStorage.getItem('swarmie-tile-layout-enabled') === 'true';
+const savedTileColumns = parseInt(localStorage.getItem('swarmie-tile-columns') || '2', 10);
+const savedTileHeight = parseInt(localStorage.getItem('swarmie-tile-height') || '360', 10);
 
 function loadTagFilter(): string[] {
   try {
@@ -51,6 +60,18 @@ function clampAutoCompactMinutes(minutes: number): number {
   return Math.min(24 * 60, Math.max(1, Math.floor(minutes)));
 }
 
+function clampTileColumns(columns: number): number {
+  const value = Number(columns);
+  if (!Number.isFinite(value)) return 2;
+  return Math.min(6, Math.max(1, Math.floor(value)));
+}
+
+function clampTileHeight(height: number): number {
+  const value = Number(height);
+  if (!Number.isFinite(value)) return 360;
+  return Math.min(1200, Math.max(180, Math.floor(value)));
+}
+
 export const useUIStore = create<UIState>((set) => ({
   theme: savedTheme,
   fontSize: savedFontSize,
@@ -62,6 +83,9 @@ export const useUIStore = create<UIState>((set) => ({
   autoCompactMinutes: Number.isFinite(savedAutoCompactMinutes)
     ? clampAutoCompactMinutes(savedAutoCompactMinutes)
     : 60,
+  tileLayoutEnabled: savedTileLayoutEnabled,
+  tileColumns: Number.isFinite(savedTileColumns) ? clampTileColumns(savedTileColumns) : 2,
+  tileHeight: Number.isFinite(savedTileHeight) ? clampTileHeight(savedTileHeight) : 360,
   tagFilter: loadTagFilter(),
 
   openSettings: () => set({ settingsOpen: true }),
@@ -97,6 +121,20 @@ export const useUIStore = create<UIState>((set) => ({
     const value = clampAutoCompactMinutes(minutes);
     localStorage.setItem('swarmie-auto-compact-minutes', String(value));
     set({ autoCompactMinutes: value });
+  },
+  setTileLayoutEnabled: (tileLayoutEnabled) => {
+    localStorage.setItem('swarmie-tile-layout-enabled', String(tileLayoutEnabled));
+    set({ tileLayoutEnabled });
+  },
+  setTileColumns: (columns) => {
+    const value = clampTileColumns(columns);
+    localStorage.setItem('swarmie-tile-columns', String(value));
+    set({ tileColumns: value });
+  },
+  setTileHeight: (height) => {
+    const value = clampTileHeight(height);
+    localStorage.setItem('swarmie-tile-height', String(value));
+    set({ tileHeight: value });
   },
   toggleTagFilter: (tag) =>
     set((state) => {

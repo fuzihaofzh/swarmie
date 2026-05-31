@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { DockviewReact, type DockviewReadyEvent, type DockviewApi, type IDockviewHeaderActionsProps } from 'dockview';
+import { DockviewReact, Orientation, type DockviewReadyEvent, type DockviewApi, type IDockviewHeaderActionsProps } from 'dockview';
 import 'dockview/dist/styles/dockview.css';
 import { useMultiWebSocket } from './hooks/useMultiWebSocket';
 import { useSessionStore } from './hooks/useSessions';
@@ -10,7 +10,7 @@ import { useKeybindingStore, matchesBinding, matchesAction, formatBinding, DEFAU
 import { WsContext, useWsContext, type WsFunctions } from './contexts/WsContext';
 import { DockviewTerminalPanel } from './components/DockviewTerminalPanel';
 import { DockviewNewSessionPanel } from './components/DockviewNewSessionPanel';
-import { DockviewCustomTab, DockviewNewSessionTab } from './components/DockviewCustomTab';
+import { DockviewCustomTab, DockviewNewSessionTab, NEW_SESSION_PANEL_ID } from './components/DockviewCustomTab';
 import { useDockviewSync } from './hooks/useDockviewSync';
 import { useMRU } from './hooks/useMRU';
 import { TabSwitcher } from './components/TabSwitcher';
@@ -27,6 +27,87 @@ const tabComponents = {
   sessionTab: DockviewCustomTab,
   newSessionTab: DockviewNewSessionTab,
 };
+
+type DockviewLayout = ReturnType<DockviewApi['toJSON']>;
+type DockviewGridNode = DockviewLayout['grid']['root'];
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const rows: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    rows.push(items.slice(i, i + size));
+  }
+  return rows;
+}
+
+function visibleWorkspaceSessions(
+  sessions: ReturnType<typeof useSessionStore.getState>['sessions'],
+  archivedSessionIds: string[],
+  tagFilter: string[],
+) {
+  const archived = new Set(archivedSessionIds);
+  return sessions.filter((session) =>
+    !archived.has(session.id) &&
+    (tagFilter.length === 0 || sessionMatchesTagFilter(session, tagFilter))
+  );
+}
+
+function buildTileLayout(
+  api: DockviewApi,
+  panelIds: string[],
+  columns: number,
+  tileHeight: number,
+): DockviewLayout | null {
+  const current = api.toJSON();
+  const availablePanelIds = panelIds.filter((id) => id !== NEW_SESSION_PANEL_ID && current.panels[id]);
+  if (availablePanelIds.length === 0) return null;
+
+  const rowIds = chunk(availablePanelIds, Math.max(1, columns));
+  const rowHeight = Math.max(180, tileHeight);
+  const gridWidth = Math.max(1, api.width || current.grid.width || 1);
+  const gridHeight = Math.max(1, rowIds.length * rowHeight);
+  const panels = Object.fromEntries(
+    availablePanelIds.map((id) => [id, current.panels[id]]),
+  ) as DockviewLayout['panels'];
+
+  const groupFor = (id: string, rowIndex: number, colIndex: number) => ({
+    id: `tile-${rowIndex}-${colIndex}-${id}`,
+    views: [id],
+    activeView: id,
+  });
+
+  const rows: DockviewGridNode[] = rowIds.map((row, rowIndex) => {
+    const colWidth = Math.max(1, Math.floor(gridWidth / Math.max(1, row.length)));
+    const leaves = row.map((id, colIndex): DockviewGridNode => ({
+      type: 'leaf',
+      size: colWidth,
+      data: groupFor(id, rowIndex, colIndex),
+    }));
+
+    if (leaves.length === 1) {
+      return { ...leaves[0], size: rowHeight };
+    }
+
+    return {
+      type: 'branch',
+      size: rowHeight,
+      data: leaves,
+    };
+  });
+
+  return {
+    grid: {
+      root: {
+        type: 'branch',
+        size: gridHeight,
+        data: rows,
+      },
+      width: gridWidth,
+      height: gridHeight,
+      orientation: Orientation.VERTICAL,
+    },
+    panels,
+  };
+}
 
 function NewTabButton(_props: IDockviewHeaderActionsProps) {
   return (
@@ -76,13 +157,64 @@ export function App() {
   const settingsOpen = useUIStore((s) => s.settingsOpen);
   const closeSettings = useUIStore((s) => s.closeSettings);
   const themeName = useUIStore((s) => s.theme);
+  const tileLayoutEnabled = useUIStore((s) => s.tileLayoutEnabled);
+  const tileColumns = useUIStore((s) => s.tileColumns);
+  const tileHeight = useUIStore((s) => s.tileHeight);
+  const tagFilter = useUIStore((s) => s.tagFilter);
+  const sessions = useSessionStore((s) => s.sessions);
+  const archivedSessionIds = useSessionStore((s) => s.archivedSessionIds);
   const currentTheme = themes[themeName] ?? themes['github-dark'];
+
+  const tiledSessions = useMemo(
+    () => visibleWorkspaceSessions(sessions, archivedSessionIds, tagFilter),
+    [archivedSessionIds, sessions, tagFilter],
+  );
+  const tileRowCount = Math.ceil(tiledSessions.length / Math.max(1, tileColumns));
+  const tileContainerHeight = tileLayoutEnabled && tileRowCount > 0
+    ? Math.max(tileHeight, tileRowCount * tileHeight)
+    : undefined;
+  const tiledSessionKey = useMemo(
+    () => tiledSessions.map((session) => session.id).join('|'),
+    [tiledSessions],
+  );
 
   const wsContext = useMemo<WsFunctions>(() => ({
     createSession: wsFunctions.createSession,
     killSession: wsFunctions.killSession,
     getConnection: wsFunctions.getConnection,
   }), [wsFunctions.createSession, wsFunctions.killSession, wsFunctions.getConnection]);
+
+  const applyTileLayout = useCallback(() => {
+    if (!api) return false;
+    const panelIds = visibleWorkspaceSessions(
+      useSessionStore.getState().sessions,
+      useSessionStore.getState().archivedSessionIds,
+      useUIStore.getState().tagFilter,
+    ).map((session) => session.id);
+    const layout = buildTileLayout(api, panelIds, useUIStore.getState().tileColumns, useUIStore.getState().tileHeight);
+    if (!layout) return false;
+    const activeSessionId = useSessionStore.getState().activeSessionId;
+    api.fromJSON(layout, { reuseExistingPanels: true });
+    if (activeSessionId && panelIds.includes(activeSessionId)) {
+      api.getPanel(activeSessionId)?.api.setActive();
+    }
+    return true;
+  }, [api]);
+
+  useEffect(() => {
+    if (!api || !tileLayoutEnabled) return;
+    const timer = window.setTimeout(() => {
+      applyTileLayout();
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [
+    api,
+    applyTileLayout,
+    tileLayoutEnabled,
+    tileColumns,
+    tileHeight,
+    tiledSessionKey,
+  ]);
 
   // Apply theme CSS variables
   useEffect(() => {
@@ -179,18 +311,29 @@ export function App() {
     <WsContext value={wsContext}>
       <div className="app-layout">
         {/* Main area */}
-        <div className="app-main">
-          <DockviewReact
-            className={`dockview-container ${currentTheme.isDark ? 'dockview-theme-dark' : 'dockview-theme-light'}`}
-            onReady={onReady}
-            components={components}
-            tabComponents={tabComponents}
-            prefixHeaderActionsComponent={HeaderActions}
-            rightHeaderActionsComponent={NewTabButton}
-          />
+        <div className={`app-main ${tileLayoutEnabled ? 'tile-layout-scroll' : ''}`}>
+          <div
+            className={`dockview-shell ${tileLayoutEnabled ? 'tile-layout-active' : ''}`}
+            style={tileContainerHeight ? { height: `${tileContainerHeight}px` } : undefined}
+          >
+            <DockviewReact
+              className={`dockview-container ${currentTheme.isDark ? 'dockview-theme-dark' : 'dockview-theme-light'}`}
+              onReady={onReady}
+              components={components}
+              tabComponents={tabComponents}
+              prefixHeaderActionsComponent={HeaderActions}
+              rightHeaderActionsComponent={NewTabButton}
+            />
+          </div>
         </div>
       </div>
-      {settingsOpen && <SettingsModal onClose={closeSettings} />}
+      {settingsOpen && (
+        <SettingsModal
+          onClose={closeSettings}
+          onApplyTileLayout={applyTileLayout}
+          tileSessionCount={tiledSessions.length}
+        />
+      )}
       <TabSwitcher mruRef={mruRef} />
       <TagSwitcher />
       <AgentOverview />
@@ -198,7 +341,15 @@ export function App() {
   );
 }
 
-function SettingsModal({ onClose }: { onClose: () => void }) {
+function SettingsModal({
+  onClose,
+  onApplyTileLayout,
+  tileSessionCount,
+}: {
+  onClose: () => void;
+  onApplyTileLayout: () => boolean;
+  tileSessionCount: number;
+}) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -222,6 +373,10 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
           <section className="settings-panel-section">
             <h3>Automation</h3>
             <AutomationSettings />
+          </section>
+          <section className="settings-panel-section">
+            <h3>Layout</h3>
+            <LayoutSettings onApplyTileLayout={onApplyTileLayout} tileSessionCount={tileSessionCount} />
           </section>
           <section className="settings-panel-section">
             <h3>Appearance</h3>
@@ -326,6 +481,76 @@ function AutomationSettings() {
           />
           <span>minutes</span>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function LayoutSettings({
+  onApplyTileLayout,
+  tileSessionCount,
+}: {
+  onApplyTileLayout: () => boolean;
+  tileSessionCount: number;
+}) {
+  const tileLayoutEnabled = useUIStore((s) => s.tileLayoutEnabled);
+  const tileColumns = useUIStore((s) => s.tileColumns);
+  const tileHeight = useUIStore((s) => s.tileHeight);
+  const setTileLayoutEnabled = useUIStore((s) => s.setTileLayoutEnabled);
+  const setTileColumns = useUIStore((s) => s.setTileColumns);
+  const setTileHeight = useUIStore((s) => s.setTileHeight);
+
+  const apply = () => {
+    setTileLayoutEnabled(true);
+    window.setTimeout(onApplyTileLayout, 0);
+  };
+
+  return (
+    <div className="settings-section">
+      <div className="setting-group">
+        <label className="toggle-label">
+          <span>Tile Layout</span>
+          <button
+            className={`toggle-switch ${tileLayoutEnabled ? 'on' : ''}`}
+            onClick={() => setTileLayoutEnabled(!tileLayoutEnabled)}
+            aria-label="Toggle tile layout"
+          >
+            <span className="toggle-knob" />
+          </button>
+        </label>
+      </div>
+      <div className="setting-group">
+        <label>Columns Per Row</label>
+        <div className="number-row">
+          <input
+            type="number"
+            min="1"
+            max="6"
+            value={tileColumns}
+            onChange={(e) => setTileColumns(Number(e.target.value))}
+          />
+          <span>columns</span>
+        </div>
+      </div>
+      <div className="setting-group">
+        <label>Tile Height</label>
+        <div className="number-row">
+          <input
+            type="number"
+            min="180"
+            max="1200"
+            step="20"
+            value={tileHeight}
+            onChange={(e) => setTileHeight(Number(e.target.value))}
+          />
+          <span>px</span>
+        </div>
+      </div>
+      <div className="settings-action-row">
+        <button className="settings-action-btn" onClick={apply} disabled={tileSessionCount === 0}>
+          Apply Tile
+        </button>
+        <span>{tileSessionCount} agents</span>
       </div>
     </div>
   );

@@ -42,6 +42,22 @@ body,
   display: flex;
   flex-direction: column;
   position: relative;
+  overflow: hidden;
+}
+
+.app-main.tile-layout-scroll {
+  overflow: auto;
+}
+
+.dockview-shell {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+}
+
+.dockview-shell.tile-layout-active {
+  flex: 0 0 auto;
 }
 
 /* Overlay */
@@ -1059,6 +1075,38 @@ body,
 .number-row span {
   font-size: 12px;
   color: var(--text-secondary, #8b949e);
+}
+
+.settings-action-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-action-row span {
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+}
+
+.settings-action-btn {
+  padding: 7px 10px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 5px;
+  background: var(--header-bg, #161b22);
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.settings-action-btn:hover:not(:disabled) {
+  border-color: var(--accent, #58a6ff);
+  color: var(--accent, #58a6ff);
+}
+
+.settings-action-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .settings-modal-overlay {
