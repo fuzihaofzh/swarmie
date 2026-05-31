@@ -1,12 +1,11 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { ServerConnection } from './useWebSocket';
-import { useServerStore, LOCAL_SERVER, type ConnectionStatus } from './useServers';
+import { useServerStore, LOCAL_SERVER } from './useServers';
 import { useSessionStore, registerAutoApproveSync, registerSessionSettingsSync, type SessionSettingsPatch } from './useSessions';
 import { registerAutoCompactMinutesSync, useUIStore } from './useUI';
 
 export function useMultiWebSocket() {
   const connectionsRef = useRef<Map<string, ServerConnection>>(new Map());
-  const activeRawRef = useRef<{ sessionId: string; serverUrl: string } | null>(null);
 
   // Get the current list of remote servers from the store
   const servers = useServerStore((s) => s.servers);
@@ -63,36 +62,6 @@ export function useMultiWebSocket() {
     };
   }, [getConnectionForSession]);
 
-  // Keep raw terminal streaming scoped to the active session. `subscribe:all`
-  // carries structured dashboard updates only; raw bytes are expensive because
-  // xterm parsing happens on the browser main thread. If a user visits a noisy
-  // TUI tab once and then switches away, we must unsubscribe or the hidden
-  // terminal can keep blocking input in other tabs.
-  //
-  // Lazily request per-session history when the user activates a session.
-  // Subscribing to `subscribe:all` only enrols for live events; raw replay
-  // is fetched on demand so we don't blast N×2MB across the WS on connect.
-  // Also retried when the owning server reconnects (ws.onopen clears the
-  // per-connection requestedReplay set), so the active session re-fetches.
-  const activeSessionId = useSessionStore((s) => s.activeSessionId);
-  const connectionStatus: Record<string, ConnectionStatus> = useServerStore((s) => s.connectionStatus);
-  useEffect(() => {
-    const previous = activeRawRef.current;
-    const activeSession = activeSessionId
-      ? useSessionStore.getState().sessions.find((s) => s.id === activeSessionId)
-      : undefined;
-    const nextServerUrl = activeSession?.serverUrl ?? LOCAL_SERVER;
-
-    if (previous && previous.sessionId !== activeSessionId) {
-      connectionsRef.current.get(previous.serverUrl)?.setActiveRawSession(null);
-      activeRawRef.current = null;
-    }
-
-    if (!activeSessionId) return;
-    getConnectionForSession(activeSessionId)?.setActiveRawSession(activeSessionId);
-    activeRawRef.current = { sessionId: activeSessionId, serverUrl: nextServerUrl };
-  }, [activeSessionId, connectionStatus, getConnectionForSession]);
-
   // Sync remote server connections when server list changes
   useEffect(() => {
     const conns = connectionsRef.current;
@@ -116,22 +85,6 @@ export function useMultiWebSocket() {
       }
     }
   }, [servers]);
-
-  const sendInput = useCallback((sessionId: string, data: string) => {
-    getConnectionForSession(sessionId)?.sendInput(sessionId, data);
-  }, [getConnectionForSession]);
-
-  const sendResize = useCallback((sessionId: string, cols: number, rows: number) => {
-    getConnectionForSession(sessionId)?.sendResize(sessionId, cols, rows);
-  }, [getConnectionForSession]);
-
-  const sendRedraw = useCallback((sessionId: string) => {
-    getConnectionForSession(sessionId)?.sendRedraw(sessionId);
-  }, [getConnectionForSession]);
-
-  const sendLoadHistory = useCallback((sessionId: string, fromOffset: number) => {
-    getConnectionForSession(sessionId)?.sendLoadHistory(sessionId, fromOffset);
-  }, [getConnectionForSession]);
 
   const createSession = useCallback(async (opts: {
     tool?: string;
@@ -158,5 +111,5 @@ export function useMultiWebSocket() {
     return connectionsRef.current.get(serverUrl);
   }, []);
 
-  return { sendInput, sendResize, sendRedraw, sendLoadHistory, createSession, killSession, getConnection };
+  return { createSession, killSession, getConnection };
 }

@@ -1,6 +1,6 @@
 /**
  * Direct channel for raw terminal output — bypasses Zustand to avoid O(n²) overhead.
- * useWebSocket writes here; TerminalView reads from here.
+ * Per-terminal WebSocket streams write here; TerminalView reads from here.
  *
  * Buffers data when no writer is registered yet (terminal still initializing),
  * then flushes the buffer as soon as a writer registers.

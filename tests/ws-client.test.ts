@@ -370,6 +370,23 @@ describe('WebSocket observability', () => {
     });
   });
 
+  it('does not send dashboard session lists to per-terminal sockets', async () => {
+    const ws = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
+    const messages: Array<{ type?: string }> = [];
+    ws.on('message', (raw: WebSocket.RawData) => {
+      messages.push(JSON.parse(raw.toString()) as { type?: string });
+    });
+
+    await waitForSocketOpen(ws);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(messages.some((msg) => msg.type === 'session:list')).toBe(false);
+    ws.close();
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve());
+    });
+  });
+
   it('accepts dashboard ping heartbeats without invalid-message logs', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {

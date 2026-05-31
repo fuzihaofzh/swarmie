@@ -1,8 +1,7 @@
 import { useSessionStore, type SessionSummary, type NormalizedEvent, type SessionSettingsPatch } from './useSessions';
-import { writeToTerminal, clearTerminalBuffer, applyHistorySnapshot, getSessionMeta } from '../terminalBus';
+import { clearTerminalBuffer } from '../terminalBus';
 import { useServerStore, LOCAL_SERVER } from './useServers';
 import { useUIStore } from './useUI';
-import { mergeBase64Chunks } from '../base64';
 
 type WSMessage = {
   type: string;
@@ -21,11 +20,6 @@ export class ServerConnection {
   private shutdown = false;
   private disposed = false;
   private retryPaused = false;
-  /** sessionIds whose history we've already requested over the current ws.
-   *  Cleared on every reconnect — the server tracks subscriptions per-socket. */
-  private requestedReplay = new Set<string>();
-  private activeRawSessionId: string | null = null;
-
   constructor(serverUrl: string, token?: string) {
     this.serverUrl = serverUrl;
     this.token = token;
@@ -77,11 +71,7 @@ export class ServerConnection {
       }
       this.retryPaused = false;
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'connected');
-      this.requestedReplay.clear();
       ws.send(JSON.stringify({ type: 'subscribe:all' }));
-      if (this.activeRawSessionId) {
-        this.requestReplayOnce(this.activeRawSessionId);
-      }
       // Heartbeat to keep connection alive in background tabs
       clearInterval(this.pingTimer);
       this.pingTimer = setInterval(() => {
@@ -166,51 +156,6 @@ export class ServerConnection {
   send(msg: WSMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
-    }
-  }
-
-  sendInput(sessionId: string, data: string): void {
-    this.send({ type: 'input', sessionId, data });
-  }
-
-  sendResize(sessionId: string, cols: number, rows: number): void {
-    this.send({ type: 'resize', sessionId, cols, rows });
-  }
-
-  sendRedraw(sessionId: string): void {
-    this.send({ type: 'redraw', sessionId });
-  }
-
-  sendLoadHistory(sessionId: string, fromOffset: number): void {
-    this.send({ type: 'history:load', sessionId, fromOffset });
-  }
-
-  /** Request the initial raw-output replay for a session, but only once per
-   *  ws lifetime. Server's `subscribe:all` no longer pushes per-session
-   *  replays (would blast N×2MB on connect), so callers ask for the active
-   *  session's history on demand. */
-  requestReplayOnce(sessionId: string): void {
-    if (this.requestedReplay.has(sessionId)) return;
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
-    this.requestedReplay.add(sessionId);
-    const { highestOffset } = getSessionMeta(sessionId);
-    this.send({ type: 'subscribe', sessionId, fromOffset: highestOffset > 0 ? highestOffset : undefined });
-  }
-
-  setActiveRawSession(sessionId: string | null): void {
-    if (this.activeRawSessionId === sessionId) {
-      if (sessionId) this.requestReplayOnce(sessionId);
-      return;
-    }
-
-    const previous = this.activeRawSessionId;
-    this.activeRawSessionId = sessionId;
-    if (previous) {
-      this.requestedReplay.delete(previous);
-      this.send({ type: 'unsubscribe', sessionId: previous });
-    }
-    if (sessionId) {
-      this.requestReplayOnce(sessionId);
     }
   }
 
@@ -411,8 +356,8 @@ export class ServerConnection {
       case 'event': {
         const evt = msg.event as NormalizedEvent;
         if (evt.type === 'raw:output') {
-          const data = evt.data as { data: string; offsetEnd?: number };
-          writeToTerminal(evt.sessionId, data.data, data.offsetEnd);
+          // Terminal raw streams use one WebSocket per tab. The dashboard
+          // connection only tracks structured state.
         } else {
           store.addEvent(evt);
         }
@@ -421,52 +366,10 @@ export class ServerConnection {
       case 'event:batch': {
         const sid = msg.sessionId as string;
         const all = msg.events as NormalizedEvent[];
-        const structured: NormalizedEvent[] = [];
-        // Replay the raw history in ~frame-sized groups rather than one merged
-        // multi-MB blob. A single big term.write blocks the main thread while
-        // xterm parses it — the "tab takes forever to open" symptom on large
-        // sessions. Grouped writes let the TerminalView flush spread them
-        // across animation frames. isReplay=true strips stale device queries.
-        const REPLAY_GROUP_BYTES = 64 * 1024;
-        let group: string[] = [];
-        let groupBytes = 0;
-        let groupOffsetEnd: number | undefined;
-        const flushGroup = () => {
-          if (group.length === 0) return;
-          writeToTerminal(sid, mergeBase64Chunks(group), groupOffsetEnd, true);
-          group = [];
-          groupBytes = 0;
-          groupOffsetEnd = undefined;
-        };
-        for (const evt of all) {
-          if (evt.type === 'raw:output') {
-            const data = evt.data as { data: string; offsetEnd?: number };
-            group.push(data.data);
-            groupBytes += Math.ceil((data.data.length * 3) / 4);
-            if (typeof data.offsetEnd === 'number') groupOffsetEnd = data.offsetEnd;
-            if (groupBytes >= REPLAY_GROUP_BYTES) flushGroup();
-          } else {
-            structured.push(evt);
-          }
-        }
-        flushGroup();
+        const structured = all.filter((evt) => evt.type !== 'raw:output');
         if (structured.length > 0) {
           store.addEventBatch(sid, structured);
         }
-        break;
-      }
-      case 'history:snapshot': {
-        const sid = msg.sessionId as string;
-        const startOffset = Number(msg.startOffset);
-        const endOffset = Number(msg.endOffset);
-        const data = Array.isArray(msg.data) ? (msg.data as string[]) : [];
-        const reachedEarliest = !!msg.reachedEarliest;
-        applyHistorySnapshot(sid, {
-          startOffset,
-          endOffset,
-          chunks: data,
-          reachedEarliest,
-        });
         break;
       }
     }

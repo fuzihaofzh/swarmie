@@ -1,7 +1,7 @@
 // Shared base64 helpers. PTY output arrives base64-encoded; `atob()` yields a
 // Latin-1 string, so we must copy charCodes into a Uint8Array before handing
 // bytes to xterm — otherwise UTF-8 sequences get mangled. Kept in one place so
-// the WS hook and TerminalView don't drift apart.
+// the terminal WS hook and TerminalView don't drift apart.
 
 /** Decode one base64 chunk to its raw bytes. */
 export function decodeBase64Chunk(b64Data: string): Uint8Array {

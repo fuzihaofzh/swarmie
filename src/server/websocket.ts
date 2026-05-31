@@ -49,6 +49,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   const clients = new Set<WebSocket>();
   const subscriptions = new Map<WebSocket, Set<string>>(); // ws -> set of sessionIds
   const socketRequestIds = new Map<WebSocket, string>();
+  const terminalSockets = new WeakSet<WebSocket>();
   // Per-(client, sessionId) reported viewport size. Clients are WebSockets,
   // plus a single CLI_SIZE_KEY entry for the owning local terminal (if any).
   // The PTY runs at MIN across all clients (tmux-style) so TUI apps render
@@ -166,6 +167,8 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     subscriptions.set(socket, new Set());
     socketRequestIds.set(socket, requestId);
     lastSeen.set(socket, Date.now());
+    const isTerminalSocket = request.url.includes('terminal=1');
+    if (isTerminalSocket) terminalSockets.add(socket);
     logObservabilityEvent('ws.connect', {
       requestId,
       sessionId: null,
@@ -181,6 +184,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     // We send it on first non-register message or after a short delay.
     let sentSessionList = false;
     const ensureSessionList = () => {
+      if (isTerminalSocket) return;
       if (!sentSessionList) {
         sentSessionList = true;
         const sessionList: SessionSummary[] = manager.getSessionSummaries();
@@ -190,7 +194,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
 
     // Send session list immediately for browser clients.
     // CLI clients will send 'register' first, so we use a microtask delay.
-    const listTimer = setTimeout(ensureSessionList, 50);
+    const listTimer = isTerminalSocket ? undefined : setTimeout(ensureSessionList, 50);
 
     socket.on('message', (raw: Buffer | string) => {
       lastSeen.set(socket, Date.now());
@@ -224,7 +228,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
 
       // Handle CLI remote registration
       if (msg.type === 'register') {
-        clearTimeout(listTimer);
+        if (listTimer) clearTimeout(listTimer);
         sentSessionList = true; // CLI clients don't need the session list
         handleRemoteRegister(socket, msg, manager, remoteClients);
         return;
@@ -274,7 +278,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     });
 
     socket.on('close', () => {
-      clearTimeout(listTimer);
+      if (listTimer) clearTimeout(listTimer);
       clients.delete(socket);
       subscriptions.delete(socket);
       dropClientSizes(socket);
@@ -341,7 +345,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
         subscriptions: subs ? [...subs] : [],
         subCount: subs ? subs.size : 0,
         lastSeenMsAgo: now - (lastSeen.get(ws) ?? now),
-        kind: remoteSessionId ? 'remote-cli' : 'browser',
+        kind: remoteSessionId ? 'remote-cli' : (terminalSockets.has(ws) ? 'terminal' : 'browser'),
         remoteSessionId: remoteSessionId ?? null,
       };
     });

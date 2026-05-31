@@ -58,14 +58,10 @@ export function App() {
   const currentTheme = themes[themeName] ?? themes['github-dark'];
 
   const wsContext = useMemo<WsFunctions>(() => ({
-    sendInput: wsFunctions.sendInput,
-    sendResize: wsFunctions.sendResize,
-    sendRedraw: wsFunctions.sendRedraw,
-    sendLoadHistory: wsFunctions.sendLoadHistory,
     createSession: wsFunctions.createSession,
     killSession: wsFunctions.killSession,
     getConnection: wsFunctions.getConnection,
-  }), [wsFunctions.sendInput, wsFunctions.sendResize, wsFunctions.sendRedraw, wsFunctions.sendLoadHistory, wsFunctions.createSession, wsFunctions.killSession, wsFunctions.getConnection]);
+  }), [wsFunctions.createSession, wsFunctions.killSession, wsFunctions.getConnection]);
 
   // Apply theme CSS variables
   useEffect(() => {

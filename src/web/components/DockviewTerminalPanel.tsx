@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { IDockviewPanelProps } from 'dockview';
 import { TerminalView } from './TerminalView';
-import { useWsContext } from '../contexts/WsContext';
+import { useTerminalWebSocket } from '../hooks/useTerminalWebSocket';
 import { useSessionStore } from '../hooks/useSessions';
 import { useUIStore } from '../hooks/useUI';
 
@@ -10,9 +10,9 @@ export interface TerminalPanelParams {
 }
 
 export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<TerminalPanelParams>) {
-  const { sendInput, sendResize, sendRedraw, sendLoadHistory } = useWsContext();
   const sessionId = params.sessionId;
   const [active, setActive] = useState(api.isActive);
+  const { sendInput, sendResize, sendRedraw, sendLoadHistory } = useTerminalWebSocket(sessionId, active);
 
   // Track active state from dockview
   useEffect(() => {
@@ -31,10 +31,10 @@ export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<Termi
     <TerminalView
       sessionId={sessionId}
       isActive={active}
-      onInput={(data) => sendInput(sessionId, data)}
-      onResize={(cols, rows) => sendResize(sessionId, cols, rows)}
-      onRedraw={() => sendRedraw(sessionId)}
-      onLoadHistory={(fromOffset) => sendLoadHistory(sessionId, fromOffset)}
+      onInput={sendInput}
+      onResize={sendResize}
+      onRedraw={sendRedraw}
+      onLoadHistory={sendLoadHistory}
     />
   );
 }
