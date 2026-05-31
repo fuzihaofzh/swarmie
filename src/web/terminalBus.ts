@@ -100,7 +100,8 @@ export function registerTerminalWriter(sessionId: string, writer: Writer): void 
   }
 }
 
-export function unregisterTerminalWriter(sessionId: string): void {
+export function unregisterTerminalWriter(sessionId: string, writer?: Writer): void {
+  if (writer && writers.get(sessionId) !== writer) return;
   writers.delete(sessionId);
   // Keep the buffer — if the terminal re-mounts it will get the data back
 }

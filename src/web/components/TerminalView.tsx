@@ -625,7 +625,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       });
     };
 
-    registerTerminalWriter(sessionId, (b64Data: string, offsetEnd?: number, isReplay?: boolean) => {
+    const writer = (b64Data: string, offsetEnd?: number, isReplay?: boolean) => {
       if (disposed) return;
       let data = b64Data;
       if (isReplay) {
@@ -654,7 +654,8 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
         try { pendingChunks.unshift(btoa('\x1b[0m')); } catch { /* ignore */ }
       }
       scheduleFlush();
-    });
+    };
+    registerTerminalWriter(sessionId, writer);
 
     // Apply a server snapshot: reset xterm, replay snapshot bytes, then any
     // live chunks that arrived during the load (filtered by offset so we
@@ -730,7 +731,7 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
       disposed = true;
       cleanupFlush();
       unsubscribeSnapshot();
-      unregisterTerminalWriter(sessionId);
+      unregisterTerminalWriter(sessionId, writer);
     };
   }, [sessionId, termReady]);
 
