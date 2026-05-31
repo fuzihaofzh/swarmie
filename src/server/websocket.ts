@@ -453,7 +453,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
       },
     });
     for (const [ws, subs] of subscriptions) {
-      if (subs.has(sessionId) || subs.has('*')) sendRaw(ws, payload);
+      if (subs.has(sessionId)) sendRaw(ws, payload);
     }
   };
 
@@ -492,7 +492,10 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
         })
       : null;
     for (const [ws, subs] of subscriptions) {
-      // Send if subscribed to this session or subscribed to '*' (all)
+      // Send structured events if subscribed to this session or to the
+      // dashboard-wide stream. Raw terminal bytes are handled above and only go
+      // to explicit per-session subscribers; otherwise an unseen noisy tab can
+      // make every dashboard client parse its output.
       if (subs.has(event.sessionId) || subs.has('*')) {
         sendRaw(ws, eventPayload);
         if (settingsPayload) sendRaw(ws, settingsPayload);
@@ -541,12 +544,12 @@ function handleMessage(
       break;
     }
     case 'subscribe:all': {
-      // Subscribe to live events for every session (used for status/settings
-      // updates across the dashboard) but DO NOT replay raw history here.
-      // Replaying N × 2MB on every connect saturates bandwidth-limited
-      // tunnels (e.g. SSH -L) and stalls the WS write loop. Clients request
-      // per-session replay via `subscribe { sessionId }` when the user
-      // actually views that session.
+      // Subscribe to structured live events for every session (used for
+      // status/settings updates across the dashboard) but DO NOT replay or
+      // stream raw terminal bytes here. Replaying or streaming N sessions of
+      // raw output saturates bandwidth-limited tunnels and makes browsers parse
+      // unseen tabs. Clients request per-session raw output via
+      // `subscribe { sessionId }` when the user actually views that session.
       subs.add('*');
       break;
     }

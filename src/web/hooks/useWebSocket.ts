@@ -38,6 +38,15 @@ export class ServerConnection {
   connect(force = false): void {
     if (this.disposed || this.shutdown) return;
     if (this.retryPaused && !force) return;
+    if (
+      !force &&
+      this.ws &&
+      (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)
+    ) {
+      return;
+    }
+
+    clearTimeout(this.reconnectTimer);
 
     useServerStore.getState().setConnectionStatus(this.serverUrl, 'connecting');
 
@@ -45,10 +54,26 @@ export class ServerConnection {
       ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
       : `${this.serverUrl.replace(/^http/, 'ws')}/ws`;
     const protocols = this.token && !this.isLocal ? [`swarmie-token.${this.token}`] : undefined;
+
+    const previous = this.ws;
+    if (previous && previous.readyState !== WebSocket.CLOSED) {
+      previous.onopen = null;
+      previous.onmessage = null;
+      previous.onclose = null;
+      previous.onerror = null;
+      if (previous.readyState !== WebSocket.CLOSING) {
+        previous.close();
+      }
+    }
+
     const ws = protocols ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl);
     this.ws = ws;
 
     ws.onopen = () => {
+      if (this.ws !== ws) {
+        ws.close();
+        return;
+      }
       this.retryPaused = false;
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'connected');
       this.requestedReplay.clear();
@@ -63,6 +88,7 @@ export class ServerConnection {
     };
 
     ws.onmessage = (ev) => {
+      if (this.ws !== ws) return;
       try {
         const msg = JSON.parse(ev.data) as WSMessage;
         this.handleMessage(msg);
@@ -72,6 +98,7 @@ export class ServerConnection {
     };
 
     ws.onclose = () => {
+      if (this.ws !== ws) return;
       this.ws = null;
       clearInterval(this.pingTimer);
       if (!this.shutdown && !this.disposed) {
@@ -88,6 +115,7 @@ export class ServerConnection {
     };
 
     ws.onerror = () => {
+      if (this.ws !== ws) return;
       if (!this.isLocal) {
         this.retryPaused = true;
       }
@@ -100,7 +128,12 @@ export class ServerConnection {
   reconnectIfNeeded(): void {
     if (this.disposed || this.shutdown) return;
     if (this.retryPaused) return;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)
+    ) {
+      return;
+    }
     clearTimeout(this.reconnectTimer);
     this.connect();
   }

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import WebSocket from 'ws';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { parseServerAddress } from '../src/ipc/ws-client.js';
+import { RemoteAdapter } from '../src/adapters/remote.js';
 import { SessionManager } from '../src/session/manager.js';
 import { createServer } from '../src/server/index.js';
 
@@ -78,6 +79,7 @@ describe('parseServerAddress', () => {
 describe('WebSocket observability', () => {
   let serverClose: () => Promise<void>;
   let wsUrl: string;
+  let manager: SessionManager;
   const sockets = new Set<WebSocket>();
 
   const trackSocket = (ws: WebSocket): WebSocket => {
@@ -89,7 +91,7 @@ describe('WebSocket observability', () => {
   };
 
   beforeAll(async () => {
-    const manager = new SessionManager();
+    manager = new SessionManager();
     const server = await createServer(manager, { port: 0, password: TEST_PASSWORD });
     wsUrl = `${server.address.replace(/^http/, 'ws')}/ws`;
     serverClose = server.close;
@@ -233,6 +235,64 @@ describe('WebSocket observability', () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  it('does not send raw terminal output to subscribe:all clients', async () => {
+    const sessionId = `raw-filter-${Date.now()}`;
+    const adapter = new RemoteAdapter(
+      { sessionId, toolArgs: [], cwd: '/tmp' },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: 'C',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+    manager.addSession(sessionId, 'Raw Filter Session', adapter, { cwd: '/tmp', hostname: 'test-host' });
+
+    const ws = trackSocket(new WebSocket(wsUrl, [WS_PROTOCOL]));
+    const rawMessages: unknown[] = [];
+    ws.on('message', (raw: WebSocket.RawData) => {
+      try {
+        const payload = JSON.parse(raw.toString()) as { type?: string; event?: { type?: string; sessionId?: string } };
+        if (payload.type === 'event' && payload.event?.type === 'raw:output' && payload.event.sessionId === sessionId) {
+          rawMessages.push(payload);
+        }
+      } catch {
+        // Ignore non-JSON payloads
+      }
+    });
+
+    await waitForSocketOpen(ws);
+    ws.send(JSON.stringify({ type: 'subscribe:all' }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    adapter.pushEvent({
+      type: 'raw:output',
+      sessionId,
+      timestamp: Date.now(),
+      data: { data: Buffer.from('background output\n').toString('base64') },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(rawMessages).toHaveLength(0);
+
+    ws.send(JSON.stringify({ type: 'subscribe', sessionId }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    adapter.pushEvent({
+      type: 'raw:output',
+      sessionId,
+      timestamp: Date.now(),
+      data: { data: Buffer.from('visible output\n').toString('base64') },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(rawMessages.length).toBeGreaterThan(0);
+    ws.close();
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve());
+    });
   });
 
   it('accepts dashboard ping heartbeats without invalid-message logs', async () => {
