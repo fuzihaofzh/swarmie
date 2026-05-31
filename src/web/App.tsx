@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { DockviewReact, Orientation, type DockviewReadyEvent, type DockviewApi, type IDockviewHeaderActionsProps } from 'dockview';
 import 'dockview/dist/styles/dockview.css';
 import { useMultiWebSocket } from './hooks/useMultiWebSocket';
@@ -44,11 +44,18 @@ function visibleWorkspaceSessions(
   archivedSessionIds: string[],
   tagFilter: string[],
 ) {
-  const archived = new Set(archivedSessionIds);
-  return sessions.filter((session) =>
-    !archived.has(session.id) &&
-    (tagFilter.length === 0 || sessionMatchesTagFilter(session, tagFilter))
+  const workspaceSessions = activeWorkspaceSessions(sessions, archivedSessionIds);
+  return workspaceSessions.filter((session) =>
+    tagFilter.length === 0 || sessionMatchesTagFilter(session, tagFilter)
   );
+}
+
+function activeWorkspaceSessions(
+  sessions: ReturnType<typeof useSessionStore.getState>['sessions'],
+  archivedSessionIds: string[],
+) {
+  const archived = new Set(archivedSessionIds);
+  return sessions.filter((session) => !archived.has(session.id));
 }
 
 function buildTileLayout(
@@ -109,6 +116,54 @@ function buildTileLayout(
   };
 }
 
+function buildTabbedLayout(api: DockviewApi, panelIds: string[]): DockviewLayout | null {
+  const current = api.toJSON();
+  const availablePanelIds = panelIds.filter((id) => id !== NEW_SESSION_PANEL_ID);
+  if (availablePanelIds.length === 0) return null;
+
+  const panels = Object.fromEntries(
+    availablePanelIds.map((id) => [
+      id,
+      current.panels[id] ?? {
+        id,
+        contentComponent: 'terminal',
+        tabComponent: 'sessionTab',
+        params: { sessionId: id },
+        renderer: 'always',
+      },
+    ]),
+  ) as DockviewLayout['panels'];
+
+  const activeSessionId = useSessionStore.getState().activeSessionId;
+  const activeView = activeSessionId && availablePanelIds.includes(activeSessionId)
+    ? activeSessionId
+    : availablePanelIds[0];
+  const gridWidth = Math.max(1, api.width || current.grid.width || 1);
+  const gridHeight = Math.max(1, api.height || current.grid.height || 1);
+
+  return {
+    grid: {
+      root: {
+        type: 'branch',
+        size: gridHeight,
+        data: [{
+          type: 'leaf',
+          size: gridWidth,
+          data: {
+            id: 'tabbed-workspace',
+            views: availablePanelIds,
+            activeView,
+          },
+        }],
+      },
+      width: gridWidth,
+      height: gridHeight,
+      orientation: Orientation.VERTICAL,
+    },
+    panels,
+  };
+}
+
 function NewTabButton(_props: IDockviewHeaderActionsProps) {
   return (
     <button
@@ -160,6 +215,7 @@ export function App() {
   const tileLayoutEnabled = useUIStore((s) => s.tileLayoutEnabled);
   const tileColumns = useUIStore((s) => s.tileColumns);
   const tileHeight = useUIStore((s) => s.tileHeight);
+  const wasTileLayoutEnabledRef = useRef(tileLayoutEnabled);
   const tagFilter = useUIStore((s) => s.tagFilter);
   const sessions = useSessionStore((s) => s.sessions);
   const archivedSessionIds = useSessionStore((s) => s.archivedSessionIds);
@@ -201,6 +257,22 @@ export function App() {
     return true;
   }, [api]);
 
+  const applyTabbedLayout = useCallback(() => {
+    if (!api) return false;
+    const panelIds = activeWorkspaceSessions(
+      useSessionStore.getState().sessions,
+      useSessionStore.getState().archivedSessionIds,
+    ).map((session) => session.id);
+    const layout = buildTabbedLayout(api, panelIds);
+    if (!layout) return false;
+    const activeSessionId = useSessionStore.getState().activeSessionId;
+    api.fromJSON(layout, { reuseExistingPanels: true });
+    if (activeSessionId && panelIds.includes(activeSessionId)) {
+      api.getPanel(activeSessionId)?.api.setActive();
+    }
+    return true;
+  }, [api]);
+
   useEffect(() => {
     if (!api || !tileLayoutEnabled) return;
     const timer = window.setTimeout(() => {
@@ -215,6 +287,17 @@ export function App() {
     tileHeight,
     tiledSessionKey,
   ]);
+
+  useEffect(() => {
+    const wasTileLayoutEnabled = wasTileLayoutEnabledRef.current;
+    wasTileLayoutEnabledRef.current = tileLayoutEnabled;
+
+    if (!api || !wasTileLayoutEnabled || tileLayoutEnabled) return;
+    const timer = window.setTimeout(() => {
+      applyTabbedLayout();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [api, applyTabbedLayout, tileLayoutEnabled]);
 
   // Apply theme CSS variables
   useEffect(() => {
