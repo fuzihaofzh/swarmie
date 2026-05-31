@@ -6,6 +6,7 @@ import { registerAutoCompactMinutesSync, useUIStore } from './useUI';
 
 export function useMultiWebSocket() {
   const connectionsRef = useRef<Map<string, ServerConnection>>(new Map());
+  const activeRawRef = useRef<{ sessionId: string; serverUrl: string } | null>(null);
 
   // Get the current list of remote servers from the store
   const servers = useServerStore((s) => s.servers);
@@ -62,6 +63,12 @@ export function useMultiWebSocket() {
     };
   }, [getConnectionForSession]);
 
+  // Keep raw terminal streaming scoped to the active session. `subscribe:all`
+  // carries structured dashboard updates only; raw bytes are expensive because
+  // xterm parsing happens on the browser main thread. If a user visits a noisy
+  // TUI tab once and then switches away, we must unsubscribe or the hidden
+  // terminal can keep blocking input in other tabs.
+  //
   // Lazily request per-session history when the user activates a session.
   // Subscribing to `subscribe:all` only enrols for live events; raw replay
   // is fetched on demand so we don't blast N×2MB across the WS on connect.
@@ -70,8 +77,20 @@ export function useMultiWebSocket() {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const connectionStatus: Record<string, ConnectionStatus> = useServerStore((s) => s.connectionStatus);
   useEffect(() => {
+    const previous = activeRawRef.current;
+    const activeSession = activeSessionId
+      ? useSessionStore.getState().sessions.find((s) => s.id === activeSessionId)
+      : undefined;
+    const nextServerUrl = activeSession?.serverUrl ?? LOCAL_SERVER;
+
+    if (previous && previous.sessionId !== activeSessionId) {
+      connectionsRef.current.get(previous.serverUrl)?.setActiveRawSession(null);
+      activeRawRef.current = null;
+    }
+
     if (!activeSessionId) return;
-    getConnectionForSession(activeSessionId)?.requestReplayOnce(activeSessionId);
+    getConnectionForSession(activeSessionId)?.setActiveRawSession(activeSessionId);
+    activeRawRef.current = { sessionId: activeSessionId, serverUrl: nextServerUrl };
   }, [activeSessionId, connectionStatus, getConnectionForSession]);
 
   // Sync remote server connections when server list changes

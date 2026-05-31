@@ -289,6 +289,19 @@ describe('WebSocket observability', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(rawMessages.length).toBeGreaterThan(0);
+    const receivedAfterSubscribe = rawMessages.length;
+
+    ws.send(JSON.stringify({ type: 'unsubscribe', sessionId }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    adapter.pushEvent({
+      type: 'raw:output',
+      sessionId,
+      timestamp: Date.now(),
+      data: { data: Buffer.from('unsubscribed output\n').toString('base64') },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(rawMessages).toHaveLength(receivedAfterSubscribe);
     ws.close();
     await new Promise<void>((resolve) => {
       ws.once('close', () => resolve());

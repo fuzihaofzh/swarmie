@@ -24,6 +24,7 @@ export class ServerConnection {
   /** sessionIds whose history we've already requested over the current ws.
    *  Cleared on every reconnect — the server tracks subscriptions per-socket. */
   private requestedReplay = new Set<string>();
+  private activeRawSessionId: string | null = null;
 
   constructor(serverUrl: string, token?: string) {
     this.serverUrl = serverUrl;
@@ -78,6 +79,9 @@ export class ServerConnection {
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'connected');
       this.requestedReplay.clear();
       ws.send(JSON.stringify({ type: 'subscribe:all' }));
+      if (this.activeRawSessionId) {
+        this.requestReplayOnce(this.activeRawSessionId);
+      }
       // Heartbeat to keep connection alive in background tabs
       clearInterval(this.pingTimer);
       this.pingTimer = setInterval(() => {
@@ -190,6 +194,23 @@ export class ServerConnection {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.requestedReplay.add(sessionId);
     this.send({ type: 'subscribe', sessionId });
+  }
+
+  setActiveRawSession(sessionId: string | null): void {
+    if (this.activeRawSessionId === sessionId) {
+      if (sessionId) this.requestReplayOnce(sessionId);
+      return;
+    }
+
+    const previous = this.activeRawSessionId;
+    this.activeRawSessionId = sessionId;
+    if (previous) {
+      this.requestedReplay.delete(previous);
+      this.send({ type: 'unsubscribe', sessionId: previous });
+    }
+    if (sessionId) {
+      this.requestReplayOnce(sessionId);
+    }
   }
 
   sendAutoApprove(sessionId: string, value: boolean): void {
