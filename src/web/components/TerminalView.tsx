@@ -32,14 +32,14 @@ interface TerminalViewProps {
   onLoadHistory?: (fromOffset: number) => void;
 }
 
-const MAX_TERMINAL_WRITE_BYTES_PER_FRAME = 256 * 1024;
+const MAX_TERMINAL_WRITE_BYTES_PER_FRAME = 32 * 1024;
 // Hard cap on the unwritten write queue. When a tab is backgrounded the flush
 // rAF pauses while the WS keeps pushing, so pendingChunks can balloon to
 // hundreds of MB; on return each term.write blocks the main thread for seconds
 // and the tab never catches up (full freeze). Capped at the server's 16MB raw
 // ring — that is the most history a fresh replay could ever produce anyway, so
 // dropping older queued bytes loses nothing the backend can still show.
-const MAX_PENDING_WRITE_BYTES = 16 * 1024 * 1024;
+const MAX_PENDING_WRITE_BYTES = 2 * 1024 * 1024;
 // Sized to comfortably hold a full MAX_RAW_BYTES (16MB) snapshot at typical
 // terminal line widths. xterm only allocates per actual line written, so the
 // cap is essentially free when usage is small.

@@ -426,7 +426,7 @@ export class ServerConnection {
         // xterm parses it — the "tab takes forever to open" symptom on large
         // sessions. Grouped writes let the TerminalView flush spread them
         // across animation frames. isReplay=true strips stale device queries.
-        const REPLAY_GROUP_BYTES = 256 * 1024;
+        const REPLAY_GROUP_BYTES = 64 * 1024;
         let group: string[] = [];
         let groupBytes = 0;
         let groupOffsetEnd: number | undefined;

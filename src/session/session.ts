@@ -15,7 +15,7 @@ const MAX_RAW_BYTES = 16 * 1024 * 1024; // 16MB
 // replay). Kept small so opening a tab on a large session is fast — over a
 // remote tunnel the transfer of this blob dominates open latency. Older
 // history is fetched on demand via history:load.
-const INITIAL_RAW_REPLAY_BYTES = 512 * 1024; // 512KB
+const INITIAL_RAW_REPLAY_BYTES = 128 * 1024; // 128KB
 const DEFAULT_AUTO_COMPACT_MINUTES = 60;
 // Auto-approve presses Enter to accept the default ("Yes") option. We poll
 // the headless screen (the source of truth for "is a prompt visible right
