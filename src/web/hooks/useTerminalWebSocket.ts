@@ -9,6 +9,13 @@ type WSMessage = {
   [key: string]: unknown;
 };
 
+export interface ClipboardImagePaste {
+  mimeType: string;
+  filename?: string;
+  data: string;
+  size: number;
+}
+
 const REPLAY_GROUP_BYTES = 64 * 1024;
 
 function wsUrlForServer(serverUrl: string): string {
@@ -220,5 +227,16 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
     return send({ type: 'history:load', sessionId, fromOffset });
   }, [send, sessionId]);
 
-  return { sendInput, sendResize, sendRedraw, sendLoadHistory };
+  const sendClipboardImage = useCallback((image: ClipboardImagePaste) => {
+    return send({
+      type: 'clipboard:image',
+      sessionId,
+      mimeType: image.mimeType,
+      filename: image.filename,
+      size: image.size,
+      data: image.data,
+    });
+  }, [send, sessionId]);
+
+  return { sendInput, sendResize, sendRedraw, sendLoadHistory, sendClipboardImage };
 }

@@ -6,6 +6,7 @@ import type { SessionSummary } from '../session/types.js';
 import { RemoteAdapter, getRemoteAdapter } from '../adapters/remote.js';
 import type { BaseAdapter } from '../adapters/base.js';
 import { logObservabilityEvent, resolveRequestId } from './observability.js';
+import { syncClipboardImageToRemote } from './clipboard.js';
 
 interface WSMessage {
   type: string;
@@ -20,6 +21,7 @@ const BROWSER_MESSAGE_TYPES = new Set([
   'resize',
   'redraw',
   'history:load',
+  'clipboard:image',
   'set:autoApprove',
   'set:autoCompact',
   'set:repeat',
@@ -626,6 +628,10 @@ function handleMessage(
       });
       break;
     }
+    case 'clipboard:image': {
+      void handleClipboardImage(socket, msg, manager);
+      break;
+    }
     case 'set:autoApprove': {
       const sessionId = msg.sessionId as string;
       const value = !!msg.value;
@@ -689,6 +695,47 @@ function handleMessage(
       }
       break;
     }
+  }
+}
+
+async function handleClipboardImage(
+  socket: WebSocket,
+  msg: WSMessage,
+  manager: SessionManager,
+): Promise<void> {
+  const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+  const mimeType = typeof msg.mimeType === 'string' ? msg.mimeType : '';
+  const data = typeof msg.data === 'string' ? msg.data : '';
+  const session = sessionId ? manager.getSession(sessionId) : undefined;
+
+  if (!session || !mimeType || !data) {
+    send(socket, {
+      type: 'clipboard:image:result',
+      sessionId,
+      ok: false,
+      mode: 'error',
+      error: session ? 'Invalid clipboard image payload' : 'Session not found',
+    });
+    return;
+  }
+
+  const result = await syncClipboardImageToRemote(sessionId, mimeType, data);
+  send(socket, {
+    type: 'clipboard:image:result',
+    sessionId,
+    ok: result.ok,
+    mode: result.mode,
+    path: result.path,
+    error: result.error,
+  });
+
+  if (!result.ok) return;
+  if (result.mode === 'remote-clipboard') {
+    session.write('\x16');
+    return;
+  }
+  if (result.path) {
+    session.write(result.path);
   }
 }
 

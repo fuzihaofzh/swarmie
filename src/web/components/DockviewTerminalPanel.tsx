@@ -12,7 +12,7 @@ export interface TerminalPanelParams {
 export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<TerminalPanelParams>) {
   const sessionId = params.sessionId;
   const [active, setActive] = useState(api.isActive);
-  const { sendInput, sendResize, sendRedraw, sendLoadHistory } = useTerminalWebSocket(sessionId, active);
+  const { sendInput, sendResize, sendRedraw, sendLoadHistory, sendClipboardImage } = useTerminalWebSocket(sessionId, active);
 
   // Track active state from dockview
   useEffect(() => {
@@ -35,6 +35,7 @@ export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<Termi
       onResize={sendResize}
       onRedraw={sendRedraw}
       onLoadHistory={sendLoadHistory}
+      onClipboardImagePaste={sendClipboardImage}
     />
   );
 }

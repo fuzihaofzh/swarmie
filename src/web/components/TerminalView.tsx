@@ -21,6 +21,7 @@ import {
 } from '../focusPolicy';
 import { decodeBase64Chunks, estimateBase64Bytes } from '../base64';
 import { stripDeviceQueries } from '../terminalQueries';
+import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
 
 interface TerminalViewProps {
   sessionId: string;
@@ -29,6 +30,7 @@ interface TerminalViewProps {
   onResize?: (cols: number, rows: number) => void;
   onRedraw?: () => void;
   onLoadHistory?: (fromOffset: number) => boolean | void;
+  onClipboardImagePaste?: (image: ClipboardImagePaste) => boolean | void;
 }
 
 const MAX_TERMINAL_WRITE_BYTES_PER_FRAME = 32 * 1024;
@@ -48,6 +50,34 @@ const HISTORY_CHUNK_BYTES = 2 * 1024 * 1024;
 const HISTORY_LOAD_TIMEOUT_MS = 10_000;
 /** Auto-trigger only fires if the user wheel/touch-swiped up within this window. */
 const AUTO_LOAD_RECENT_WINDOW_MS = 600;
+const MAX_CLIPBOARD_IMAGE_BYTES = 16 * 1024 * 1024;
+
+function clipboardImageFromPaste(event: ClipboardEvent): File | null {
+  const items = event.clipboardData?.items;
+  if (!items) return null;
+  for (const item of items) {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
+    return item.getAsFile();
+  }
+  return null;
+}
+
+function readFileBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read clipboard image'));
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      const comma = dataUrl.indexOf(',');
+      if (comma < 0) {
+        reject(new Error('Invalid clipboard image data'));
+        return;
+      }
+      resolve(dataUrl.slice(comma + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 // Dev inspector for client-side freezes: run `__swarmieTerm()` in the browser
 // console to dump each mounted terminal's xterm buffer size. The server debug
@@ -66,7 +96,15 @@ if (typeof window !== 'undefined') {
     }));
 }
 
-export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw, onLoadHistory }: TerminalViewProps) {
+export function TerminalView({
+  sessionId,
+  isActive,
+  onInput,
+  onResize,
+  onRedraw,
+  onLoadHistory,
+  onClipboardImagePaste,
+}: TerminalViewProps) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -275,6 +313,45 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
     requestAnimationFrame(init);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, sessionId]);
+
+  const handleClipboardImagePaste = useCallback(async (file: File) => {
+    if (!onClipboardImagePaste) return;
+    if (file.size > MAX_CLIPBOARD_IMAGE_BYTES) {
+      // eslint-disable-next-line no-console
+      console.warn(`[swarmie] clipboard image is too large: ${file.size} bytes`);
+      return;
+    }
+
+    try {
+      const data = await readFileBase64(file);
+      onClipboardImagePaste({
+        mimeType: file.type || 'image/png',
+        filename: file.name || 'clipboard.png',
+        data,
+        size: file.size,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[swarmie] failed to read clipboard image', err);
+    }
+  }, [onClipboardImagePaste]);
+
+  useEffect(() => {
+    const term = termRef.current;
+    const root = term?.element;
+    if (!root || !onClipboardImagePaste) return;
+
+    const onPaste = (event: ClipboardEvent) => {
+      const file = clipboardImageFromPaste(event);
+      if (!file) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void handleClipboardImagePaste(file);
+    };
+
+    root.addEventListener('paste', onPaste, true);
+    return () => root.removeEventListener('paste', onPaste, true);
+  }, [handleClipboardImagePaste, onClipboardImagePaste, termReady]);
 
   const getFocusPolicyEnv = useCallback(() => {
     return {

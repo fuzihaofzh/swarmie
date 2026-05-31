@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import WebSocket from 'ws';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { parseServerAddress } from '../src/ipc/ws-client.js';
@@ -513,5 +514,69 @@ describe('WebSocket observability', () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  it('forwards pasted clipboard images through the terminal websocket', async () => {
+    const sessionId = `clipboard-image-${Date.now()}`;
+    const adapter = new RemoteAdapter(
+      { sessionId, toolArgs: [], cwd: '/tmp' },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: 'C',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+    let written = '';
+    adapter.onWrite = (data) => {
+      written += data;
+    };
+    const session = manager.addSession(sessionId, 'Clipboard Image Session', adapter, { cwd: '/tmp', hostname: 'test-host' });
+    session.start();
+
+    const ws = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
+    const resultPromise = new Promise<{ ok: boolean; mode: string; path?: string }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Clipboard image result timeout')), 3000);
+      ws.on('message', (raw: WebSocket.RawData) => {
+        const payload = JSON.parse(raw.toString()) as {
+          type?: string;
+          sessionId?: string;
+          ok?: boolean;
+          mode?: string;
+          path?: string;
+        };
+        if (payload.type === 'clipboard:image:result' && payload.sessionId === sessionId) {
+          clearTimeout(timer);
+          resolve({ ok: !!payload.ok, mode: payload.mode ?? '', path: payload.path });
+        }
+      });
+    });
+
+    await waitForSocketOpen(ws);
+    ws.send(JSON.stringify({
+      type: 'clipboard:image',
+      sessionId,
+      mimeType: 'image/png',
+      data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+    }));
+
+    const result = await resultPromise;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(result.ok).toBe(true);
+    expect(['remote-clipboard', 'path']).toContain(result.mode);
+    expect(written.length).toBeGreaterThan(0);
+    if (result.mode === 'remote-clipboard') {
+      expect(written).toBe('\x16');
+    } else {
+      expect(written).toContain('.swarmie');
+      expect(written).toContain('clipboard');
+    }
+    if (result.path) rmSync(result.path, { force: true });
+
+    ws.close();
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve());
+    });
   });
 });
