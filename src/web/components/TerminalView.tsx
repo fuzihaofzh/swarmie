@@ -28,7 +28,7 @@ interface TerminalViewProps {
   onInput?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
   onRedraw?: () => void;
-  onLoadHistory?: (fromOffset: number) => void;
+  onLoadHistory?: (fromOffset: number) => boolean | void;
 }
 
 const MAX_TERMINAL_WRITE_BYTES_PER_FRAME = 32 * 1024;
@@ -45,6 +45,7 @@ const MAX_PENDING_WRITE_BYTES = 2 * 1024 * 1024;
 const TERMINAL_SCROLLBACK_LINES = 10000;
 /** How many bytes earlier to fetch each time the user asks for more history. */
 const HISTORY_CHUNK_BYTES = 2 * 1024 * 1024;
+const HISTORY_LOAD_TIMEOUT_MS = 10_000;
 /** Auto-trigger only fires if the user wheel/touch-swiped up within this window. */
 const AUTO_LOAD_RECENT_WINDOW_MS = 600;
 
@@ -95,7 +96,9 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
    *  affordance once the user has actually scrolled all the way up. */
   const [atTop, setAtTop] = useState(false);
   const historyLoadingRef = useRef(false);
+  const historyLoadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const capturedDuringLoadRef = useRef<Array<{ b64: string; offsetEnd?: number }>>([]);
+  const capturedDuringLoadBytesRef = useRef(0);
   const pendingChunksRef = useRef<string[]>([]);
   const scheduleFlushRef = useRef<(() => void) | null>(null);
   const cancelScheduledFlushRef = useRef<(() => void) | null>(null);
@@ -286,6 +289,13 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
   useEffect(() => {
     return () => {
       observerRef.current?.disconnect();
+      if (historyLoadTimeoutRef.current) {
+        clearTimeout(historyLoadTimeoutRef.current);
+        historyLoadTimeoutRef.current = null;
+      }
+      historyLoadingRef.current = false;
+      capturedDuringLoadRef.current = [];
+      capturedDuringLoadBytesRef.current = 0;
       mountedTerms.delete(sessionId);
       termRef.current?.dispose();
       termRef.current = null;
@@ -363,17 +373,41 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
     setSearchOpen(false);
   }, []);
 
+  const clearHistoryLoadTimeout = useCallback(() => {
+    if (historyLoadTimeoutRef.current) {
+      clearTimeout(historyLoadTimeoutRef.current);
+      historyLoadTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearHistoryLoading = useCallback(() => {
+    clearHistoryLoadTimeout();
+    historyLoadingRef.current = false;
+    capturedDuringLoadRef.current = [];
+    capturedDuringLoadBytesRef.current = 0;
+    setHistoryLoading(false);
+  }, [clearHistoryLoadTimeout]);
+
   const handleLoadEarlier = useCallback(() => {
     if (historyLoadingRef.current) return;
     if (sessionMeta.reachedEarliest) return;
     if (sessionMeta.lowestOffset <= 0) return;
+    if (!onLoadHistory) return;
     const fromOffset = Math.max(0, sessionMeta.lowestOffset - HISTORY_CHUNK_BYTES);
     if (fromOffset >= sessionMeta.lowestOffset) return;
     historyLoadingRef.current = true;
     capturedDuringLoadRef.current = [];
+    capturedDuringLoadBytesRef.current = 0;
     setHistoryLoading(true);
-    onLoadHistory?.(fromOffset);
-  }, [sessionMeta, onLoadHistory]);
+    const sent = onLoadHistory(fromOffset);
+    if (sent === false) {
+      clearHistoryLoading();
+      return;
+    }
+    historyLoadTimeoutRef.current = setTimeout(() => {
+      clearHistoryLoading();
+    }, HISTORY_LOAD_TIMEOUT_MS);
+  }, [clearHistoryLoading, sessionMeta, onLoadHistory]);
 
   // Keep the latest handler reachable from imperative paths (onScroll, wheel)
   // without re-binding listeners every render.
@@ -642,6 +676,15 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
         // Park new chunks until the snapshot is applied; we'll filter them by
         // offset and replay the ones newer than the snapshot afterwards.
         capturedDuringLoadRef.current.push({ b64: data, offsetEnd });
+        capturedDuringLoadBytesRef.current += estimateBase64Bytes(data);
+        while (
+          capturedDuringLoadBytesRef.current > MAX_PENDING_WRITE_BYTES &&
+          capturedDuringLoadRef.current.length > 1
+        ) {
+          const dropped = capturedDuringLoadRef.current.shift();
+          if (!dropped) break;
+          capturedDuringLoadBytesRef.current -= estimateBase64Bytes(dropped.b64);
+        }
         return;
       }
       pendingChunks.push(data);
@@ -667,15 +710,12 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
     // don't double-write the ones already inside the snapshot).
     const unsubscribeSnapshot = subscribeHistorySnapshot(sessionId, (snapshot) => {
       if (disposed) return;
+      if (!historyLoadingRef.current) return;
+      clearHistoryLoadTimeout();
       // Drop pending chunks — anything in there is already inside the snapshot
       // window (offsetEnd <= snapshot.endOffset).
       pendingChunks.length = 0;
       pendingBytes = 0;
-
-      const tail = capturedDuringLoadRef.current.filter((c) =>
-        typeof c.offsetEnd !== 'number' || c.offsetEnd > snapshot.endOffset,
-      );
-      capturedDuringLoadRef.current = [];
 
       // Anchor by distance-from-bottom. The snapshot ends at the same content
       // the user already had at the bottom, so the number of lines they were
@@ -695,6 +735,11 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
         try { term.scrollToLine(target); } catch { /* ignore */ }
         // Replay live tail at the bottom; with scrollOnOutput off this leaves
         // the anchored viewport untouched.
+        const tail = capturedDuringLoadRef.current.filter((c) =>
+          typeof c.offsetEnd !== 'number' || c.offsetEnd > snapshot.endOffset,
+        );
+        capturedDuringLoadRef.current = [];
+        capturedDuringLoadBytesRef.current = 0;
         for (const c of tail) {
           term.write(decodeBase64Chunks([c.b64]));
         }
@@ -728,12 +773,13 @@ export function TerminalView({ sessionId, isActive, onInput, onResize, onRedraw,
     // so ink-based apps (Claude Code) redraw their UI on the fresh terminal.
     // Redraw works for both local and non-local sessions; resize is gated
     // server-side on Session.isLocal.
-    setTimeout(() => {
+    const redrawTimer = setTimeout(() => {
       onRedraw?.();
     }, 200);
 
     return () => {
       disposed = true;
+      clearTimeout(redrawTimer);
       cleanupFlush();
       unsubscribeSnapshot();
       if (scheduleFlushRef.current === scheduleFlush) scheduleFlushRef.current = null;

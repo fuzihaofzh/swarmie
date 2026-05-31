@@ -98,7 +98,7 @@ export class GenericAdapter extends BaseAdapter {
     this.ptyProcess?.write(data);
     this.handleUserInput(data);
     // On Enter, start scanning output for tool signatures
-    if (data === '\r' || data === '\n') {
+    if (data.includes('\r') || data.includes('\n')) {
       this._detectActive = true;
       this._detectBuf = '';
     }

@@ -217,7 +217,7 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
   }, [send, sessionId]);
 
   const sendLoadHistory = useCallback((fromOffset: number) => {
-    send({ type: 'history:load', sessionId, fromOffset });
+    return send({ type: 'history:load', sessionId, fromOffset });
   }, [send, sessionId]);
 
   return { sendInput, sendResize, sendRedraw, sendLoadHistory };

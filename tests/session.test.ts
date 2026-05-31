@@ -59,6 +59,31 @@ describe('Session', () => {
     expect(session.getRecentEvents()).toHaveLength(2);
   });
 
+  it('returns all retained raw events after an offset', () => {
+    const adapter = createMockAdapter('sess-raw-since');
+    const session = new Session('sess-raw-since', 'test', adapter);
+    const chunks = ['one', 'two', 'three'];
+
+    chunks.forEach((chunk, index) => {
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-raw-since',
+        timestamp: Date.now() + index,
+        data: { data: Buffer.from(chunk).toString('base64') },
+      });
+    });
+
+    const allRaw = session.getRawEventsSince(0);
+    const firstOffset = (allRaw[0].data as { offsetEnd?: number }).offsetEnd;
+    expect(typeof firstOffset).toBe('number');
+
+    const replayText = session.getRawEventsSince(firstOffset!)
+      .map((event) => Buffer.from((event.data as { data: string }).data, 'base64').toString('utf-8'))
+      .join('');
+
+    expect(replayText).toBe('twothree');
+  });
+
   it('tracks metadata accumulation', () => {
     const adapter = createMockAdapter('sess-3');
     const session = new Session('sess-3', 'test', adapter);

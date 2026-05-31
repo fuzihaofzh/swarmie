@@ -296,6 +296,18 @@ export class Session extends EventEmitter {
     return [...rawSubset, ...structured].sort((a, b) => a.timestamp - b.timestamp);
   }
 
+  getRecentStructuredEvents(): NormalizedEvent[] {
+    return this.events.slice(-MAX_RECENT_EVENTS);
+  }
+
+  getRawEventsSince(fromOffset: number): NormalizedEvent[] {
+    const requested = Math.max(0, Math.floor(fromOffset));
+    return this.rawEvents.filter((event) => {
+      const data = event.data as RawOutputData;
+      return typeof data.offsetEnd !== 'number' || data.offsetEnd > requested;
+    });
+  }
+
   /**
    * Snapshot of raw chunks from `fromOffset` (inclusive) up to the current end.
    * Returns the actual start (may be > fromOffset if older bytes were evicted

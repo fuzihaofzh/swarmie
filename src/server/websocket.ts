@@ -47,6 +47,7 @@ const CLI_SIZE_KEY: unique symbol = Symbol('cli-size');
 
 export function setupWebSocket(app: FastifyInstance, manager: SessionManager): WebSocketHandle {
   const clients = new Set<WebSocket>();
+  const dashboardClients = new Set<WebSocket>();
   const subscriptions = new Map<WebSocket, Set<string>>(); // ws -> set of sessionIds
   const socketRequestIds = new Map<WebSocket, string>();
   const terminalSockets = new WeakSet<WebSocket>();
@@ -187,6 +188,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
       if (isTerminalSocket) return;
       if (!sentSessionList) {
         sentSessionList = true;
+        dashboardClients.add(socket);
         const sessionList: SessionSummary[] = manager.getSessionSummaries();
         send(socket, { type: 'session:list', sessions: sessionList });
       }
@@ -274,12 +276,13 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
 
       // Browser client messages
       ensureSessionList();
-      handleMessage(socket, msg, manager, subscriptions, clients, recordClientSize);
+      handleMessage(socket, msg, manager, subscriptions, dashboardClients, recordClientSize, isTerminalSocket);
     });
 
     socket.on('close', () => {
       if (listTimer) clearTimeout(listTimer);
       clients.delete(socket);
+      dashboardClients.delete(socket);
       subscriptions.delete(socket);
       dropClientSizes(socket);
       lastSeen.delete(socket);
@@ -391,6 +394,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
       },
       ws: {
         totalClients: clients.size,
+        dashboardClients: dashboardClients.size,
         totalBufferedBytes: totalBuffered,
         totalBufferedMB: mb(totalBuffered),
         backpressuredWarnBytes: WS_BUFFERED_WARN_BYTES,
@@ -409,7 +413,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
 
   // Broadcast new sessions
   manager.on('session:added', (summary: SessionSummary) => {
-    broadcast(clients, { type: 'session:added', session: summary });
+    broadcast(dashboardClients, { type: 'session:added', session: summary });
   });
 
   manager.on('session:removed', (sessionId: string) => {
@@ -422,7 +426,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     for (const perSession of clientSizes.values()) {
       perSession.delete(sessionId);
     }
-    broadcast(clients, { type: 'session:removed', sessionId });
+    broadcast(dashboardClients, { type: 'session:removed', sessionId });
   });
 
   // Coalesce per-session raw output into ~one-frame batches before broadcasting.
@@ -500,6 +504,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
       // dashboard-wide stream. Raw terminal bytes are handled above and only go
       // to explicit per-session subscribers; otherwise an unseen noisy tab can
       // make every dashboard client parse its output.
+      if (terminalSockets.has(ws)) continue;
       if (subs.has(event.sessionId) || subs.has('*')) {
         sendRaw(ws, eventPayload);
         if (settingsPayload) sendRaw(ws, settingsPayload);
@@ -509,7 +514,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
 
   return {
     broadcastShutdown: () => {
-      broadcast(clients, { type: 'server:shutdown' });
+      broadcast(dashboardClients, { type: 'server:shutdown' });
     },
     stop: () => {
       clearInterval(livenessTimer);
@@ -527,8 +532,9 @@ function handleMessage(
   msg: WSMessage,
   manager: SessionManager,
   subscriptions: Map<WebSocket, Set<string>>,
-  clients: Set<WebSocket>,
+  dashboardClients: Set<WebSocket>,
   recordClientSize: (socket: WebSocket, sessionId: string, cols: number, rows: number) => void,
+  isTerminalSocket: boolean,
 ): void {
   const subs = subscriptions.get(socket);
   if (!subs) return;
@@ -545,13 +551,14 @@ function handleMessage(
             ? msg.fromOffset
             : Number(msg.fromOffset);
           const events = Number.isFinite(fromOffset) && fromOffset > 0
-            ? session.getRecentEvents().filter((event) => {
-              if (event.type !== 'raw:output') return true;
-              const data = event.data as RawOutputData;
-              return typeof data.offsetEnd !== 'number' || data.offsetEnd > fromOffset;
-            })
-            : session.getRecentEvents();
-          send(socket, { type: 'event:batch', sessionId, events });
+            ? [
+                ...session.getRawEventsSince(fromOffset),
+                ...(isTerminalSocket ? [] : session.getRecentStructuredEvents()),
+              ].sort((a, b) => a.timestamp - b.timestamp)
+            : (isTerminalSocket
+                ? session.getRecentEvents().filter((event) => event.type === 'raw:output')
+                : session.getRecentEvents());
+          sendEventBatches(socket, sessionId, events);
         }
       }
       break;
@@ -626,7 +633,7 @@ function handleMessage(
         const session = manager.setSessionSettings(sessionId, { autoApprove: value });
         if (session) {
           // Broadcast to all clients so all devices stay in sync
-          broadcast(clients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
+          broadcast(dashboardClients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
         }
       }
       break;
@@ -637,7 +644,7 @@ function handleMessage(
       if (sessionId) {
         const session = manager.setSessionSettings(sessionId, { autoCompact: value });
         if (session) {
-          broadcast(clients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
+          broadcast(dashboardClients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
         }
       }
       break;
@@ -658,7 +665,7 @@ function handleMessage(
           ...patch,
         });
         if (session) {
-          broadcast(clients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
+          broadcast(dashboardClients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
         }
       }
       break;
@@ -669,7 +676,7 @@ function handleMessage(
       if (sessionId) {
         const session = manager.setSessionSettings(sessionId, { tags });
         if (session) {
-          broadcast(clients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
+          broadcast(dashboardClients, { type: 'session:settings', sessionId, settings: sessionSettingsPayload(session) });
         }
       }
       break;
@@ -678,7 +685,7 @@ function handleMessage(
       const minutes = typeof msg.minutes === 'number' ? msg.minutes : Number(msg.minutes);
       if (Number.isFinite(minutes)) {
         const value = manager.setAutoCompactMinutes(minutes);
-        broadcast(clients, { type: 'settings:autoCompactMinutes', minutes: value });
+        broadcast(dashboardClients, { type: 'settings:autoCompactMinutes', minutes: value });
       }
       break;
     }
@@ -704,6 +711,8 @@ function sessionSettingsPayload(session: NonNullable<ReturnType<SessionManager['
 // library will continue to queue, and the callback form of ws.send() lets
 // callers chain large replays serially instead of blasting them at once.
 const WS_BUFFERED_WARN_BYTES = 4 * 1024 * 1024;
+const REPLAY_BATCH_RAW_BYTES = 256 * 1024;
+const replayDeferredPayloads = new WeakMap<WebSocket, string[]>();
 
 function warnIfBackpressured(ws: WebSocket): void {
   if (ws.bufferedAmount > WS_BUFFERED_WARN_BYTES) {
@@ -721,6 +730,11 @@ function warnIfBackpressured(ws: WebSocket): void {
  *  the same string out to many sockets instead of re-encoding per client. */
 function sendRaw(ws: WebSocket, payload: string): void {
   if (ws.readyState !== 1) return; // not OPEN
+  const deferred = replayDeferredPayloads.get(ws);
+  if (deferred) {
+    deferred.push(payload);
+    return;
+  }
   warnIfBackpressured(ws);
   ws.send(payload);
 }
@@ -732,6 +746,51 @@ function send(ws: WebSocket, data: unknown, onWritten?: (err?: Error) => void): 
   }
   warnIfBackpressured(ws);
   ws.send(JSON.stringify(data), (err?: Error) => onWritten?.(err));
+}
+
+function estimateReplayEventBytes(event: NormalizedEvent): number {
+  if (event.type !== 'raw:output') return 1024;
+  const data = event.data as RawOutputData;
+  return Math.ceil((data.data.length * 3) / 4);
+}
+
+function sendEventBatches(ws: WebSocket, sessionId: string, events: NormalizedEvent[]): void {
+  const batches: NormalizedEvent[][] = [];
+  let batch: NormalizedEvent[] = [];
+  let batchBytes = 0;
+
+  for (const event of events) {
+    const bytes = estimateReplayEventBytes(event);
+    if (batch.length > 0 && batchBytes + bytes > REPLAY_BATCH_RAW_BYTES) {
+      batches.push(batch);
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(event);
+    batchBytes += bytes;
+  }
+  if (batch.length > 0 || batches.length === 0) batches.push(batch);
+
+  if (batches.length > 1) {
+    replayDeferredPayloads.set(ws, []);
+  }
+
+  let index = 0;
+  const sendNext = (err?: Error) => {
+    if (err) {
+      replayDeferredPayloads.delete(ws);
+      return;
+    }
+    const next = batches[index++];
+    if (!next) {
+      const deferred = replayDeferredPayloads.get(ws) ?? [];
+      replayDeferredPayloads.delete(ws);
+      for (const payload of deferred) sendRaw(ws, payload);
+      return;
+    }
+    send(ws, { type: 'event:batch', sessionId, events: next }, sendNext);
+  };
+  sendNext();
 }
 
 function broadcast(clients: Set<WebSocket>, data: unknown): void {

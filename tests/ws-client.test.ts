@@ -370,6 +370,79 @@ describe('WebSocket observability', () => {
     });
   });
 
+  it('replays terminal catch-up from the full raw ring after an offset', async () => {
+    const sessionId = `raw-ring-${Date.now()}`;
+    const adapter = new RemoteAdapter(
+      { sessionId, toolArgs: [], cwd: '/tmp' },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: 'C',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+    manager.addSession(sessionId, 'Raw Ring Session', adapter, { cwd: '/tmp', hostname: 'test-host' });
+
+    const chunks = [
+      `chunk-one:${'a'.repeat(180 * 1024)}`,
+      `chunk-two:${'b'.repeat(180 * 1024)}`,
+      `chunk-three:${'c'.repeat(180 * 1024)}`,
+    ];
+    chunks.forEach((chunk, index) => {
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId,
+        timestamp: Date.now() + index,
+        data: { data: Buffer.from(chunk).toString('base64') },
+      });
+    });
+
+    const session = manager.getSession(sessionId);
+    const rawEvents = session?.getRawEventsSince(0) ?? [];
+    const firstOffset = (rawEvents[0]?.data as { offsetEnd?: number } | undefined)?.offsetEnd;
+    expect(typeof firstOffset).toBe('number');
+
+    const ws = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
+    const receivedEvents: Array<{ type: string; data: { data: string } }> = [];
+    let batchCount = 0;
+    const replayPromise = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Replay timeout')), 3000);
+      ws.on('message', (raw: WebSocket.RawData) => {
+        const payload = JSON.parse(raw.toString()) as {
+          type?: string;
+          sessionId?: string;
+          events?: Array<{ type: string; data: { data: string } }>;
+        };
+        if (payload.type === 'event:batch' && payload.sessionId === sessionId) {
+          batchCount += 1;
+          receivedEvents.push(...(payload.events ?? []));
+          const replayText = receivedEvents
+            .filter((event) => event.type === 'raw:output')
+            .map((event) => Buffer.from(event.data.data, 'base64').toString('utf-8'))
+            .join('');
+          if (replayText.includes('chunk-three:')) {
+            clearTimeout(timer);
+            resolve(replayText);
+          }
+        }
+      });
+    });
+
+    await waitForSocketOpen(ws);
+    ws.send(JSON.stringify({ type: 'subscribe', sessionId, fromOffset: firstOffset }));
+    const replayText = await replayPromise;
+
+    expect(batchCount).toBeGreaterThan(1);
+    expect(replayText).not.toContain('chunk-one:');
+    expect(replayText).toContain('chunk-two:');
+    expect(replayText).toContain('chunk-three:');
+    ws.close();
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve());
+    });
+  });
+
   it('does not send dashboard session lists to per-terminal sockets', async () => {
     const ws = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
     const messages: Array<{ type?: string }> = [];
@@ -381,6 +454,37 @@ describe('WebSocket observability', () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     expect(messages.some((msg) => msg.type === 'session:list')).toBe(false);
+    ws.close();
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve());
+    });
+  });
+
+  it('does not send dashboard broadcasts to per-terminal sockets', async () => {
+    const ws = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
+    const messages: Array<{ type?: string }> = [];
+    ws.on('message', (raw: WebSocket.RawData) => {
+      messages.push(JSON.parse(raw.toString()) as { type?: string });
+    });
+
+    await waitForSocketOpen(ws);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const sessionId = `terminal-broadcast-${Date.now()}`;
+    const adapter = new RemoteAdapter(
+      { sessionId, toolArgs: [], cwd: '/tmp' },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: 'C',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+    manager.addSession(sessionId, 'Terminal Broadcast Session', adapter, { cwd: '/tmp', hostname: 'test-host' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(messages.some((msg) => msg.type === 'session:added')).toBe(false);
     ws.close();
     await new Promise<void>((resolve) => {
       ws.once('close', () => resolve());

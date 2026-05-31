@@ -42,6 +42,15 @@ describe('adapter registry', () => {
     expect(adapter.info.command).toBe('cld');
   });
 
+  it('detects generic tools after batched input containing Enter', () => {
+    const adapter = createAdapter('cld', { sessionId: 'generic-batch', toolArgs: [] });
+    adapter.write('codex\r');
+    (adapter as unknown as { detectTool: (chunk: string) => void }).detectTool('Welcome to Codex');
+
+    expect(adapter.info.name).toBe('codex');
+    expect(adapter.info.displayName).toBe('Codex');
+  });
+
   it('settles remote startup output to idle', () => {
     const adapter = new RemoteAdapter(
       { sessionId: 'remote-ready', toolArgs: [] },
