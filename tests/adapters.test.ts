@@ -74,7 +74,7 @@ describe('adapter registry', () => {
     expect(adapter.status).toBe('idle');
   });
 
-  it('does not let remote running status override local idle without submitted input', () => {
+  it('allows remote running status when no prompt is visible', () => {
     const adapter = new RemoteAdapter(
       { sessionId: 'remote-click', toolArgs: [] },
       {
@@ -100,7 +100,38 @@ describe('adapter registry', () => {
       data: { from: 'idle', to: 'running' },
     });
 
-    expect(adapter.status).toBe('idle');
+    expect(adapter.status).toBe('running');
+  });
+
+  it('does not let remote running status override a visible prompt', () => {
+    const adapter = new RemoteAdapter(
+      { sessionId: 'remote-prompt-running', toolArgs: [] },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: '',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+
+    adapter.start();
+    adapter.pushEvent({
+      type: 'raw:output',
+      sessionId: 'remote-prompt-running',
+      timestamp: Date.now(),
+      data: { data: Buffer.from('Do you want to proceed?\r\n  1. Yes\r\n  2. No\r\n').toString('base64') },
+    });
+    expect(adapter.status).toBe('waiting_input');
+
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: 'remote-prompt-running',
+      timestamp: Date.now(),
+      data: { from: 'waiting_input', to: 'running' },
+    });
+
+    expect(adapter.status).toBe('waiting_input');
   });
 
   it('marks remote sessions running when dashboard submits input', () => {

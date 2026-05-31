@@ -8,11 +8,10 @@ import type { AdapterInfo, NormalizedEvent, RawOutputData, SessionStatus } from 
  * Status policy: the local headless screen is authoritative for whether a
  * prompt is currently visible (it runs on the forwarded raw output, same as
  * any local adapter). The remote also forwards its own status:change events,
- * but its "running" detection is just busy-output spam (e.g. sub-agents
- * streaming during a prompt) and would mask the prompt — so we drop remote
- * "running" events entirely. Other remote statuses (thinking, tool_executing,
- * idle, completed, error) carry information local detection can't derive,
- * so we apply and re-emit those.
+ * but its "running" detection can be busy-output spam (e.g. sub-agents
+ * streaming during a prompt) and would mask a visible prompt. We only drop
+ * remote "running" while local detection still sees a prompt; otherwise we
+ * apply it so the dashboard does not leave active remote tabs stuck gray.
  */
 export class RemoteAdapter extends BaseAdapter {
   private _info: AdapterInfo;
@@ -54,10 +53,10 @@ export class RemoteAdapter extends BaseAdapter {
     if (event.type === 'status:change') {
       const data = event.data as { to: string };
       const nextStatus = data.to as SessionStatus;
-      // Remote "running" is busy-output spam — local detection (waiting_input
-      // / idle) is more accurate. Drop the event entirely so it can't kick
-      // Session out of waiting_input mid-prompt.
-      if (nextStatus === 'running' && this._status !== 'starting' && !this.isCommandExecuting) {
+      // Remote "running" can be noisy while a prompt is still visible. Drop
+      // only in that case; otherwise let the dashboard show that the agent is
+      // actively working instead of leaving the tab stuck in idle gray.
+      if (nextStatus === 'running' && (this._status === 'waiting_input' || this.getScreenSnapshot().promptVisible)) {
         return;
       }
       // For other statuses, apply locally without re-emitting (we synthesize

@@ -7,10 +7,14 @@ interface UIState {
   bellSound: boolean;
   showNewSession: boolean;
   settingsOpen: boolean;
+  agentOverlayMode: 'overview' | 'switcher' | null;
   autoCompactMinutes: number;
   tagFilter: string[];
   openSettings: () => void;
   closeSettings: () => void;
+  openAgentOverview: () => void;
+  openAgentSwitcher: () => void;
+  closeAgentOverlay: () => void;
   setTheme: (theme: string) => void;
   setFontSize: (size: number) => void;
   setFontFamily: (family: string) => void;
@@ -54,6 +58,7 @@ export const useUIStore = create<UIState>((set) => ({
   bellSound: savedBellSound,
   showNewSession: false,
   settingsOpen: false,
+  agentOverlayMode: null,
   autoCompactMinutes: Number.isFinite(savedAutoCompactMinutes)
     ? clampAutoCompactMinutes(savedAutoCompactMinutes)
     : 60,
@@ -61,6 +66,9 @@ export const useUIStore = create<UIState>((set) => ({
 
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
+  openAgentOverview: () => set({ agentOverlayMode: 'overview' }),
+  openAgentSwitcher: () => set({ agentOverlayMode: 'switcher' }),
+  closeAgentOverlay: () => set({ agentOverlayMode: null }),
 
   setTheme: (theme) => {
     localStorage.setItem('swarmie-theme', theme);

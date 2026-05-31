@@ -6,7 +6,7 @@ import { useSessionStore } from './hooks/useSessions';
 import { useUIStore } from './hooks/useUI';
 import { useServerStore, type ConnectionStatus } from './hooks/useServers';
 import { themes, applyTheme } from './themes';
-import { useKeybindingStore, matchesBinding, formatBinding, DEFAULT_BINDINGS, ACTION_LABELS, type ActionId, type KeyBinding } from './hooks/useKeybindings';
+import { useKeybindingStore, matchesBinding, matchesAction, formatBinding, DEFAULT_BINDINGS, ACTION_LABELS, type ActionId, type KeyBinding } from './hooks/useKeybindings';
 import { WsContext, useWsContext, type WsFunctions } from './contexts/WsContext';
 import { DockviewTerminalPanel } from './components/DockviewTerminalPanel';
 import { DockviewNewSessionPanel } from './components/DockviewNewSessionPanel';
@@ -15,6 +15,7 @@ import { useDockviewSync } from './hooks/useDockviewSync';
 import { useMRU } from './hooks/useMRU';
 import { TabSwitcher } from './components/TabSwitcher';
 import { TagSwitcher } from './components/TagSwitcher';
+import { AgentOverview } from './components/AgentOverview';
 import { sessionMatchesTagFilter } from './tagFilter';
 
 const components = {
@@ -39,13 +40,33 @@ function NewTabButton(_props: IDockviewHeaderActionsProps) {
   );
 }
 
-function MenuButton(_props: IDockviewHeaderActionsProps) {
+function HeaderActions(_props: IDockviewHeaderActionsProps) {
   const openSettings = useUIStore((s) => s.openSettings);
+  const openAgentOverview = useUIStore((s) => s.openAgentOverview);
+  const sessions = useSessionStore((s) => s.sessions);
+  const archivedSessionIds = useSessionStore((s) => s.archivedSessionIds);
+  const archived = new Set(archivedSessionIds);
+  const attentionCount = sessions.filter((session) =>
+    !archived.has(session.id) &&
+    (session.status === 'waiting_input' || session.status === 'error' || session.status === 'completed')
+  ).length;
   return (
-    <button className="dv-menu-btn" onClick={openSettings} title="Settings">
-      <span /><span /><span />
-    </button>
+    <div className="dv-header-actions">
+      <button className="dv-agents-btn" onClick={openAgentOverview} title="Agents">
+        <span className="dv-agents-icon">▦</span>
+        {attentionCount > 0 && <span className="dv-agents-count">{attentionCount}</span>}
+      </button>
+      <button className="dv-menu-btn" onClick={openSettings} title="Settings">
+        <span /><span /><span />
+      </button>
+    </div>
   );
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
 }
 
 export function App() {
@@ -119,6 +140,23 @@ export function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [api]);
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+      if (matchesAction(e, 'agent-overview')) {
+        e.preventDefault();
+        e.stopPropagation();
+        useUIStore.getState().openAgentOverview();
+      } else if (matchesAction(e, 'agent-switcher')) {
+        e.preventDefault();
+        e.stopPropagation();
+        useUIStore.getState().openAgentSwitcher();
+      }
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, []);
+
   // Forward horizontal trackpad deltaX to tab bar scrollLeft
   useEffect(() => {
     const handler = (e: WheelEvent) => {
@@ -147,7 +185,7 @@ export function App() {
             onReady={onReady}
             components={components}
             tabComponents={tabComponents}
-            prefixHeaderActionsComponent={MenuButton}
+            prefixHeaderActionsComponent={HeaderActions}
             rightHeaderActionsComponent={NewTabButton}
           />
         </div>
@@ -155,6 +193,7 @@ export function App() {
       {settingsOpen && <SettingsModal onClose={closeSettings} />}
       <TabSwitcher mruRef={mruRef} />
       <TagSwitcher />
+      <AgentOverview />
     </WsContext>
   );
 }
@@ -294,28 +333,35 @@ function AutomationSettings() {
 
 function TagFilterSettings() {
   const sessions = useSessionStore((s) => s.sessions);
+  const archivedSessionIds = useSessionStore((s) => s.archivedSessionIds);
   const tagFilter = useUIStore((s) => s.tagFilter);
   const toggleTagFilter = useUIStore((s) => s.toggleTagFilter);
   const clearTagFilter = useUIStore((s) => s.clearTagFilter);
 
+  const archived = useMemo(() => new Set(archivedSessionIds), [archivedSessionIds]);
+  const workspaceSessions = useMemo(
+    () => sessions.filter((session) => !archived.has(session.id)),
+    [archived, sessions],
+  );
+
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const session of sessions) {
+    for (const session of workspaceSessions) {
       for (const tag of session.tags ?? []) {
         counts.set(tag, (counts.get(tag) ?? 0) + 1);
       }
     }
     return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [sessions]);
+  }, [workspaceSessions]);
 
   const visibleCount = tagFilter.length === 0
-    ? sessions.length
-    : sessions.filter((session) => sessionMatchesTagFilter(session, tagFilter)).length;
+    ? workspaceSessions.length
+    : workspaceSessions.filter((session) => sessionMatchesTagFilter(session, tagFilter)).length;
 
   return (
     <div className="settings-section">
       <div className="tag-filter-summary">
-        Showing {visibleCount} of {sessions.length} sessions
+        Showing {visibleCount} of {workspaceSessions.length} sessions
       </div>
       <div className="tag-filter-grid">
         <button

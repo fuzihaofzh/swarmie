@@ -13,6 +13,7 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const sessions = useSessionStore((s) => s.sessions);
+  const archivedSessionIds = useSessionStore((s) => s.archivedSessionIds);
   const tagFilter = useUIStore((s) => s.tagFilter);
   const mruListRef = useRef<string[]>([]);
 
@@ -20,9 +21,11 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
 
   const getMRUSessions = useCallback(() => {
     const mru = mruListRef.current;
+    const archived = new Set(archivedSessionIds);
+    const workspaceSessions = sessions.filter((s) => !archived.has(s.id));
     const visibleSessions = tagFilter.length === 0
-      ? sessions
-      : sessions.filter((s) => (s.tags ?? []).some((tag) => tagFilter.includes(tag)));
+      ? workspaceSessions
+      : workspaceSessions.filter((s) => (s.tags ?? []).some((tag) => tagFilter.includes(tag)));
     const sessionMap = new Map(visibleSessions.map((s) => [s.id, s]));
     const list = mru.map((id) => sessionMap.get(id)).filter(Boolean) as typeof sessions;
     // Sort: waiting_input (bell) first, then preserve MRU order
@@ -31,7 +34,7 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
       const bBell = b.status === 'waiting_input' ? 0 : 1;
       return aBell - bBell;
     });
-  }, [sessions, tagFilter]);
+  }, [archivedSessionIds, sessions, tagFilter]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -68,12 +71,21 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
       if (matchesAction(e, 'tab-switcher') || matchesAction(e, 'tab-switcher-prev')) {
         e.preventDefault();
         e.stopPropagation();
-        mruListRef.current = [...(mruRef.current ?? [])];
+        const state = useSessionStore.getState();
+        const archived = new Set(state.archivedSessionIds);
+        const currentTagFilter = useUIStore.getState().tagFilter;
+        const visibleIds = new Set(
+          state.sessions
+            .filter((s) => !archived.has(s.id))
+            .filter((s) => currentTagFilter.length === 0 || sessionMatchesTagFilter(s, currentTagFilter))
+            .map((s) => s.id),
+        );
+        mruListRef.current = [...(mruRef.current ?? [])].filter((id) => visibleIds.has(id));
         if (mruListRef.current.length < 2) {
           return;
         }
         setOpen(true);
-        setSelectedIndex(1);
+        setSelectedIndex(Math.min(1, mruListRef.current.length - 1));
       }
     };
 

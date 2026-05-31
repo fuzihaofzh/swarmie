@@ -40,11 +40,15 @@ interface SessionState {
   /** Plain object instead of Map — avoids zustand snapshot issues */
   events: Record<string, NormalizedEvent[]>;
   activeSessionId: string | null;
+  archivedSessionIds: string[];
 
   setSessions: (sessions: SessionSummary[]) => void;
   addSession: (session: SessionSummary) => void;
   removeSession: (id: string) => void;
   setActiveSession: (id: string | null) => void;
+  archiveSessions: (ids: string[]) => void;
+  unarchiveSessions: (ids: string[]) => void;
+  archiveCompletedSessions: () => void;
   addEvent: (event: NormalizedEvent) => void;
   addEventBatch: (sessionId: string, events: NormalizedEvent[]) => void;
   updateSessionStatus: (sessionId: string, status: string) => void;
@@ -65,6 +69,7 @@ const MAX_EVENTS_PER_SESSION = 2000;
 const EMPTY_EVENTS: NormalizedEvent[] = [];
 
 const SESSION_SETTINGS_KEY = 'swarmie-session-settings-map';
+const ARCHIVED_SESSIONS_KEY = 'swarmie-archived-session-ids';
 
 export interface SessionSettingsPatch {
   autoApprove?: boolean;
@@ -99,6 +104,19 @@ function loadSessionSettingsMap(): SavedSessionSettings {
   } catch {
     return {};
   }
+}
+
+function loadArchivedSessionIds(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ARCHIVED_SESSIONS_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveArchivedSessionIds(ids: string[]) {
+  localStorage.setItem(ARCHIVED_SESSIONS_KEY, JSON.stringify(ids));
 }
 
 function saveSessionSettingsMap(sessions: SessionSummary[]) {
@@ -137,6 +155,25 @@ function normalizeTags(tags: string[]): string[] {
   return normalized.slice(0, 12);
 }
 
+function isArchivableStatus(status: string): boolean {
+  return status === 'completed' || status === 'error';
+}
+
+function firstUnarchivedSessionId(sessions: SessionSummary[], archivedIds: Set<string>): string | null {
+  return sessions.find((s) => !archivedIds.has(s.id))?.id ?? null;
+}
+
+function activeSessionIdFor(
+  sessions: SessionSummary[],
+  activeSessionId: string | null,
+  archivedIds: Set<string>,
+): string | null {
+  if (activeSessionId && sessions.some((s) => s.id === activeSessionId) && !archivedIds.has(activeSessionId)) {
+    return activeSessionId;
+  }
+  return firstUnarchivedSessionId(sessions, archivedIds);
+}
+
 function applySavedSettings(session: SessionSummary, saved: SavedSessionSettings): SessionSummary {
   const patch = saved[session.id] ?? {};
   return {
@@ -172,6 +209,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   sessions: [],
   events: {},
   activeSessionId: null,
+  archivedSessionIds: loadArchivedSessionIds(),
 
   setSessions: (sessions) =>
     set((state) => {
@@ -179,7 +217,8 @@ export const useSessionStore = create<SessionState>((set) => ({
       if (local?.initialHostname) setLocalHostname(local.initialHostname);
       const saved = loadSessionSettingsMap();
       const merged = sessions.map((s) => applySavedSettings(s, saved));
-      const activeSessionId = state.activeSessionId ?? merged[0]?.id ?? null;
+      const archived = new Set(state.archivedSessionIds);
+      const activeSessionId = activeSessionIdFor(merged, state.activeSessionId, archived);
       return { sessions: merged, activeSessionId };
     }),
 
@@ -190,7 +229,8 @@ export const useSessionStore = create<SessionState>((set) => ({
       const saved = loadSessionSettingsMap();
       const tagged = applySavedSettings(session, saved);
       const sessions = [...state.sessions, tagged];
-      const activeSessionId = state.activeSessionId ?? session.id;
+      const archived = new Set(state.archivedSessionIds);
+      const activeSessionId = activeSessionIdFor(sessions, state.activeSessionId, archived);
       return { sessions, activeSessionId };
     }),
 
@@ -199,11 +239,65 @@ export const useSessionStore = create<SessionState>((set) => ({
       const sessions = state.sessions.filter((s) => s.id !== id);
       const events = { ...state.events };
       delete events[id];
-      const activeSessionId = state.activeSessionId === id ? null : state.activeSessionId;
-      return { sessions, events, activeSessionId };
+      const archivedSessionIds = state.archivedSessionIds.filter((archivedId) => archivedId !== id);
+      if (archivedSessionIds.length !== state.archivedSessionIds.length) {
+        saveArchivedSessionIds(archivedSessionIds);
+      }
+      const archived = new Set(archivedSessionIds);
+      const activeSessionId = state.activeSessionId === id
+        ? firstUnarchivedSessionId(sessions, archived)
+        : state.activeSessionId;
+      return { sessions, events, activeSessionId, archivedSessionIds };
     }),
 
   setActiveSession: (id) => set({ activeSessionId: id }),
+
+  archiveSessions: (ids) =>
+    set((state) => {
+      const requested = new Set(ids);
+      const archivable = state.sessions
+        .filter((s) => requested.has(s.id) && isArchivableStatus(s.status))
+        .map((s) => s.id);
+      if (archivable.length === 0) return state;
+      const archived = new Set(state.archivedSessionIds);
+      for (const id of archivable) archived.add(id);
+      const archivedSessionIds = [...archived];
+      saveArchivedSessionIds(archivedSessionIds);
+      const activeSessionId = state.activeSessionId && archived.has(state.activeSessionId)
+        ? firstUnarchivedSessionId(state.sessions, archived)
+        : state.activeSessionId;
+      return { archivedSessionIds, activeSessionId };
+    }),
+
+  unarchiveSessions: (ids) =>
+    set((state) => {
+      const toRestore = new Set(ids);
+      const archivedSessionIds = state.archivedSessionIds.filter((id) => !toRestore.has(id));
+      if (archivedSessionIds.length === state.archivedSessionIds.length) return state;
+      saveArchivedSessionIds(archivedSessionIds);
+      const activeSessionId = state.activeSessionId ?? ids.find((id) => state.sessions.some((s) => s.id === id)) ?? null;
+      return { archivedSessionIds, activeSessionId };
+    }),
+
+  archiveCompletedSessions: () =>
+    set((state) => {
+      const archived = new Set(state.archivedSessionIds);
+      let changed = false;
+      for (const session of state.sessions) {
+        if (!isArchivableStatus(session.status)) continue;
+        if (!archived.has(session.id)) {
+          archived.add(session.id);
+          changed = true;
+        }
+      }
+      if (!changed) return state;
+      const archivedSessionIds = [...archived];
+      saveArchivedSessionIds(archivedSessionIds);
+      const activeSessionId = state.activeSessionId && archived.has(state.activeSessionId)
+        ? firstUnarchivedSessionId(state.sessions, archived)
+        : state.activeSessionId;
+      return { archivedSessionIds, activeSessionId };
+    }),
 
   addEvent: (event) =>
     set((state) => {
@@ -261,8 +355,15 @@ export const useSessionStore = create<SessionState>((set) => ({
         ? merged.slice(-MAX_EVENTS_PER_SESSION)
         : merged;
 
-      // Apply tool:detect and cwd:change from batch (e.g. on page refresh)
+      // Apply structured state from batch (e.g. on page refresh or replay).
       let sessions = state.sessions;
+      const statusEvt = newEvents.findLast((e) => e.type === 'status:change');
+      if (statusEvt) {
+        const newStatus = (statusEvt.data as { to: string }).to;
+        sessions = sessions.map((s) =>
+          s.id === sessionId ? { ...s, status: newStatus } : s,
+        );
+      }
       const detectEvt = newEvents.findLast((e) => e.type === 'tool:detect');
       if (detectEvt) {
         const { tool: detectedTool, displayName } = detectEvt.data as { tool: string; displayName: string };
@@ -275,6 +376,12 @@ export const useSessionStore = create<SessionState>((set) => ({
         const { cwd, hostname } = cwdEvt.data as { cwd: string; hostname?: string };
         sessions = sessions.map((s) =>
           s.id === sessionId ? { ...s, cwd, ...(hostname ? { hostname } : {}) } : s,
+        );
+      }
+      const endEvt = newEvents.findLast((e) => e.type === 'session:end');
+      if (endEvt) {
+        sessions = sessions.map((s) =>
+          s.id === sessionId ? { ...s, endTime: endEvt.timestamp } : s,
         );
       }
 
@@ -382,7 +489,8 @@ export const useSessionStore = create<SessionState>((set) => ({
       // Keep sessions from other servers, replace sessions from this server
       const others = state.sessions.filter((s) => s.serverUrl !== serverUrl);
       const sessions = [...others, ...tagged];
-      const activeSessionId = state.activeSessionId ?? sessions[0]?.id ?? null;
+      const archived = new Set(state.archivedSessionIds);
+      const activeSessionId = activeSessionIdFor(sessions, state.activeSessionId, archived);
       return { sessions, activeSessionId };
     }),
 
@@ -392,10 +500,16 @@ export const useSessionStore = create<SessionState>((set) => ({
       const sessions = state.sessions.filter((s) => s.serverUrl !== serverUrl);
       const events = { ...state.events };
       for (const s of removed) delete events[s.id];
+      const removedIds = new Set(removed.map((s) => s.id));
+      const archivedSessionIds = state.archivedSessionIds.filter((id) => !removedIds.has(id));
+      if (archivedSessionIds.length !== state.archivedSessionIds.length) {
+        saveArchivedSessionIds(archivedSessionIds);
+      }
+      const archived = new Set(archivedSessionIds);
       const activeSessionId =
         removed.some((s) => s.id === state.activeSessionId)
-          ? (sessions[0]?.id ?? null)
+          ? firstUnarchivedSessionId(sessions, archived)
           : state.activeSessionId;
-      return { sessions, events, activeSessionId };
+      return { sessions, events, activeSessionId, archivedSessionIds };
     }),
 }));

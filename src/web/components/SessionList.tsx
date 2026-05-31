@@ -5,7 +5,7 @@ import { useWsContext } from '../contexts/WsContext';
 import { SessionCard } from './SessionCard';
 
 export function SessionList() {
-  const { sessions, activeSessionId, setActiveSession } = useSessionStore();
+  const { sessions, archivedSessionIds, activeSessionId, setActiveSession } = useSessionStore();
   const setShowNewSession = useUIStore((s) => s.setShowNewSession);
   const servers = useServerStore((s) => s.servers);
   const { createSession } = useWsContext();
@@ -22,6 +22,9 @@ export function SessionList() {
     }
   };
 
+  const archived = new Set(archivedSessionIds);
+  const workspaceSessions = sessions.filter((session) => !archived.has(session.id));
+
   return (
     <div>
       <button
@@ -30,10 +33,10 @@ export function SessionList() {
       >
         + New Session
       </button>
-      {sessions.length === 0 && (
+      {workspaceSessions.length === 0 && (
         <div className="empty-sessions">No active sessions</div>
       )}
-      {sessions.map((session) => (
+      {workspaceSessions.map((session) => (
         <SessionCard
           key={session.id}
           session={session}

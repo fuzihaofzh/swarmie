@@ -9,12 +9,15 @@ export function TagSwitcher() {
   const [open, setOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const sessions = useSessionStore((s) => s.sessions);
+  const archivedSessionIds = useSessionStore((s) => s.archivedSessionIds);
   const tagFilter = useUIStore((s) => s.tagFilter);
   const setTagFilter = useUIStore((s) => s.setTagFilter);
 
   const entries = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const session of sessions) {
+    const archived = new Set(archivedSessionIds);
+    const workspaceSessions = sessions.filter((session) => !archived.has(session.id));
+    for (const session of workspaceSessions) {
       for (const tag of session.tags ?? []) {
         counts.set(tag, (counts.get(tag) ?? 0) + 1);
       }
@@ -22,8 +25,8 @@ export function TagSwitcher() {
     const tags = Array.from(counts.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([tag, count]) => ({ id: tag, label: tag, count }));
-    return [{ id: ALL_TAG, label: 'All', count: sessions.length }, ...tags];
-  }, [sessions]);
+    return [{ id: ALL_TAG, label: 'All', count: workspaceSessions.length }, ...tags];
+  }, [archivedSessionIds, sessions]);
 
   // When opening, start selection on the next/prev entry relative to current filter
   const currentFilterIndex = useMemo(() => {

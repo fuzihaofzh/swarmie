@@ -63,6 +63,10 @@ const STATUS_COLORS: Record<string, string> = {
   error: '#ef4444',
 };
 
+function normalizeStatus(status?: string): string | undefined {
+  return status?.replace(/-/g, '_').toLowerCase();
+}
+
 const BRAND_COLORS: Record<string, string> = {
   claude: '#da7756',
   codex: '#ffffff',
@@ -75,22 +79,25 @@ export function ToolIcon({ tool, status, brandColor, iconSize }: {
   brandColor?: boolean;
   iconSize?: number;
 }) {
-  const isBell = status === 'waiting_input';
+  const normalizedStatus = normalizeStatus(status);
+  const isBell = normalizedStatus === 'waiting_input';
   const Icon = isBell ? BellIcon : (TOOL_ICONS[tool] ?? TerminalIcon);
+  const statusColor = normalizedStatus ? STATUS_COLORS[normalizedStatus] : undefined;
   let color: string | undefined;
   if (brandColor) {
     color = BRAND_COLORS[tool];
-  } else if (status) {
-    color = STATUS_COLORS[status];
+  } else {
+    color = statusColor;
   }
-  const animated = status === 'running' || status === 'thinking' || status === 'tool_executing';
+  const animated = normalizedStatus === 'running' || normalizedStatus === 'thinking' || normalizedStatus === 'tool_executing';
   const bellShake = isBell && !brandColor;
   return (
-    <span className={`tool-icon ${animated ? 'tool-icon-pulse' : ''} ${bellShake ? 'tool-icon-bell' : ''}`} style={{
+    <span className={`tool-icon ${animated ? 'tool-icon-pulse' : ''} ${bellShake ? 'tool-icon-bell' : ''}`} data-status={normalizedStatus} style={{
       ...(color ? { color } : {}),
       ...(iconSize ? { fontSize: `${iconSize}px` } : {}),
     }}>
       {isBell && !iconSize ? <BellIcon /> : iconSize ? <IconSized tool={tool} size={iconSize} /> : <Icon />}
+      {normalizedStatus && <span className="tool-icon-status-dot" style={{ background: statusColor }} />}
     </span>
   );
 }

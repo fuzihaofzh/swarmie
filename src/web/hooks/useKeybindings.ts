@@ -9,6 +9,8 @@ export interface KeyBinding {
 }
 
 export type ActionId =
+  | 'agent-overview'
+  | 'agent-switcher'
   | 'tab-switcher'
   | 'tab-switcher-prev'
   | 'tag-switcher'
@@ -17,6 +19,8 @@ export type ActionId =
   | 'new-line';
 
 export const ACTION_LABELS: Record<ActionId, string> = {
+  'agent-overview': 'Agent Overview',
+  'agent-switcher': 'Quick Agent Switcher',
   'tab-switcher': 'Switch Tab (Next)',
   'tab-switcher-prev': 'Switch Tab (Prev)',
   'tag-switcher': 'Switch Tag (Next)',
@@ -26,6 +30,8 @@ export const ACTION_LABELS: Record<ActionId, string> = {
 };
 
 export const DEFAULT_BINDINGS: Record<ActionId, KeyBinding> = {
+  'agent-overview':    { code: 'KeyO', alt: true },
+  'agent-switcher':    { code: 'KeyK', alt: true },
   'tab-switcher':      { code: 'BracketLeft', alt: true },
   'tab-switcher-prev': { code: 'BracketLeft', alt: true, shift: true },
   'tag-switcher':      { code: 'BracketRight', alt: true },

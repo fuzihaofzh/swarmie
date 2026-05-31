@@ -14,6 +14,23 @@ function getLayoutKey(): string {
   return window.innerWidth < MOBILE_VIEWPORT_BREAKPOINT ? LAYOUT_KEY_MOBILE : LAYOUT_KEY_DESKTOP;
 }
 
+function ensureNewSessionPanel(api: DockviewApi) {
+  let panel = api.getPanel(NEW_SESSION_PANEL_ID);
+  if (!panel) {
+    api.addPanel({
+      id: NEW_SESSION_PANEL_ID,
+      component: 'newSession',
+      tabComponent: 'newSessionTab',
+      params: {},
+      renderer: 'onlyWhenVisible',
+    });
+    panel = api.getPanel(NEW_SESSION_PANEL_ID);
+  }
+  if (panel && !panel.api.isActive) {
+    panel.api.setActive();
+  }
+}
+
 /**
  * Syncs Zustand session state ↔ Dockview panels.
  * - Session added → addPanel
@@ -34,10 +51,12 @@ export function useDockviewSync(api: DockviewApi | null) {
   // tab doesn't end up as the visible content.
   const reconcileActiveForFilter = (sessions: SessionSummary[], tagFilter: string[]) => {
     if (!api) return;
+    const archived = new Set(useSessionStore.getState().archivedSessionIds);
+    const workspaceSessions = sessions.filter((s) => !archived.has(s.id));
     const activeId = useSessionStore.getState().activeSessionId;
-    const activeSession = activeId ? sessions.find((s) => s.id === activeId) : undefined;
+    const activeSession = activeId ? workspaceSessions.find((s) => s.id === activeId) : undefined;
     if (activeSession && !sessionMatchesTagFilter(activeSession, tagFilter)) {
-      const firstVisible = sessions.find((s) => sessionMatchesTagFilter(s, tagFilter));
+      const firstVisible = workspaceSessions.find((s) => sessionMatchesTagFilter(s, tagFilter));
       useSessionStore.getState().setActiveSession(firstVisible?.id ?? null);
       if (firstVisible) {
         const panel = api.getPanel(firstVisible.id);
@@ -55,12 +74,25 @@ export function useDockviewSync(api: DockviewApi | null) {
     if (!api) return;
 
     const unsub = useSessionStore.subscribe((state, prev) => {
-      const currentIds = new Set(state.sessions.map((s) => s.id));
+      const archived = new Set(state.archivedSessionIds);
+      const workspaceSessions = state.sessions.filter((s) => !archived.has(s.id));
+      const currentIds = new Set(workspaceSessions.map((s) => s.id));
       const prevIds = prevSessionIdsRef.current;
+
+      // Dockview cannot remove the final panel/group. If archiving or removing
+      // sessions empties the workspace, create the new-session panel first.
+      if (currentIds.size === 0) {
+        suppressZustandSync.current = true;
+        ensureNewSessionPanel(api);
+        suppressZustandSync.current = false;
+        if (!useUIStore.getState().showNewSession) {
+          useUIStore.getState().setShowNewSession(true);
+        }
+      }
 
       // Added sessions — create a panel regardless of filter; the tab is
       // hidden via CSS if the session doesn't match the active filter.
-      for (const session of state.sessions) {
+      for (const session of workspaceSessions) {
         if (!prevIds.has(session.id) && !api.getPanel(session.id)) {
           api.addPanel({
             id: session.id,
@@ -87,9 +119,12 @@ export function useDockviewSync(api: DockviewApi | null) {
       prevSessionIdsRef.current = currentIds;
 
       // Active session changed in Zustand → activate panel in Dockview
-      if (state.activeSessionId !== prev.activeSessionId && state.activeSessionId) {
+      if (
+        (state.activeSessionId !== prev.activeSessionId || state.archivedSessionIds !== prev.archivedSessionIds) &&
+        state.activeSessionId
+      ) {
         const tagFilter = useUIStore.getState().tagFilter;
-        const activeSession = state.sessions.find((s) => s.id === state.activeSessionId);
+        const activeSession = workspaceSessions.find((s) => s.id === state.activeSessionId);
         if (activeSession && !sessionMatchesTagFilter(activeSession, tagFilter)) return;
         const panel = api.getPanel(state.activeSessionId);
         if (panel && !panel.api.isActive) {
@@ -132,20 +167,7 @@ export function useDockviewSync(api: DockviewApi | null) {
         reconcileActiveForFilter(useSessionStore.getState().sessions, state.tagFilter);
       }
       if (state.showNewSession && !prev.showNewSession) {
-        let panel = api.getPanel(NEW_SESSION_PANEL_ID);
-        if (!panel) {
-          api.addPanel({
-            id: NEW_SESSION_PANEL_ID,
-            component: 'newSession',
-            tabComponent: 'newSessionTab',
-            params: {},
-            renderer: 'onlyWhenVisible',
-          });
-          panel = api.getPanel(NEW_SESSION_PANEL_ID);
-        }
-        if (panel && !panel.api.isActive) {
-          panel.api.setActive();
-        }
+        ensureNewSessionPanel(api);
       } else if (!state.showNewSession && prev.showNewSession) {
         const panel = api.getPanel(NEW_SESSION_PANEL_ID);
         if (panel) {
@@ -183,7 +205,9 @@ export function useDockviewSync(api: DockviewApi | null) {
   useEffect(() => {
     if (!api) return;
 
-    const sessions = useSessionStore.getState().sessions;
+    const store = useSessionStore.getState();
+    const archived = new Set(store.archivedSessionIds);
+    const sessions = store.sessions.filter((s) => !archived.has(s.id));
     const activeId = useSessionStore.getState().activeSessionId;
     const tagFilter = useUIStore.getState().tagFilter;
     const sessionIds = new Set(sessions.map((s: SessionSummary) => s.id));
@@ -291,8 +315,9 @@ export function useDockviewSync(api: DockviewApi | null) {
       }
       if (!wsDeliveredRef.current) return;
 
-      // If all sessions removed, show new session panel
-      if (state.sessions.length === 0 && !useUIStore.getState().showNewSession) {
+      const visibleSessions = state.sessions.filter((s) => !state.archivedSessionIds.includes(s.id));
+      // If all workspace sessions are gone/archived, show new session panel.
+      if (visibleSessions.length === 0 && !useUIStore.getState().showNewSession) {
         useUIStore.getState().setShowNewSession(true);
       }
     });
