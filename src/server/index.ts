@@ -1,6 +1,5 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import compress from '@fastify/compress';
 import websocket from '@fastify/websocket';
 import type { AddressInfo } from 'node:net';
 import type { SessionManager } from '../session/manager.js';
@@ -33,16 +32,11 @@ export async function createServer(
   // CORS must be registered BEFORE auth so that CORS headers appear on 401 responses too
   await app.register(cors, { origin: true, credentials: true });
 
-  // Gzip/Brotli responses. The web bundle is ~1MB uncompressed (JS 994KB +
-  // CSS 78KB); over a remote/relayed tunnel that uncompressed transfer is the
-  // dominant cost of a cold page load. Compression cuts it ~4-5x (JS → ~250KB
-  // gzip / ~200KB brotli). global: true so @fastify/static responses are
-  // compressed too; threshold skips tiny payloads where framing overhead wins.
-  await app.register(compress, {
-    global: true,
-    threshold: 1024,
-    encodings: ['br', 'gzip', 'deflate'],
-  });
+  // Do not use @fastify/compress globally here. On the EL9/Node 22 deployment
+  // path it can return `content-encoding: gzip/br` with an empty body for
+  // dynamic HTML routes such as /login, which makes mobile browsers show a
+  // blank page. If we reintroduce compression, prefer precompressed static
+  // assets or route-scoped compression with an integration test for /login.
 
   // Auth: always enabled. CLI --password overrides; otherwise uses stored password or prompts setup.
   setupAuth(app, options.password);
