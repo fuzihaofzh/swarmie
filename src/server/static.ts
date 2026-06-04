@@ -23,6 +23,22 @@ export async function setupStatic(app: FastifyInstance): Promise<void> {
   await app.register(fastifyStatic, {
     root: webRoot,
     prefix: '/',
+    // Serve build-time .br/.gz siblings (see scripts/precompress.mjs) instead of
+    // compressing at runtime — avoids the empty-body @fastify/compress failure
+    // on EL9/Node 22 while still shrinking the ~900KB bundle ~4x on the wire.
+    preCompressed: true,
+    // Take full control of Cache-Control via setHeaders below; otherwise the
+    // plugin's default (`public, max-age=0`) overrides our immutable headers.
+    cacheControl: false,
+    // Vite emits content-hashed filenames under /assets, so those are safe to
+    // cache forever. index.html (no hash) must stay revalidated.
+    setHeaders: (res, path) => {
+      if (/[.-][0-9a-zA-Z_]{8,}\.\w+(\.(br|gz))?$/.test(path) && !path.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      } else {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
   });
 
   // SPA fallback — serve index.html for non-API, non-WS routes

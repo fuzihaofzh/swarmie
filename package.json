@@ -7,9 +7,10 @@
     "swarmie": "./dist/bin/swarmie.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && chmod +x dist/bin/*.js && vite build",
+    "build": "tsc -p tsconfig.json && chmod +x dist/bin/*.js && vite build && npm run precompress",
     "build:server": "tsc -p tsconfig.json && chmod +x dist/bin/*.js",
-    "build:web": "vite build",
+    "build:web": "vite build && npm run precompress",
+    "precompress": "node scripts/precompress.mjs",
     "dev": "tsc -p tsconfig.json --watch",
     "test": "vitest run",
     "test:watch": "vitest",
