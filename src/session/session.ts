@@ -384,6 +384,22 @@ export class Session extends EventEmitter {
   }
 
   /**
+   * Latest `maxBytes` of raw output, coalesced into one base64 blob, plus the
+   * current end offset. Used to resync a client that fell too far behind: the
+   * server drops the stale backlog and sends a terminal reset + this tail so the
+   * client snaps to the current screen instead of grinding through seconds of
+   * queued output. Dropped intermediate bytes are scrolled-off content; the
+   * reset (RIS) prepended by the caller clears any dangling escape state.
+   */
+  getRawResyncTail(maxBytes: number): { data: string; offsetEnd: number } {
+    const tail = this._rawTailUpTo(maxBytes);
+    const buf = Buffer.concat(
+      tail.map((e) => Buffer.from((e.data as RawOutputData).data, 'base64')),
+    );
+    return { data: buf.toString('base64'), offsetEnd: this._rawBytesEverWritten };
+  }
+
+  /**
    * In-memory buffer sizes for diagnostics (debug endpoint). Lets us see
    * whether a session is hoarding raw output (toward the 16MB cap) which
    * inflates every subscribe/replay and can stall slow tunnels.

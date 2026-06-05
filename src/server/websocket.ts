@@ -447,6 +447,21 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   }
   const rawPending = new Map<string, RawPending>();
 
+  // Per-client output backpressure. On a link slower than the output rate, a
+  // sustained flood makes ws.bufferedAmount grow without bound, so a keystroke's
+  // echo queues behind seconds of stale output — "I can't type". When a client's
+  // send buffer crosses HIGH we stop piling on raw frames for that session;
+  // once it drains below LOW we send one terminal reset + the latest tail so the
+  // client snaps to the current screen. Bytes dropped in between are scrolled-off
+  // content; offsets stay contiguous (resync end → live continues) so the client
+  // needs no gap handling. Terminal sockets subscribe to a single session, so
+  // tracking "behind" per (ws, session) matches the bufferedAmount granularity.
+  const RAW_BEHIND_HIGH = 1024 * 1024; // 1MB queued → client is behind
+  const RAW_BEHIND_LOW = 128 * 1024;   // drained below → safe to resync
+  const RAW_RESYNC_TAIL_BYTES = 256 * 1024;
+  const TERMINAL_RESET = '\x1bc'; // RIS — clears screen + dangling escape state
+  const behindRaw = new WeakMap<WebSocket, Set<string>>();
+
   const flushRawPending = (sessionId: string): void => {
     const pending = rawPending.get(sessionId);
     if (!pending) return;
@@ -463,7 +478,42 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
       },
     });
     for (const [ws, subs] of subscriptions) {
-      if (subs.has(sessionId)) sendRaw(ws, payload);
+      if (!subs.has(sessionId)) continue;
+      const buffered = ws.bufferedAmount ?? 0;
+      let behind = behindRaw.get(ws);
+
+      if (buffered > RAW_BEHIND_HIGH) {
+        // Backlog building — stop adding live frames for this session.
+        if (!behind) { behind = new Set(); behindRaw.set(ws, behind); }
+        behind.add(sessionId);
+        continue;
+      }
+
+      if (behind?.has(sessionId)) {
+        if (buffered > RAW_BEHIND_LOW) continue; // still draining; keep skipping
+        // Drained enough — resync to the live edge with a reset + latest tail.
+        behind.delete(sessionId);
+        const session = manager.getSession(sessionId);
+        if (session) {
+          const tail = session.getRawResyncTail(RAW_RESYNC_TAIL_BYTES);
+          const resync = Buffer.concat([
+            Buffer.from(TERMINAL_RESET),
+            Buffer.from(tail.data, 'base64'),
+          ]).toString('base64');
+          sendRaw(ws, JSON.stringify({
+            type: 'event',
+            event: {
+              type: 'raw:output',
+              sessionId,
+              timestamp: pending.timestamp,
+              data: { data: resync, offsetEnd: tail.offsetEnd },
+            },
+          }));
+        }
+        continue;
+      }
+
+      sendRaw(ws, payload);
     }
   };
 
