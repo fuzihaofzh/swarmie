@@ -8,6 +8,21 @@ export function decodeBase64Chunk(b64Data: string): Uint8Array {
   return binaryStringToBytes(atob(b64Data));
 }
 
+/** Convert raw bytes to an atob()-style Latin-1/binary string (one char per
+ *  byte). The inverse of binaryStringToBytes. Chunked to avoid blowing the
+ *  call-stack arg limit of String.fromCharCode on large frames. */
+export function bytesToBinaryString(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  if (bytes.length <= CHUNK) {
+    return String.fromCharCode.apply(null, bytes as unknown as number[]);
+  }
+  let result = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    result += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[]);
+  }
+  return result;
+}
+
 /** Convert an atob()-style Latin-1/binary string to raw bytes. */
 export function binaryStringToBytes(binary: string): Uint8Array {
   const bytes = new Uint8Array(binary.length);

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { applyHistorySnapshot, getSessionMeta, writeToTerminal } from '../terminalBus';
-import { mergeBase64Chunks } from '../base64';
+import { bytesToBinaryString } from '../base64';
 import { useServerStore, LOCAL_SERVER } from './useServers';
 import { useSessionStore, type NormalizedEvent } from './useSessions';
 
@@ -25,6 +25,9 @@ function wsUrlForServer(serverUrl: string): string {
   return `${serverUrl.replace(/^http/, 'ws')}/ws?terminal=1`;
 }
 
+// Replay batches still arrive as base64-in-JSON (a cold path). Decode each chunk
+// to a latin1 binary string at the boundary so the rest of the pipeline only
+// ever sees binary strings (the live path delivers those directly).
 function writeRawBatch(sessionId: string, events: NormalizedEvent[]): void {
   let group: string[] = [];
   let groupBytes = 0;
@@ -32,7 +35,7 @@ function writeRawBatch(sessionId: string, events: NormalizedEvent[]): void {
 
   const flushGroup = () => {
     if (group.length === 0) return;
-    writeToTerminal(sessionId, mergeBase64Chunks(group), groupOffsetEnd, true);
+    writeToTerminal(sessionId, group.join(''), groupOffsetEnd, true);
     group = [];
     groupBytes = 0;
     groupOffsetEnd = undefined;
@@ -41,8 +44,9 @@ function writeRawBatch(sessionId: string, events: NormalizedEvent[]): void {
   for (const event of events) {
     if (event.type !== 'raw:output') continue;
     const data = event.data as { data: string; offsetEnd?: number };
-    group.push(data.data);
-    groupBytes += Math.ceil((data.data.length * 3) / 4);
+    const bin = atob(data.data);
+    group.push(bin);
+    groupBytes += bin.length;
     if (typeof data.offsetEnd === 'number') groupOffsetEnd = data.offsetEnd;
     if (groupBytes >= REPLAY_GROUP_BYTES) flushGroup();
   }
@@ -102,13 +106,32 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
     subscribedRef.current = false;
   }, [send, sessionId]);
 
+  // Live raw output now arrives as a binary WS frame (see the server's
+  // encodeRawFrame): [type:1][sidLen:1][sid][offsetEnd:f64 LE][raw bytes].
+  // No base64, no JSON — decode the header and hand the raw bytes straight to
+  // the terminal as a latin1 binary string.
+  const handleBinaryFrame = useCallback((buf: ArrayBuffer) => {
+    if (buf.byteLength < 10) return;
+    const view = new DataView(buf);
+    if (view.getUint8(0) !== 0x01) return; // unknown frame type
+    const sidLen = view.getUint8(1);
+    const headerEnd = 2 + sidLen + 8;
+    if (buf.byteLength < headerEnd) return;
+    const sid = new TextDecoder().decode(new Uint8Array(buf, 2, sidLen));
+    if (sid !== sessionId) return;
+    const offsetEnd = view.getFloat64(2 + sidLen, true);
+    const bin = bytesToBinaryString(new Uint8Array(buf, headerEnd));
+    writeToTerminal(sessionId, bin, offsetEnd, false);
+  }, [sessionId]);
+
   const handleMessage = useCallback((msg: WSMessage) => {
     switch (msg.type) {
       case 'event': {
         const event = msg.event as NormalizedEvent;
         if (event?.sessionId !== sessionId || event.type !== 'raw:output') return;
         const data = event.data as { data: string; offsetEnd?: number };
-        writeToTerminal(sessionId, data.data, data.offsetEnd);
+        // Legacy JSON raw path (non-terminal subscribers); decode base64 here.
+        writeToTerminal(sessionId, atob(data.data), data.offsetEnd);
         break;
       }
       case 'event:batch': {
@@ -153,6 +176,7 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
       const ws = protocols
         ? new WebSocket(wsUrlForServer(resolvedServerUrl), protocols)
         : new WebSocket(wsUrlForServer(resolvedServerUrl));
+      ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
       subscribedRef.current = false;
 
@@ -175,8 +199,14 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
 
       ws.onmessage = (ev) => {
         if (disposed || wsRef.current !== ws) return;
+        const data = ev.data;
+        if (typeof data !== 'string') {
+          // Binary raw-output frame (ArrayBuffer) — the hot path.
+          try { handleBinaryFrame(data as ArrayBuffer); } catch { /* ignore */ }
+          return;
+        }
         try {
-          handleMessage(JSON.parse(ev.data) as WSMessage);
+          handleMessage(JSON.parse(data) as WSMessage);
         } catch {
           // ignore malformed messages on this per-terminal stream
         }
@@ -208,7 +238,7 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
         ws.close();
       }
     };
-  }, [clearTimers, handleMessage, serverUrl, sessionId, subscribe, token]);
+  }, [clearTimers, handleMessage, handleBinaryFrame, serverUrl, sessionId, subscribe, token]);
 
   const sendInput = useCallback((data: string) => {
     send({ type: 'input', sessionId, data });

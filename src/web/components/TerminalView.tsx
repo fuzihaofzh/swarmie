@@ -21,11 +21,7 @@ import {
   shouldAutoFocusTerminal,
   shouldRestoreTerminalFocusAfterSearchClose,
 } from '../focusPolicy';
-import {
-  binaryStringToBytes,
-  decodeBase64ChunksToBinary,
-  estimateBase64Bytes,
-} from '../base64';
+import { binaryStringToBytes } from '../base64';
 import { protectStatusLineRedraws, stripDeviceQueries } from '../terminalQueries';
 import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
 
@@ -96,8 +92,11 @@ function readFileBase64(file: File): Promise<string> {
   });
 }
 
+// Chunks here are raw latin1 binary strings (the WS layer already decoded any
+// base64), so concatenation is all that's needed before the width-protection
+// pass and the final bytes handed to xterm.
 function decodeTerminalBytes(chunks: string[], term: Terminal): Uint8Array {
-  const binary = decodeBase64ChunksToBinary(chunks);
+  const binary = chunks.length === 1 ? chunks[0] : chunks.join('');
   return binaryStringToBytes(protectStatusLineRedraws(binary, term.cols, term.rows));
 }
 
@@ -159,7 +158,7 @@ export function TerminalView({
   const [atTop, setAtTop] = useState(false);
   const historyLoadingRef = useRef(false);
   const historyLoadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const capturedDuringLoadRef = useRef<Array<{ b64: string; offsetEnd?: number }>>([]);
+  const capturedDuringLoadRef = useRef<Array<{ bin: string; offsetEnd?: number }>>([]);
   const capturedDuringLoadBytesRef = useRef(0);
   const pendingChunksRef = useRef<string[]>([]);
   // Self-tuning per-frame write budget (see flush callback). Persists across the
@@ -775,7 +774,7 @@ export function TerminalView({
           batchCount < pendingChunks.length &&
           (batchCount === 0 || batchBytes < frameBudget)
         ) {
-          batchBytes += estimateBase64Bytes(pendingChunks[batchCount]);
+          batchBytes += pendingChunks[batchCount].length;
           batchCount++;
         }
         const batch = pendingChunks.splice(0, batchCount);
@@ -847,37 +846,39 @@ export function TerminalView({
       capturedDuringLoadRef.current = [];
       capturedDuringLoadBytesRef.current = 0;
       for (const c of tail) {
-        term.write(decodeTerminalBytes([c.b64], term));
+        term.write(decodeTerminalBytes([c.bin], term));
       }
       historyLoadingRef.current = false;
       setHistoryLoading(false);
     };
 
-    const writer = (b64Data: string, offsetEnd?: number, isReplay?: boolean) => {
+    // `binData` is a raw latin1 binary string (live frames decoded at the WS
+    // boundary; replay/history atob'd there too).
+    const writer = (binData: string, offsetEnd?: number, isReplay?: boolean) => {
       if (disposed) return;
-      let data = b64Data;
+      let data = binData;
       if (isReplay) {
         // Strip device queries from replayed history so xterm doesn't answer
         // stale cursor/DA/color queries into the live PTY (idle-shell garbage).
-        try { data = btoa(stripDeviceQueries(atob(b64Data))); } catch { /* keep original */ }
+        try { data = stripDeviceQueries(binData); } catch { /* keep original */ }
       }
       if (historyLoadingRef.current) {
         // Park new chunks until the snapshot is applied; we'll filter them by
         // offset and replay the ones newer than the snapshot afterwards.
-        capturedDuringLoadRef.current.push({ b64: data, offsetEnd });
-        capturedDuringLoadBytesRef.current += estimateBase64Bytes(data);
+        capturedDuringLoadRef.current.push({ bin: data, offsetEnd });
+        capturedDuringLoadBytesRef.current += data.length;
         while (
           capturedDuringLoadBytesRef.current > MAX_PENDING_WRITE_BYTES &&
           capturedDuringLoadRef.current.length > 1
         ) {
           const dropped = capturedDuringLoadRef.current.shift();
           if (!dropped) break;
-          capturedDuringLoadBytesRef.current -= estimateBase64Bytes(dropped.b64);
+          capturedDuringLoadBytesRef.current -= dropped.bin.length;
         }
         return;
       }
       pendingChunks.push(data);
-      pendingBytes += estimateBase64Bytes(data);
+      pendingBytes += data.length;
       // Drop the oldest queued bytes once the backlog exceeds the cap. A
       // terminal only cares about its tail; keeping a giant backlog just makes
       // each frame's term.write block for seconds. Dropping mid-stream may cut
@@ -886,9 +887,9 @@ export function TerminalView({
       if (pendingBytes > MAX_PENDING_WRITE_BYTES) {
         while (pendingBytes > MAX_PENDING_WRITE_BYTES && pendingChunks.length > 1) {
           const dropped = pendingChunks.shift()!;
-          pendingBytes -= estimateBase64Bytes(dropped);
+          pendingBytes -= dropped.length;
         }
-        try { pendingChunks.unshift(btoa('\x1b[0m')); } catch { /* ignore */ }
+        pendingChunks.unshift('\x1b[0m');
       }
       scheduleFlush();
     };
@@ -930,7 +931,7 @@ export function TerminalView({
         capturedDuringLoadRef.current = [];
         capturedDuringLoadBytesRef.current = 0;
         for (const c of tail) {
-          term.write(decodeTerminalBytes([c.b64], term));
+          term.write(decodeTerminalBytes([c.bin], term));
         }
         historyLoadingRef.current = false;
         setHistoryLoading(false);
@@ -938,10 +939,12 @@ export function TerminalView({
 
       term.reset();
       if (snapshot.chunks.length > 0) {
-        // Strip device queries — this is historical output; answering its
-        // stale cursor/DA/color queries into the live PTY produces garbage.
+        // Snapshot chunks are base64 (JSON history path); decode to binary
+        // strings and strip device queries — this is historical output, so
+        // answering its stale cursor/DA/color queries into the live PTY would
+        // produce garbage.
         const cleaned = snapshot.chunks.map((c) => {
-          try { return btoa(stripDeviceQueries(atob(c))); } catch { return c; }
+          try { return stripDeviceQueries(atob(c)); } catch { return ''; }
         });
         term.write(decodeTerminalBytes(cleaned, term), afterSnapshot);
       } else {

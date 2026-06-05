@@ -466,23 +466,57 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   const TERMINAL_RESET = '\x1bc'; // RIS — clears screen + dangling escape state
   const behindRaw = new WeakMap<WebSocket, Set<string>>();
 
+  // Build a binary raw:output frame for the terminal hot path. The old wire
+  // format was base64-in-JSON: base64 inflates 33% AND compresses worse than
+  // raw bytes (it destroys byte-aligned repeats deflate relies on), and the
+  // client had to JSON.parse + atob a multi-KB string per frame on the main
+  // thread. Binary frames send the PTY bytes verbatim — smaller on the wire,
+  // better deflate ratio, and the client hands them straight to xterm. Layout:
+  //   [0]      = frame type (0x01 raw output; a leading RIS in the payload IS
+  //              the resync, so no separate type is needed)
+  //   [1]      = sessionId byte length (uint8; ids are short UUIDs)
+  //   [2..2+L] = sessionId (utf8)
+  //   [.. +8]  = offsetEnd (float64 LE; byte counts stay exact below 2^53)
+  //   [rest]   = raw PTY bytes
+  const RAW_FRAME_TYPE = 0x01;
+  const encodeRawFrame = (sessionId: string, payload: Buffer, offsetEnd: number): Buffer => {
+    const sid = Buffer.from(sessionId, 'utf8');
+    const header = Buffer.allocUnsafe(2 + sid.length + 8);
+    header[0] = RAW_FRAME_TYPE;
+    header[1] = sid.length;
+    sid.copy(header, 2);
+    header.writeDoubleLE(offsetEnd, 2 + sid.length);
+    return Buffer.concat([header, payload]);
+  };
+
   const flushRawPending = (sessionId: string): void => {
     const pending = rawPending.get(sessionId);
     if (!pending) return;
     clearTimeout(pending.timer);
     rawPending.delete(sessionId);
-    const merged = Buffer.concat(pending.buffers).toString('base64');
-    const payload = JSON.stringify({
-      type: 'event',
-      event: {
-        type: 'raw:output',
-        sessionId,
-        timestamp: pending.timestamp,
-        data: { data: merged, offsetEnd: pending.offsetEnd },
-      },
-    });
+    const mergedBuf = Buffer.concat(pending.buffers);
+    // Binary frame for terminal sockets (the only raw subscribers in practice).
+    const binFrame = encodeRawFrame(sessionId, mergedBuf, pending.offsetEnd);
+    // JSON fallback, built lazily, only if a non-terminal client is subscribed
+    // to this session's raw stream (keeps the legacy path correct).
+    let jsonPayload: string | null = null;
+    const jsonPayloadFor = (): string => {
+      if (jsonPayload === null) {
+        jsonPayload = JSON.stringify({
+          type: 'event',
+          event: {
+            type: 'raw:output',
+            sessionId,
+            timestamp: pending.timestamp,
+            data: { data: mergedBuf.toString('base64'), offsetEnd: pending.offsetEnd },
+          },
+        });
+      }
+      return jsonPayload;
+    };
     for (const [ws, subs] of subscriptions) {
       if (!subs.has(sessionId)) continue;
+      const isTerminal = terminalSockets.has(ws);
       const buffered = ws.bufferedAmount ?? 0;
       let behind = behindRaw.get(ws);
 
@@ -500,24 +534,28 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
         const session = manager.getSession(sessionId);
         if (session) {
           const tail = session.getRawResyncTail(RAW_RESYNC_TAIL_BYTES);
-          const resync = Buffer.concat([
+          const resyncBuf = Buffer.concat([
             Buffer.from(TERMINAL_RESET),
             Buffer.from(tail.data, 'base64'),
-          ]).toString('base64');
-          sendRaw(ws, JSON.stringify({
-            type: 'event',
-            event: {
-              type: 'raw:output',
-              sessionId,
-              timestamp: pending.timestamp,
-              data: { data: resync, offsetEnd: tail.offsetEnd },
-            },
-          }));
+          ]);
+          if (isTerminal) {
+            sendRaw(ws, encodeRawFrame(sessionId, resyncBuf, tail.offsetEnd));
+          } else {
+            sendRaw(ws, JSON.stringify({
+              type: 'event',
+              event: {
+                type: 'raw:output',
+                sessionId,
+                timestamp: pending.timestamp,
+                data: { data: resyncBuf.toString('base64'), offsetEnd: tail.offsetEnd },
+              },
+            }));
+          }
         }
         continue;
       }
 
-      sendRaw(ws, payload);
+      sendRaw(ws, isTerminal ? binFrame : jsonPayloadFor());
     }
   };
 
@@ -828,7 +866,7 @@ function sessionSettingsPayload(session: NonNullable<ReturnType<SessionManager['
 // callers chain large replays serially instead of blasting them at once.
 const WS_BUFFERED_WARN_BYTES = 4 * 1024 * 1024;
 const REPLAY_BATCH_RAW_BYTES = 256 * 1024;
-const replayDeferredPayloads = new WeakMap<WebSocket, string[]>();
+const replayDeferredPayloads = new WeakMap<WebSocket, Array<string | Buffer>>();
 
 function warnIfBackpressured(ws: WebSocket): void {
   if (ws.bufferedAmount > WS_BUFFERED_WARN_BYTES) {
@@ -842,9 +880,10 @@ function warnIfBackpressured(ws: WebSocket): void {
   }
 }
 
-/** Send an already-serialized payload — lets callers stringify once and fan
- *  the same string out to many sockets instead of re-encoding per client. */
-function sendRaw(ws: WebSocket, payload: string): void {
+/** Send an already-serialized payload — lets callers stringify (or pre-encode a
+ *  binary frame) once and fan the same payload out to many sockets instead of
+ *  re-encoding per client. A Buffer is sent as a binary frame, a string as text. */
+function sendRaw(ws: WebSocket, payload: string | Buffer): void {
   if (ws.readyState !== 1) return; // not OPEN
   const deferred = replayDeferredPayloads.get(ws);
   if (deferred) {

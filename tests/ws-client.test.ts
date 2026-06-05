@@ -444,6 +444,56 @@ describe('WebSocket observability', () => {
     });
   });
 
+  it('streams live raw output to terminal sockets as binary frames', async () => {
+    const sessionId = `raw-binary-${Date.now()}`;
+    const adapter = new RemoteAdapter(
+      { sessionId, toolArgs: [], cwd: '/tmp' },
+      { name: 'codex', displayName: 'Codex', icon: 'C', command: 'codex', supportsStructured: true },
+    );
+    manager.addSession(sessionId, 'Raw Binary Session', adapter, { cwd: '/tmp', hostname: 'test-host' });
+
+    const ws = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
+    const payloadText = `live-binary:${'z'.repeat(5000)}\n`;
+
+    const framePromise = new Promise<Buffer>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Binary frame timeout')), 3000);
+      ws.on('message', (raw: WebSocket.RawData, isBinary: boolean) => {
+        // Only the live raw:output hot path is binary; ignore any JSON control
+        // frames (replay batches, etc.) that may arrive first.
+        if (!isBinary) return;
+        clearTimeout(timer);
+        resolve(raw as Buffer);
+      });
+    });
+
+    await waitForSocketOpen(ws);
+    ws.send(JSON.stringify({ type: 'subscribe', sessionId }));
+    // Push live output AFTER subscribing so it flows through the live path
+    // (binary), not the subscribe replay (JSON event:batch).
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    adapter.pushEvent({
+      type: 'raw:output',
+      sessionId,
+      timestamp: Date.now(),
+      data: { data: Buffer.from(payloadText).toString('base64') },
+    });
+
+    const frame = await framePromise;
+    // Header: [type:1][sidLen:1][sid][offsetEnd:f64 LE][raw bytes]
+    expect(frame[0]).toBe(0x01);
+    const sidLen = frame[1];
+    expect(frame.subarray(2, 2 + sidLen).toString('utf8')).toBe(sessionId);
+    const offsetEnd = frame.readDoubleLE(2 + sidLen);
+    expect(offsetEnd).toBe(Buffer.byteLength(payloadText));
+    const rawBytes = frame.subarray(2 + sidLen + 8);
+    expect(rawBytes.toString('utf8')).toBe(payloadText);
+
+    ws.close();
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve());
+    });
+  });
+
   it('does not send dashboard session lists to per-terminal sockets', async () => {
     const ws = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
     const messages: Array<{ type?: string }> = [];
