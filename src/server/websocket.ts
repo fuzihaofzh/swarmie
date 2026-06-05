@@ -719,6 +719,21 @@ async function handleClipboardImage(
     return;
   }
 
+  // Local sessions share the OS clipboard with the browser: the image the user
+  // just pasted is already on the system clipboard. No need to decode, save, or
+  // re-set anything remotely — just forward the paste keystroke so the CLI tool
+  // reads the same clipboard directly (an actual image, not a path).
+  if (session.isLocal) {
+    send(socket, {
+      type: 'clipboard:image:result',
+      sessionId,
+      ok: true,
+      mode: 'remote-clipboard',
+    });
+    session.write('\x16');
+    return;
+  }
+
   const result = await syncClipboardImageToRemote(sessionId, mimeType, data);
   send(socket, {
     type: 'clipboard:image:result',

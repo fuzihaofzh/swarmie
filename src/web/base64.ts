@@ -5,12 +5,22 @@
 
 /** Decode one base64 chunk to its raw bytes. */
 export function decodeBase64Chunk(b64Data: string): Uint8Array {
-  const binary = atob(b64Data);
+  return binaryStringToBytes(atob(b64Data));
+}
+
+/** Convert an atob()-style Latin-1/binary string to raw bytes. */
+export function binaryStringToBytes(binary: string): Uint8Array {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+}
+
+/** Decode and concatenate multiple base64 chunks into one Latin-1/binary string. */
+export function decodeBase64ChunksToBinary(chunks: string[]): string {
+  if (chunks.length === 1) return atob(chunks[0]);
+  return chunks.map((chunk) => atob(chunk)).join('');
 }
 
 /** Decode and concatenate multiple base64 chunks into a single byte buffer. */

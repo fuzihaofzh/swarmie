@@ -16,6 +16,15 @@ const MAX_RAW_BYTES = 16 * 1024 * 1024; // 16MB
 // remote tunnel the transfer of this blob dominates open latency. Older
 // history is fetched on demand via history:load.
 const INITIAL_RAW_REPLAY_BYTES = 128 * 1024; // 128KB
+// Target size for the coalesced chunks getRawHistorySnapshot() returns. A busy
+// session accumulates 100k+ tiny raw events (a redrawing statusline emits
+// dozens/sec); shipping them one-per-array element makes the history:snapshot
+// JSON enormous AND forces the browser to run atob/btoa/regex 100k times on the
+// main thread — the multi-second freeze when scrolling back a large remote
+// session. Merging contiguous bytes into ~512KB chunks collapses that work from
+// O(100k) to O(tens) without changing what the client renders (it concatenates
+// the chunks regardless of how they're split).
+const SNAPSHOT_CHUNK_BYTES = 512 * 1024; // 512KB
 const DEFAULT_AUTO_COMPACT_MINUTES = 60;
 // Auto-approve presses Enter to accept the default ("Yes") option. We poll
 // the headless screen (the source of truth for "is a prompt visible right
@@ -59,6 +68,35 @@ export interface SessionSettingsPatch {
   repeatIntervalSeconds?: number;
   repeatClear?: boolean;
   tags?: string[];
+}
+
+/**
+ * Merge contiguous base64 raw chunks into fewer, larger base64 chunks of about
+ * `targetBytes` decoded each. The concatenation of the output equals the
+ * concatenation of the input, so this is transparent to any consumer that just
+ * decodes-and-joins (the web terminal does). Used to keep a history snapshot of
+ * a fragmented session (100k+ tiny events) from exploding the JSON payload and
+ * the browser's per-chunk decode work.
+ */
+function coalesceBase64Chunks(chunks: string[], targetBytes: number): string[] {
+  if (chunks.length <= 1) return chunks;
+  const out: string[] = [];
+  let bucket: Buffer[] = [];
+  let bucketBytes = 0;
+  const flush = (): void => {
+    if (bucket.length === 0) return;
+    out.push(Buffer.concat(bucket).toString('base64'));
+    bucket = [];
+    bucketBytes = 0;
+  };
+  for (const b64 of chunks) {
+    const buf = Buffer.from(b64, 'base64');
+    bucket.push(buf);
+    bucketBytes += buf.length;
+    if (bucketBytes >= targetBytes) flush();
+  }
+  flush();
+  return out;
 }
 
 function normalizeRepeatCommand(command: string): string {
@@ -323,7 +361,7 @@ export class Session extends EventEmitter {
     const earliest = this._rawBytesEverWritten - this.rawBytes;
     const requested = Math.max(0, Math.floor(fromOffset));
     const startTarget = Math.max(earliest, requested);
-    const chunks: string[] = [];
+    const matched: string[] = [];
     let startOffset = this._rawBytesEverWritten;
     for (const evt of this.rawEvents) {
       const data = evt.data as RawOutputData;
@@ -331,13 +369,16 @@ export class Session extends EventEmitter {
       const size = Math.ceil(data.data.length * 3 / 4);
       const chunkStart = offsetEnd - size;
       if (offsetEnd <= startTarget) continue;
-      if (chunks.length === 0) startOffset = Math.max(chunkStart, startTarget);
-      chunks.push(data.data);
+      if (matched.length === 0) startOffset = Math.max(chunkStart, startTarget);
+      matched.push(data.data);
     }
     return {
       startOffset,
       endOffset: this._rawBytesEverWritten,
-      chunks,
+      // Coalesce the (often 100k+) tiny chunks into a handful of large ones.
+      // Purely a transport/processing optimization — the client concatenates
+      // them, so the rendered bytes are identical.
+      chunks: coalesceBase64Chunks(matched, SNAPSHOT_CHUNK_BYTES),
       reachedEarliest: startOffset <= earliest,
     };
   }

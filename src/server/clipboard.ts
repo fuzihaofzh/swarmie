@@ -20,6 +20,10 @@ export interface ClipboardImageResult {
   error?: string;
 }
 
+interface ClipboardImageSyncOptions {
+  setRemoteImageClipboard?: (mimeType: string, buffer: Buffer) => Promise<boolean>;
+}
+
 function safePathPart(value: string): string {
   const normalized = value.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
   return normalized || 'clipboard';
@@ -109,6 +113,7 @@ export async function syncClipboardImageToRemote(
   sessionId: string,
   mimeType: string,
   dataBase64: string,
+  options: ClipboardImageSyncOptions = {},
 ): Promise<ClipboardImageResult> {
   const buffer = decodeImage(dataBase64, mimeType);
   if (!buffer) {
@@ -119,11 +124,12 @@ export async function syncClipboardImageToRemote(
     };
   }
 
-  const path = saveClipboardImage(sessionId, mimeType, buffer);
-  if (await setRemoteImageClipboard(mimeType, buffer)) {
-    return { ok: true, mode: 'remote-clipboard', path };
+  const setClipboard = options.setRemoteImageClipboard ?? setRemoteImageClipboard;
+  if (await setClipboard(mimeType, buffer)) {
+    return { ok: true, mode: 'remote-clipboard' };
   }
 
+  const path = saveClipboardImage(sessionId, mimeType, buffer);
   return {
     ok: true,
     mode: 'path',

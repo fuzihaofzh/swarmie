@@ -12,6 +12,8 @@ const execFileAsync = promisify(execFile);
 const COMMAND_IDLE_TIMEOUT_MS = 30_000;
 const ACTIVITY_CHECK_INTERVAL_MS = 2_000;
 const USER_INPUT_ACTIVE_MS = 3_000;
+const SCREEN_MOVEMENT_REPEAT_WINDOW_MS = 10_000;
+const SCREEN_MOVEMENT_BUSY_TTL_MS = 5_000;
 
 // Patterns that indicate a tool is waiting for user input. Matched against
 // the rendered screen text from the headless terminal — not against the raw
@@ -40,6 +42,7 @@ const BUSY_SCREEN_PATTERNS = [
   /\b(?:Working|Thinking)\b.{0,80}\b(?:esc to interrupt|esc to cancel|context left|tokens?)\b/i,
   /\b(?:Claude|Codex|Gemini)\b.{0,80}\b(?:streaming response|working|thinking)\b/i,
   /\b(?:streaming response|tool executing|running tool|running command)\b/i,
+  /\b(?:Baking|Brewing|Cogitating|Cooking|Crafting|Germinating|Mulling|Processing|Sautéing|Sauteing)\b(?:…|\.{3})?/i,
 ];
 
 // Agent idle/input prompt text. This is distinct from approval prompts above:
@@ -147,9 +150,12 @@ export abstract class BaseAdapter extends EventEmitter {
   protected _startTime: number = Date.now();
   private _activityCheckInterval: ReturnType<typeof setInterval> | null = null;
   private _userInputTimer: ReturnType<typeof setTimeout> | null = null;
+  private _screenMovementTimer: ReturnType<typeof setTimeout> | null = null;
   private _userInputActive = false;
   private _commandExecuting = false;
   private _lastActivity = Date.now();
+  private _lastScreenFrame = '';
+  private _lastScreenChangeAt = 0;
   private _cwdTimer: ReturnType<typeof setInterval> | null = null;
   /** Headless terminal that mirrors the rendered screen. */
   private _screen: HeadlessScreen;
@@ -218,6 +224,11 @@ export abstract class BaseAdapter extends EventEmitter {
     return matchesBusyScreen(screenText);
   }
 
+  /** Whether repeated visible screen changes should count as agent activity. */
+  protected shouldTreatScreenMovementAsBusy(_screenText: string): boolean {
+    return WAITING_PROMPT_TOOL_NAMES.has(this.info.name);
+  }
+
   /** Start the underlying tool process */
   abstract start(): void;
 
@@ -245,6 +256,8 @@ export abstract class BaseAdapter extends EventEmitter {
     this.cols = cols;
     this.rows = rows;
     this._screen.resize(cols, rows);
+    this._lastScreenFrame = normalizeScreenForMovement(this._screen.getViewportText());
+    this._lastScreenChangeAt = 0;
     this.applyResize(cols, rows);
   }
 
@@ -268,6 +281,7 @@ export abstract class BaseAdapter extends EventEmitter {
     if (isInactiveStatus(newStatus)) {
       this.stopCommandTracking();
       this.stopUserInputTracking();
+      this.stopScreenMovementTimer();
     }
     this.emitEvent('status:change', { from, to: newStatus });
   }
@@ -314,6 +328,7 @@ export abstract class BaseAdapter extends EventEmitter {
     if (this._status === 'completed' || this._status === 'error') return;
 
     const screen = this._screen.getRecentText(20);
+    const screenMoved = this.noteMeaningfulScreenMovement();
     const promptVisible = this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(screen);
     const busyVisible = this.shouldTreatScreenAsBusy(screen);
 
@@ -329,6 +344,12 @@ export abstract class BaseAdapter extends EventEmitter {
       if (this._status !== 'running' && this._status !== 'thinking' && this._status !== 'tool_executing') {
         this.setStatus('running');
       }
+      return;
+    }
+
+    if (screenMoved && this.shouldTreatScreenMovementAsBusy(screen)) {
+      this._lastActivity = Date.now();
+      this.markScreenMovementBusy();
       return;
     }
 
@@ -474,6 +495,7 @@ export abstract class BaseAdapter extends EventEmitter {
   protected clearIdleTimer(): void {
     this.stopCommandTracking();
     this.stopUserInputTracking();
+    this.stopScreenMovementTimer();
     this.stopCwdPolling();
   }
 
@@ -537,11 +559,51 @@ export abstract class BaseAdapter extends EventEmitter {
     }
   }
 
+  private markScreenMovementBusy(): void {
+    if (this._status !== 'running' && this._status !== 'thinking' && this._status !== 'tool_executing') {
+      this.setStatus('running');
+    }
+    this.stopScreenMovementTimer();
+    this._screenMovementTimer = setTimeout(() => {
+      this._screenMovementTimer = null;
+      if (this._commandExecuting || this._userInputActive) return;
+      if (this._status !== 'running' && this._status !== 'thinking' && this._status !== 'tool_executing') return;
+      const screen = this._screen.getRecentText(20);
+      if (this.shouldSettleVisibleOutputToIdle(screen)) {
+        this.setStatus('idle');
+      }
+    }, SCREEN_MOVEMENT_BUSY_TTL_MS);
+    (this._screenMovementTimer as { unref?: () => void }).unref?.();
+  }
+
+  private stopScreenMovementTimer(): void {
+    if (this._screenMovementTimer) {
+      clearTimeout(this._screenMovementTimer);
+      this._screenMovementTimer = null;
+    }
+  }
+
   private stopCommandActivityInterval(): void {
     if (this._activityCheckInterval) {
       clearInterval(this._activityCheckInterval);
       this._activityCheckInterval = null;
     }
+  }
+
+  private noteMeaningfulScreenMovement(): boolean {
+    const now = Date.now();
+    const frame = normalizeScreenForMovement(this._screen.getViewportText());
+    if (frame === this._lastScreenFrame) return false;
+
+    const hadPreviousFrame = hasVisibleText(this._lastScreenFrame);
+    const repeated =
+      hadPreviousFrame &&
+      this._lastScreenChangeAt > 0 &&
+      now - this._lastScreenChangeAt <= SCREEN_MOVEMENT_REPEAT_WINDOW_MS;
+
+    this._lastScreenFrame = frame;
+    this._lastScreenChangeAt = hasVisibleText(frame) ? now : 0;
+    return repeated && hasVisibleText(frame);
   }
 }
 
@@ -569,4 +631,11 @@ export function matchesAgentIdleScreen(screenText: string): boolean {
 
 function hasVisibleText(screenText: string): boolean {
   return screenText.replace(/\s+/g, '').length > 0;
+}
+
+function normalizeScreenForMovement(screenText: string): string {
+  return screenText
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n');
 }

@@ -65,6 +65,18 @@ class DirectCommandActivityDetectionAdapter extends ActivityDetectionAdapter {
   }
 }
 
+class AgentMovementDetectionAdapter extends ActivityDetectionAdapter {
+  get info(): AdapterInfo {
+    return {
+      name: 'claude',
+      displayName: 'Claude Code',
+      icon: '',
+      command: 'claude',
+      supportsStructured: false,
+    };
+  }
+}
+
 function createAdapter(): ActivityDetectionAdapter {
   const adapter = new ActivityDetectionAdapter({ sessionId: 'detect-test', toolArgs: [] });
   adapter.start();
@@ -79,6 +91,12 @@ function createShellAdapter(): ShellActivityDetectionAdapter {
 
 function createDirectCommandAdapter(): DirectCommandActivityDetectionAdapter {
   const adapter = new DirectCommandActivityDetectionAdapter({ sessionId: 'direct-command-test', toolArgs: [] });
+  adapter.start();
+  return adapter;
+}
+
+function createAgentMovementAdapter(): AgentMovementDetectionAdapter {
+  const adapter = new AgentMovementDetectionAdapter({ sessionId: 'movement-agent-test', toolArgs: [] });
   adapter.start();
   return adapter;
 }
@@ -190,6 +208,54 @@ describe('activity detection', () => {
     adapter.feed('◦ Working (20m 05s • esc to interrupt)');
 
     expect(adapter.status).toBe('running');
+  });
+
+  it('marks Claude in-progress verb status lines as running even with an idle prompt visible', () => {
+    const adapter = createAdapter();
+
+    adapter.feed('──────────────────────────────\n❯ 写进 instruction.md\n? for shortcuts');
+    expect(adapter.status).toBe('idle');
+
+    adapter.feed('\x1b[1;1HGerminating…\n──────────────────────────────\n❯ 写进 instruction.md\n? for shortcuts');
+
+    expect(adapter.status).toBe('running');
+  });
+
+  it('marks repeated visible agent screen movement as running without knowing the status word', () => {
+    const adapter = createAgentMovementAdapter();
+
+    adapter.feed('──────────────────────────────\n❯ 写进 instruction.md\n? for shortcuts');
+    expect(adapter.status).toBe('idle');
+
+    adapter.feed('\x1b[1;1HShimmering…\n──────────────────────────────\n❯ 写进 instruction.md\n? for shortcuts');
+
+    expect(adapter.status).toBe('running');
+  });
+
+  it('settles movement-based running back to idle after the screen stops moving', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T00:00:00Z'));
+    try {
+      const adapter = createAgentMovementAdapter();
+
+      adapter.feed('──────────────────────────────\n❯ 写进 instruction.md\n? for shortcuts');
+      adapter.feed('\x1b[1;1HShimmering…\n──────────────────────────────\n❯ 写进 instruction.md\n? for shortcuts');
+      expect(adapter.status).toBe('running');
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(adapter.status).toBe('idle');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not treat completed Claude timing summaries as busy', () => {
+    const adapter = createAdapter();
+
+    adapter.feed('✻ Baked for 5m 2s\n──────────────────────────────\n❯ \n? for shortcuts');
+
+    expect(adapter.status).toBe('idle');
   });
 
   it('does not mark idle sessions running for passive focus input', () => {

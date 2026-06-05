@@ -41,8 +41,22 @@ export async function createServer(
   // Auth: always enabled. CLI --password overrides; otherwise uses stored password or prompts setup.
   setupAuth(app, options.password);
 
-  // WebSocket support
-  await app.register(websocket);
+  // WebSocket support. Enable per-message deflate: terminal output is highly
+  // compressible text (typically 5-10x), so compressing /ws frames is the
+  // biggest lever for lag over a real network on long-running sessions. This is
+  // the `ws` library's own per-message compression — it only touches WS frames,
+  // NOT the HTTP/static/login responses that @fastify/compress broke on EL9
+  // above, so it does not reintroduce that blank-page risk. Bounded memLevel +
+  // concurrencyLimit keep ws's known perMessageDeflate memory growth in check.
+  await app.register(websocket, {
+    options: {
+      perMessageDeflate: {
+        threshold: 1024, // skip tiny frames — compression overhead isn't worth it
+        concurrencyLimit: 10,
+        zlibDeflateOptions: { level: 6, memLevel: 7 },
+      },
+    },
+  });
 
   // REST API routes
   setupRoutes(app, manager);

@@ -11,13 +11,22 @@ export interface TerminalPanelParams {
 
 export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<TerminalPanelParams>) {
   const sessionId = params.sessionId;
-  const [active, setActive] = useState(api.isActive);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const [dockActive, setDockActive] = useState(api.isActive);
+  // Zustand is the cross-component source of truth; fall back to dockview
+  // only before the initial session selection has been established.
+  const active = activeSessionId ? activeSessionId === sessionId : dockActive;
   const { sendInput, sendResize, sendRedraw, sendLoadHistory, sendClipboardImage } = useTerminalWebSocket(sessionId, active);
 
   // Track active state from dockview
   useEffect(() => {
+    setDockActive(api.isActive);
+    if (api.isActive) {
+      useSessionStore.getState().setActiveSession(sessionId);
+      useUIStore.getState().setShowNewSession(false);
+    }
     const disposable = api.onDidActiveChange((e) => {
-      setActive(e.isActive);
+      setDockActive(e.isActive);
       if (e.isActive) {
         // Update Zustand when dockview activates this panel
         useSessionStore.getState().setActiveSession(sessionId);
@@ -26,6 +35,12 @@ export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<Termi
     });
     return () => disposable.dispose();
   }, [api, sessionId]);
+
+  useEffect(() => {
+    if (activeSessionId === sessionId && !api.isActive) {
+      api.setActive();
+    }
+  }, [activeSessionId, api, sessionId]);
 
   return (
     <TerminalView

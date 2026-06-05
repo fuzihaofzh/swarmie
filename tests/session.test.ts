@@ -84,6 +84,40 @@ describe('Session', () => {
     expect(replayText).toBe('twothree');
   });
 
+  it('coalesces a fragmented raw history snapshot into fewer chunks without losing bytes', () => {
+    const adapter = createMockAdapter('sess-snapshot');
+    const session = new Session('sess-snapshot', 'test', adapter);
+
+    // Simulate a busy session: many tiny raw events (a redrawing statusline).
+    const total = 5000;
+    let expected = '';
+    for (let i = 0; i < total; i++) {
+      const text = `chunk-${i};`;
+      expected += text;
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-snapshot',
+        timestamp: Date.now() + i,
+        data: { data: Buffer.from(text).toString('base64') },
+      });
+    }
+
+    const snapshot = session.getRawHistorySnapshot(0);
+
+    // Far fewer chunks than events — they were merged into large buckets.
+    expect(snapshot.chunks.length).toBeLessThan(total);
+    expect(snapshot.chunks.length).toBeGreaterThan(0);
+    expect(snapshot.reachedEarliest).toBe(true);
+    expect(snapshot.startOffset).toBe(0);
+    expect(snapshot.endOffset).toBeGreaterThan(0);
+
+    // The concatenation of the coalesced chunks must equal the original bytes.
+    const joined = snapshot.chunks
+      .map((c) => Buffer.from(c, 'base64').toString('utf-8'))
+      .join('');
+    expect(joined).toBe(expected);
+  });
+
   it('tracks metadata accumulation', () => {
     const adapter = createMockAdapter('sess-3');
     const session = new Session('sess-3', 'test', adapter);

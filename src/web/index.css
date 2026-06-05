@@ -726,13 +726,16 @@ body,
 
 /* Keep ALL terminal panels mounted and sized — override dockview's
    display:none with visibility:hidden so terminals never lose their
-   dimensions. Tab switching is instant with no reflow/fit. */
+   dimensions. Terminal overlays become interactive only when React marks the
+   contained xterm as active; relying on dockview's inline display string is
+   brittle when layout restore or remote connections race tab activation. */
 .dv-render-overlay {
   display: block !important;
   visibility: hidden;
   pointer-events: none;
 }
-.dv-render-overlay:not([style*="display: none"]) {
+.dv-render-overlay:has(.terminal-view-active),
+.dv-render-overlay:not(:has(.terminal-view)):not([style*="display: none"]) {
   visibility: visible;
   pointer-events: auto;
 }

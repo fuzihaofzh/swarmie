@@ -2,6 +2,8 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
+import { WebglAddon } from '@xterm/addon-webgl';
+import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 import { useUIStore } from '../hooks/useUI';
 import { themes } from '../themes';
@@ -19,8 +21,12 @@ import {
   shouldAutoFocusTerminal,
   shouldRestoreTerminalFocusAfterSearchClose,
 } from '../focusPolicy';
-import { decodeBase64Chunks, estimateBase64Bytes } from '../base64';
-import { stripDeviceQueries } from '../terminalQueries';
+import {
+  binaryStringToBytes,
+  decodeBase64ChunksToBinary,
+  estimateBase64Bytes,
+} from '../base64';
+import { protectStatusLineRedraws, stripDeviceQueries } from '../terminalQueries';
 import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
 
 interface TerminalViewProps {
@@ -33,7 +39,14 @@ interface TerminalViewProps {
   onClipboardImagePaste?: (image: ClipboardImagePaste) => boolean | void;
 }
 
+// Per-frame term.write budget. Starts here and self-tunes between MIN and MAX
+// based on the measured write duration (see the flush callback): term.write is
+// atomic, so if a single write blocks the main thread past a frame it starves
+// keyboard input — under heavy output the symptom is "typing does nothing". We
+// shrink the batch when writes run long (slow Canvas/DOM fallback) so each frame
+// yields to input, and grow it when writes are cheap (WebGL) to keep throughput.
 const MAX_TERMINAL_WRITE_BYTES_PER_FRAME = 32 * 1024;
+const MIN_TERMINAL_WRITE_BYTES_PER_FRAME = 4 * 1024;
 // Hard cap on the unwritten write queue. When a tab is backgrounded the flush
 // rAF pauses while the WS keeps pushing, so pendingChunks can balloon to
 // hundreds of MB; on return each term.write blocks the main thread for seconds
@@ -47,7 +60,11 @@ const MAX_PENDING_WRITE_BYTES = 2 * 1024 * 1024;
 const TERMINAL_SCROLLBACK_LINES = 10000;
 /** How many bytes earlier to fetch each time the user asks for more history. */
 const HISTORY_CHUNK_BYTES = 2 * 1024 * 1024;
-const HISTORY_LOAD_TIMEOUT_MS = 10_000;
+// Give a slow remote tunnel room to deliver a multi-MB snapshot before we give
+// up. When it does fire we no longer discard the live output captured during
+// the load — we flush it to the terminal — so a timeout can't lose the latest
+// history or strand the viewport mid-buffer.
+const HISTORY_LOAD_TIMEOUT_MS = 30_000;
 /** Auto-trigger only fires if the user wheel/touch-swiped up within this window. */
 const AUTO_LOAD_RECENT_WINDOW_MS = 600;
 const MAX_CLIPBOARD_IMAGE_BYTES = 16 * 1024 * 1024;
@@ -79,6 +96,11 @@ function readFileBase64(file: File): Promise<string> {
   });
 }
 
+function decodeTerminalBytes(chunks: string[], term: Terminal): Uint8Array {
+  const binary = decodeBase64ChunksToBinary(chunks);
+  return binaryStringToBytes(protectStatusLineRedraws(binary, term.cols, term.rows));
+}
+
 // Dev inspector for client-side freezes: run `__swarmieTerm()` in the browser
 // console to dump each mounted terminal's xterm buffer size. The server debug
 // endpoint can't see browser state, so this is how we check whether a giant
@@ -108,6 +130,8 @@ export function TerminalView({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
+  // GPU/canvas renderer addon for the ACTIVE terminal only (see effect below).
+  const rendererRef = useRef<{ dispose(): void } | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const initStartedRef = useRef(false);
@@ -138,10 +162,18 @@ export function TerminalView({
   const capturedDuringLoadRef = useRef<Array<{ b64: string; offsetEnd?: number }>>([]);
   const capturedDuringLoadBytesRef = useRef(0);
   const pendingChunksRef = useRef<string[]>([]);
+  // Self-tuning per-frame write budget (see flush callback). Persists across the
+  // writer effect's re-runs so the tuned value survives tab switches.
+  const frameBudgetRef = useRef(MAX_TERMINAL_WRITE_BYTES_PER_FRAME);
   const scheduleFlushRef = useRef<(() => void) | null>(null);
   const cancelScheduledFlushRef = useRef<(() => void) | null>(null);
   const scrolledUpAtRef = useRef(0);
   const handleLoadEarlierRef = useRef<(() => void) | null>(null);
+  // Writes the live output parked during a history load straight to the
+  // terminal and ends the loading state without a reset/anchor. Set inside the
+  // writer effect (which owns `term`); called by the load timeout so a snapshot
+  // that never arrives can't drop the captured tail.
+  const flushCapturedDuringLoadRef = useRef<(() => void) | null>(null);
 
   // Refs for latest values (used in callback ref closure)
   const themeRef = useRef(currentTheme);
@@ -377,6 +409,7 @@ export function TerminalView({
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current = null;
+      rendererRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -406,6 +439,45 @@ export function TerminalView({
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, termReady]);
+
+  // Attach a GPU renderer (WebGL) to the ACTIVE terminal only. xterm's default
+  // DOM renderer rebuilds DOM nodes on every write, which is the main cause of
+  // freezes on large output. Browsers cap simultaneous WebGL contexts (~16) and
+  // every session keeps its terminal mounted, so giving each one a permanent
+  // context would thrash; instead we attach on activate and dispose on
+  // deactivate, keeping at most one live WebGL context while the visible
+  // terminal gets accelerated rendering. WebGL unavailable or context-lost →
+  // fall back to the 2D canvas renderer (still far faster than DOM).
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+
+    const attachCanvas = () => {
+      try {
+        const canvas = new CanvasAddon();
+        term.loadAddon(canvas);
+        rendererRef.current = canvas;
+      } catch { /* fall back to DOM renderer */ }
+    };
+
+    if (isActive && !rendererRef.current) {
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          rendererRef.current = null;
+          attachCanvas();
+        });
+        term.loadAddon(webgl);
+        rendererRef.current = webgl;
+      } catch {
+        attachCanvas();
+      }
+    } else if (!isActive && rendererRef.current) {
+      rendererRef.current.dispose();
+      rendererRef.current = null;
+    }
   }, [isActive, termReady]);
 
   // Update terminal when theme/font changes
@@ -482,9 +554,17 @@ export function TerminalView({
       return;
     }
     historyLoadTimeoutRef.current = setTimeout(() => {
-      clearHistoryLoading();
+      clearHistoryLoadTimeout();
+      // Snapshot never arrived. Don't discard what streamed in during the wait —
+      // flush it to the terminal so the latest history survives. Fall back to a
+      // plain clear if the writer effect isn't mounted (shouldn't happen).
+      if (flushCapturedDuringLoadRef.current) {
+        flushCapturedDuringLoadRef.current();
+      } else {
+        clearHistoryLoading();
+      }
     }, HISTORY_LOAD_TIMEOUT_MS);
-  }, [clearHistoryLoading, sessionMeta, onLoadHistory]);
+  }, [clearHistoryLoading, clearHistoryLoadTimeout, sessionMeta, onLoadHistory]);
 
   // Keep the latest handler reachable from imperative paths (onScroll, wheel)
   // without re-binding listeners every render.
@@ -690,9 +770,10 @@ export function TerminalView({
         // backlog. One splice is O(n).
         let batchBytes = 0;
         let batchCount = 0;
+        const frameBudget = frameBudgetRef.current;
         while (
           batchCount < pendingChunks.length &&
-          (batchCount === 0 || batchBytes < MAX_TERMINAL_WRITE_BYTES_PER_FRAME)
+          (batchCount === 0 || batchBytes < frameBudget)
         ) {
           batchBytes += estimateBase64Bytes(pendingChunks[batchCount]);
           batchCount++;
@@ -709,12 +790,26 @@ export function TerminalView({
         writeInFlight = true;
         const writeStart = performance.now();
         const writeBytes = batchBytes;
-        term.write(decodeBase64Chunks(batch), () => {
+        term.write(decodeTerminalBytes(batch, term), () => {
           if (disposed) return;
           // Client-side jank visibility: a slow term.write is the main suspect
           // for a "frozen" tab. Log it with buffer size so we can see whether
           // xterm parse/layout is the bottleneck (server endpoint can't).
           const dur = performance.now() - writeStart;
+          // Adapt the next frame's budget to keep each write short enough that
+          // the frame still yields to keyboard input. >24ms (past one frame at
+          // ~40fps) → halve; <8ms (plenty of headroom, e.g. WebGL) → grow.
+          if (dur > 24) {
+            frameBudgetRef.current = Math.max(
+              MIN_TERMINAL_WRITE_BYTES_PER_FRAME,
+              Math.floor(frameBudgetRef.current / 2),
+            );
+          } else if (dur < 8) {
+            frameBudgetRef.current = Math.min(
+              MAX_TERMINAL_WRITE_BYTES_PER_FRAME,
+              frameBudgetRef.current + 8 * 1024,
+            );
+          }
           if (dur > 50) {
             // eslint-disable-next-line no-console
             console.warn(
@@ -740,6 +835,23 @@ export function TerminalView({
     };
     scheduleFlushRef.current = scheduleFlush;
     cancelScheduledFlushRef.current = cancelScheduledFlush;
+
+    // Timeout fallback: write the parked live tail straight to the terminal and
+    // end the load without a reset, so a snapshot that never arrives can't lose
+    // the latest output or strand the viewport. scrollOnOutput is off, so a
+    // scrolled-up reader stays put while the tail lands at the bottom.
+    flushCapturedDuringLoadRef.current = () => {
+      if (disposed) return;
+      if (!historyLoadingRef.current) return;
+      const tail = capturedDuringLoadRef.current;
+      capturedDuringLoadRef.current = [];
+      capturedDuringLoadBytesRef.current = 0;
+      for (const c of tail) {
+        term.write(decodeTerminalBytes([c.b64], term));
+      }
+      historyLoadingRef.current = false;
+      setHistoryLoading(false);
+    };
 
     const writer = (b64Data: string, offsetEnd?: number, isReplay?: boolean) => {
       if (disposed) return;
@@ -818,7 +930,7 @@ export function TerminalView({
         capturedDuringLoadRef.current = [];
         capturedDuringLoadBytesRef.current = 0;
         for (const c of tail) {
-          term.write(decodeBase64Chunks([c.b64]));
+          term.write(decodeTerminalBytes([c.b64], term));
         }
         historyLoadingRef.current = false;
         setHistoryLoading(false);
@@ -831,7 +943,7 @@ export function TerminalView({
         const cleaned = snapshot.chunks.map((c) => {
           try { return btoa(stripDeviceQueries(atob(c))); } catch { return c; }
         });
-        term.write(decodeBase64Chunks(cleaned), afterSnapshot);
+        term.write(decodeTerminalBytes(cleaned, term), afterSnapshot);
       } else {
         afterSnapshot();
       }
@@ -861,6 +973,7 @@ export function TerminalView({
       unsubscribeSnapshot();
       if (scheduleFlushRef.current === scheduleFlush) scheduleFlushRef.current = null;
       if (cancelScheduledFlushRef.current === cancelScheduledFlush) cancelScheduledFlushRef.current = null;
+      flushCapturedDuringLoadRef.current = null;
       unregisterTerminalWriter(sessionId, writer);
     };
   }, [sessionId, termReady]);
@@ -879,7 +992,10 @@ export function TerminalView({
   }, [isActive]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, width: '100%', height: '100%', minHeight: 0 }}>
+    <div
+      className={`terminal-view${isActive ? ' terminal-view-active' : ''}`}
+      style={{ display: 'flex', flexDirection: 'column', flex: 1, width: '100%', height: '100%', minHeight: 0 }}
+    >
     <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
       {searchOpen && (
         <div className="terminal-search-bar">

@@ -20,6 +20,8 @@ export class ServerConnection {
   private shutdown = false;
   private disposed = false;
   private retryPaused = false;
+  private pendingSessionSettings = new Map<string, SessionSettingsPatch>();
+  private pendingAutoCompactMinutes: number | null = null;
   constructor(serverUrl: string, token?: string) {
     this.serverUrl = serverUrl;
     this.token = token;
@@ -72,6 +74,7 @@ export class ServerConnection {
       this.retryPaused = false;
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'connected');
       ws.send(JSON.stringify({ type: 'subscribe:all' }));
+      this.flushPendingSettings();
       // Heartbeat to keep connection alive in background tabs
       clearInterval(this.pingTimer);
       this.pingTimer = setInterval(() => {
@@ -153,22 +156,70 @@ export class ServerConnection {
     useServerStore.getState().setConnectionStatus(this.serverUrl, 'disconnected');
   }
 
-  send(msg: WSMessage): void {
+  send(msg: WSMessage): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
+      return true;
     }
+    return false;
   }
 
   sendAutoApprove(sessionId: string, value: boolean): void {
-    this.send({ type: 'set:autoApprove', sessionId, value });
+    this.sendSessionSettings(sessionId, { autoApprove: value });
   }
 
   sendSessionSettings(sessionId: string, patch: SessionSettingsPatch): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      this.queueSessionSettings(sessionId, patch);
+      this.reconnectIfNeeded();
+      return;
+    }
+    if (!this.sendSessionSettingsNow(sessionId, patch)) {
+      this.queueSessionSettings(sessionId, patch);
+      this.reconnectIfNeeded();
+    }
+  }
+
+  sendAutoCompactMinutes(minutes: number): void {
+    if (!this.send({ type: 'set:autoCompactMinutes', minutes })) {
+      this.pendingAutoCompactMinutes = minutes;
+      this.reconnectIfNeeded();
+    }
+  }
+
+  private queueSessionSettings(sessionId: string, patch: SessionSettingsPatch): void {
+    this.pendingSessionSettings.set(sessionId, {
+      ...(this.pendingSessionSettings.get(sessionId) ?? {}),
+      ...patch,
+    });
+  }
+
+  private flushPendingSettings(): void {
+    if (this.pendingAutoCompactMinutes !== null) {
+      const minutes = this.pendingAutoCompactMinutes;
+      this.pendingAutoCompactMinutes = null;
+      if (!this.send({ type: 'set:autoCompactMinutes', minutes })) {
+        this.pendingAutoCompactMinutes = minutes;
+        return;
+      }
+    }
+
+    const pending = [...this.pendingSessionSettings.entries()];
+    this.pendingSessionSettings.clear();
+    for (const [sessionId, patch] of pending) {
+      if (!this.sendSessionSettingsNow(sessionId, patch)) {
+        this.queueSessionSettings(sessionId, patch);
+        return;
+      }
+    }
+  }
+
+  private sendSessionSettingsNow(sessionId: string, patch: SessionSettingsPatch): boolean {
     if (patch.autoApprove !== undefined) {
-      this.send({ type: 'set:autoApprove', sessionId, value: patch.autoApprove });
+      if (!this.send({ type: 'set:autoApprove', sessionId, value: patch.autoApprove })) return false;
     }
     if (patch.autoCompact !== undefined) {
-      this.send({ type: 'set:autoCompact', sessionId, value: patch.autoCompact });
+      if (!this.send({ type: 'set:autoCompact', sessionId, value: patch.autoCompact })) return false;
     }
     if (
       patch.repeatEnabled !== undefined ||
@@ -176,22 +227,19 @@ export class ServerConnection {
       patch.repeatIntervalSeconds !== undefined ||
       patch.repeatClear !== undefined
     ) {
-      this.send({
+      if (!this.send({
         type: 'set:repeat',
         sessionId,
         enabled: patch.repeatEnabled,
         command: patch.repeatCommand,
         intervalSeconds: patch.repeatIntervalSeconds,
         clear: patch.repeatClear,
-      });
+      })) return false;
     }
     if (patch.tags !== undefined) {
-      this.send({ type: 'set:tags', sessionId, tags: patch.tags });
+      if (!this.send({ type: 'set:tags', sessionId, tags: patch.tags })) return false;
     }
-  }
-
-  sendAutoCompactMinutes(minutes: number): void {
-    this.send({ type: 'set:autoCompactMinutes', minutes });
+    return true;
   }
 
   async createSession(opts: {

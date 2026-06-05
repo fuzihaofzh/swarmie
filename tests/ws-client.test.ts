@@ -579,4 +579,65 @@ describe('WebSocket observability', () => {
       ws.once('close', () => resolve());
     });
   });
+
+  it('pastes a local clipboard image straight from the shared OS clipboard', async () => {
+    const sessionId = `clipboard-image-local-${Date.now()}`;
+    const adapter = new RemoteAdapter(
+      { sessionId, toolArgs: [], cwd: '/tmp' },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: 'C',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+    let written = '';
+    adapter.onWrite = (data) => {
+      written += data;
+    };
+    const session = manager.addSession(sessionId, 'Local Clipboard Session', adapter, { cwd: '/tmp', hostname: 'test-host' });
+    // A local session shares the OS clipboard with the browser, so the paste
+    // should forward Ctrl+V (\x16) without saving a fallback file or path.
+    session.isLocal = true;
+    session.start();
+
+    const ws = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
+    const resultPromise = new Promise<{ ok: boolean; mode: string; path?: string }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Clipboard image result timeout')), 3000);
+      ws.on('message', (raw: WebSocket.RawData) => {
+        const payload = JSON.parse(raw.toString()) as {
+          type?: string;
+          sessionId?: string;
+          ok?: boolean;
+          mode?: string;
+          path?: string;
+        };
+        if (payload.type === 'clipboard:image:result' && payload.sessionId === sessionId) {
+          clearTimeout(timer);
+          resolve({ ok: !!payload.ok, mode: payload.mode ?? '', path: payload.path });
+        }
+      });
+    });
+
+    await waitForSocketOpen(ws);
+    ws.send(JSON.stringify({
+      type: 'clipboard:image',
+      sessionId,
+      mimeType: 'image/png',
+      data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+    }));
+
+    const result = await resultPromise;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(result.ok).toBe(true);
+    expect(result.mode).toBe('remote-clipboard');
+    expect(result.path).toBeUndefined();
+    expect(written).toBe('\x16');
+
+    ws.close();
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve());
+    });
+  });
 });
