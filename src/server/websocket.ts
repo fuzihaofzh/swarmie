@@ -456,8 +456,12 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   // content; offsets stay contiguous (resync end → live continues) so the client
   // needs no gap handling. Terminal sockets subscribe to a single session, so
   // tracking "behind" per (ws, session) matches the bufferedAmount granularity.
-  const RAW_BEHIND_HIGH = 1024 * 1024; // 1MB queued → client is behind
-  const RAW_BEHIND_LOW = 128 * 1024;   // drained below → safe to resync
+  // Kept low on purpose: the backlog cap IS the worst-case added latency
+  // (bytes / link-rate). 256KB over a 2MB/s link is ~125ms; 1MB would be ~500ms
+  // and many seconds on a slow link. Resyncing to the live edge is cheap (one
+  // reset + tail), so trigger early and often rather than letting latency build.
+  const RAW_BEHIND_HIGH = 256 * 1024; // queued bytes → client is behind
+  const RAW_BEHIND_LOW = 32 * 1024;   // drained below → safe to resync
   const RAW_RESYNC_TAIL_BYTES = 256 * 1024;
   const TERMINAL_RESET = '\x1bc'; // RIS — clears screen + dangling escape state
   const behindRaw = new WeakMap<WebSocket, Set<string>>();
