@@ -136,6 +136,10 @@ function useSwipeSafeTabActivate(
     };
 
     const onClick = (event: MouseEvent) => {
+      // Never swallow clicks on the gear/close buttons (or any control): the
+      // post-gesture suppression window exists only to cancel Dockview's own
+      // tab-activation synthetic click, not the user's tap on a child control.
+      if (isInteractiveTarget(event.target)) return;
       if (Date.now() < suppressClickUntilRef.current) {
         stopSyntheticClick(event);
       }

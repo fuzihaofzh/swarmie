@@ -708,7 +708,20 @@ function handleMessage(
         : Number(msg.fromOffset);
       if (!sessionId || !Number.isFinite(fromOffset)) break;
       const session = manager.getSession(sessionId);
-      if (!session) break;
+      if (!session) {
+        // Always answer so the client clears its loading state instead of
+        // retrying and then waiting out its timeout. No session here means
+        // there is no earlier history to show.
+        send(socket, {
+          type: 'history:snapshot',
+          sessionId,
+          startOffset: fromOffset,
+          endOffset: fromOffset,
+          data: [],
+          reachedEarliest: true,
+        });
+        break;
+      }
       const snapshot = session.getRawHistorySnapshot(fromOffset);
       send(socket, {
         type: 'history:snapshot',

@@ -676,6 +676,26 @@ body,
   background: rgba(239, 68, 68, 0.1);
 }
 
+/* Touch devices have no hover state, so the gear and close controls would
+   otherwise stay invisible/untappable. Always show them and give them a
+   larger hit area on coarse pointers. */
+@media (pointer: coarse) {
+  .dv-tab-tools {
+    opacity: 1;
+    padding: 0 6px;
+  }
+  .dv-tab-tools-icon {
+    width: 22px;
+    height: 22px;
+    font-size: 15px;
+  }
+  .dv-tab-close {
+    opacity: 0.6;
+    font-size: 16px;
+    padding: 0 6px;
+  }
+}
+
 .dv-new-session-tab {
   gap: 6px;
 }

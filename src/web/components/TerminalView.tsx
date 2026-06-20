@@ -20,6 +20,7 @@ import { useKeybindingStore, matchesBinding } from '../hooks/useKeybindings';
 import {
   shouldAutoFocusTerminal,
   shouldRestoreTerminalFocusAfterSearchClose,
+  shouldShowMobileToolbar,
 } from '../focusPolicy';
 import { binaryStringToBytes } from '../base64';
 import { protectStatusLineRedraws, stripDeviceQueries } from '../terminalQueries';
@@ -56,11 +57,16 @@ const MAX_PENDING_WRITE_BYTES = 2 * 1024 * 1024;
 const TERMINAL_SCROLLBACK_LINES = 10000;
 /** How many bytes earlier to fetch each time the user asks for more history. */
 const HISTORY_CHUNK_BYTES = 2 * 1024 * 1024;
-// Give a slow remote tunnel room to deliver a multi-MB snapshot before we give
-// up. When it does fire we no longer discard the live output captured during
-// the load — we flush it to the terminal — so a timeout can't lose the latest
-// history or strand the viewport mid-buffer.
-const HISTORY_LOAD_TIMEOUT_MS = 30_000;
+// How long to wait for a history:snapshot before re-sending the request. The
+// reply can be lost (e.g. it raced a WS reconnect, or the socket was briefly
+// not OPEN when we sent) — without a resend the load would just spin until the
+// give-up timeout and then discard any late snapshot. Locally a snapshot is
+// near-instant, so a missing reply after this long means it isn't coming.
+const HISTORY_LOAD_RETRY_MS = 6_000;
+// Re-send up to this many times before giving up. The final give-up flushes the
+// live output captured during the load to the terminal — so a snapshot that
+// never arrives can't lose the latest history or strand the viewport mid-buffer.
+const HISTORY_LOAD_MAX_ATTEMPTS = 4;
 /** Auto-trigger only fires if the user wheel/touch-swiped up within this window. */
 const AUTO_LOAD_RECENT_WINDOW_MS = 600;
 const MAX_CLIPBOARD_IMAGE_BYTES = 16 * 1024 * 1024;
@@ -158,6 +164,8 @@ export function TerminalView({
   const [atTop, setAtTop] = useState(false);
   const historyLoadingRef = useRef(false);
   const historyLoadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historyLoadAttemptsRef = useRef(0);
+  const armHistoryLoadRef = useRef<((fromOffset: number) => void) | null>(null);
   const capturedDuringLoadRef = useRef<Array<{ bin: string; offsetEnd?: number }>>([]);
   const capturedDuringLoadBytesRef = useRef(0);
   const pendingChunksRef = useRef<string[]>([]);
@@ -307,6 +315,76 @@ export function TerminalView({
           if (historyLoadingRef.current) return;
           onInput(data);
         });
+      }
+
+      // --- Mobile soft-keyboard / IME input takeover ---------------------
+      // xterm's textarea input path is unreliable on phones. It never clears
+      // the helper textarea, so `_handleAnyTextareaChanges` diffs an
+      // ever-growing value (`newValue.replace(oldValue, '')`) and words come
+      // out garbled; and predictive/composition keyboards only flush on commit,
+      // so plain typing appears to "do nothing" until Enter. On mobile we make
+      // the `input`/`compositionend` events the single source of truth and keep
+      // the textarea empty. These capture-phase listeners sit on the container,
+      // which is an ancestor of the helper textarea, so they fire before
+      // xterm's own capture listeners and can stop it from double-processing.
+      const mobileInput = onInput;
+      if (mobileInput && shouldShowMobileToolbar(getFocusPolicyEnv())) {
+        const textarea = el.querySelector<HTMLTextAreaElement>('textarea.xterm-helper-textarea');
+        if (textarea) {
+          textarea.setAttribute('autocomplete', 'off');
+          textarea.setAttribute('autocorrect', 'off');
+          textarea.setAttribute('autocapitalize', 'none');
+          textarea.setAttribute('spellcheck', 'false');
+
+          const isTextarea = (e: Event) => e.target === textarea;
+
+          // Swallow xterm's keypress so it never sends printable characters
+          // (we send them from the `input` event instead). Real control keys —
+          // Enter, Backspace, arrows, Ctrl-* — arrive via keydown, which xterm
+          // still handles and cancels, so no `input` event follows for them.
+          const onKeyPress = (e: Event) => {
+            if (isTextarea(e)) e.stopImmediatePropagation();
+          };
+          // Block only the IME/composition keydown (keyCode 229), which would
+          // otherwise drive xterm's fragile textarea-diff path.
+          const onKeyDown = (e: KeyboardEvent) => {
+            if (isTextarea(e) && (e.isComposing || e.keyCode === 229)) {
+              e.stopImmediatePropagation();
+            }
+          };
+          const swallow = (e: Event) => {
+            if (isTextarea(e)) e.stopImmediatePropagation();
+          };
+          const onCompositionEnd = (e: CompositionEvent) => {
+            if (!isTextarea(e)) return;
+            e.stopImmediatePropagation();
+            if (textarea.value) mobileInput(textarea.value);
+            textarea.value = '';
+          };
+          const onInputEvent = (e: Event) => {
+            if (!isTextarea(e)) return;
+            e.stopImmediatePropagation();
+            const ie = e as InputEvent;
+            // Intermediate composition states accumulate in the textarea and
+            // are sent on compositionend; don't send them character-by-character.
+            if (ie.isComposing || ie.inputType === 'insertCompositionText') return;
+            if (ie.inputType === 'deleteContentBackward' || ie.inputType === 'deleteWordBackward') {
+              mobileInput('\x7f');
+            } else if (ie.inputType === 'insertLineBreak' || ie.inputType === 'insertParagraph') {
+              mobileInput('\r');
+            } else if (ie.data) {
+              mobileInput(ie.data);
+            }
+            textarea.value = '';
+          };
+
+          el.addEventListener('keypress', onKeyPress, true);
+          el.addEventListener('keydown', onKeyDown, true);
+          el.addEventListener('compositionstart', swallow, true);
+          el.addEventListener('compositionupdate', swallow, true);
+          el.addEventListener('compositionend', onCompositionEnd, true);
+          el.addEventListener('input', onInputEvent, true);
+        }
       }
 
       const ro = new ResizeObserver(() => {
@@ -531,10 +609,39 @@ export function TerminalView({
   const clearHistoryLoading = useCallback(() => {
     clearHistoryLoadTimeout();
     historyLoadingRef.current = false;
+    historyLoadAttemptsRef.current = 0;
     capturedDuringLoadRef.current = [];
     capturedDuringLoadBytesRef.current = 0;
     setHistoryLoading(false);
   }, [clearHistoryLoadTimeout]);
+
+  // Send (or re-send) the in-flight history request and arm a retry. A snapshot
+  // reply can go missing — lost to a WS reconnect, or sent while the socket
+  // wasn't OPEN — so we resend rather than spin out the whole wait and then
+  // drop a late snapshot. The snapshot handler clears this timeout on arrival.
+  const armHistoryLoad = useCallback((fromOffset: number) => {
+    onLoadHistory?.(fromOffset);
+    historyLoadTimeoutRef.current = setTimeout(() => {
+      clearHistoryLoadTimeout();
+      historyLoadAttemptsRef.current += 1;
+      if (historyLoadAttemptsRef.current < HISTORY_LOAD_MAX_ATTEMPTS) {
+        armHistoryLoadRef.current?.(fromOffset);
+        return;
+      }
+      // Gave up. Don't discard what streamed in during the wait — flush it to
+      // the terminal so the latest output survives. Fall back to a plain clear
+      // if the writer effect isn't mounted (shouldn't happen).
+      if (flushCapturedDuringLoadRef.current) {
+        flushCapturedDuringLoadRef.current();
+      } else {
+        clearHistoryLoading();
+      }
+    }, HISTORY_LOAD_RETRY_MS);
+  }, [onLoadHistory, clearHistoryLoadTimeout, clearHistoryLoading]);
+
+  useEffect(() => {
+    armHistoryLoadRef.current = armHistoryLoad;
+  }, [armHistoryLoad]);
 
   const handleLoadEarlier = useCallback(() => {
     if (historyLoadingRef.current) return;
@@ -544,26 +651,12 @@ export function TerminalView({
     const fromOffset = Math.max(0, sessionMeta.lowestOffset - HISTORY_CHUNK_BYTES);
     if (fromOffset >= sessionMeta.lowestOffset) return;
     historyLoadingRef.current = true;
+    historyLoadAttemptsRef.current = 0;
     capturedDuringLoadRef.current = [];
     capturedDuringLoadBytesRef.current = 0;
     setHistoryLoading(true);
-    const sent = onLoadHistory(fromOffset);
-    if (sent === false) {
-      clearHistoryLoading();
-      return;
-    }
-    historyLoadTimeoutRef.current = setTimeout(() => {
-      clearHistoryLoadTimeout();
-      // Snapshot never arrived. Don't discard what streamed in during the wait —
-      // flush it to the terminal so the latest history survives. Fall back to a
-      // plain clear if the writer effect isn't mounted (shouldn't happen).
-      if (flushCapturedDuringLoadRef.current) {
-        flushCapturedDuringLoadRef.current();
-      } else {
-        clearHistoryLoading();
-      }
-    }, HISTORY_LOAD_TIMEOUT_MS);
-  }, [clearHistoryLoading, clearHistoryLoadTimeout, sessionMeta, onLoadHistory]);
+    armHistoryLoad(fromOffset);
+  }, [armHistoryLoad, sessionMeta, onLoadHistory]);
 
   // Keep the latest handler reachable from imperative paths (onScroll, wheel)
   // without re-binding listeners every render.

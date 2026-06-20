@@ -51,6 +51,7 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
   const [altActive, setAltActive] = useState(false);
   const ctrlTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const repeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const check = () => {
@@ -171,6 +172,31 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
 
   useEffect(() => stopRepeat, [stopRepeat]);
 
+  // React registers `touchstart` as a passive listener, so calling
+  // `e.preventDefault()` inside `onTouchStart` is a silent no-op. Without it
+  // the browser still synthesises mouse events (mousedown/mouseup/click) after
+  // each tap, which (a) fires the button action a *second* time — e.g. "/"
+  // gets sent twice — and (b) moves focus onto the button, dismissing the soft
+  // keyboard. Attaching our own non-passive listener lets preventDefault take
+  // effect: no synthetic mouse events, no double input, no lost keyboard.
+  useEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    const onTouchStart = (e: TouchEvent) => {
+      if ((e.target as HTMLElement | null)?.closest('.mobile-toolbar-btn')) {
+        e.preventDefault();
+      }
+    };
+    el.addEventListener('touchstart', onTouchStart, { passive: false });
+    return () => el.removeEventListener('touchstart', onTouchStart);
+  }, [visible]);
+
+  const pressButton = (btn: { key?: string; seq?: string; mod?: 'ctrl' | 'alt' }) => {
+    if (btn.mod === 'ctrl') handleCtrl();
+    else if (btn.mod === 'alt') handleAlt();
+    else startRepeat(btn.key, btn.seq);
+  };
+
   if (!visible) return null;
 
   const buttons: { label: string; key?: string; seq?: string; mod?: 'ctrl' | 'alt' }[] = [
@@ -190,7 +216,7 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
   ];
 
   return (
-    <div className="mobile-toolbar">
+    <div className="mobile-toolbar" ref={toolbarRef}>
       {buttons.map((btn) => {
         const isActive =
           (btn.mod === 'ctrl' && ctrlActive) || (btn.mod === 'alt' && altActive);
@@ -198,18 +224,16 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
           <button
             key={btn.label}
             className={`mobile-toolbar-btn ${isActive ? 'active' : ''}`}
-            onTouchStart={(e) => {
-              e.preventDefault();
-              if (btn.mod === 'ctrl') handleCtrl();
-              else if (btn.mod === 'alt') handleAlt();
-              else startRepeat(btn.key, btn.seq);
-            }}
+            // Touch: the native non-passive listener above prevents the
+            // synthetic mouse events, so onMouseDown won't fire on touch and
+            // the action runs exactly once.
+            onTouchStart={() => pressButton(btn)}
             onTouchEnd={stopRepeat}
             onTouchCancel={stopRepeat}
-            onMouseDown={() => {
-              if (btn.mod === 'ctrl') handleCtrl();
-              else if (btn.mod === 'alt') handleAlt();
-              else startRepeat(btn.key, btn.seq);
+            // Mouse (desktop): preventDefault keeps focus on the terminal.
+            onMouseDown={(e) => {
+              e.preventDefault();
+              pressButton(btn);
             }}
             onMouseUp={stopRepeat}
             onMouseLeave={stopRepeat}
