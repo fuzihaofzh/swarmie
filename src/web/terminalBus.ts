@@ -151,6 +151,19 @@ export function getSessionMeta(sessionId: string): SessionMeta {
   return { ...getOrCreateMeta(sessionId) };
 }
 
+/**
+ * Force "no older history available" for a session. Used when the terminal's
+ * scrollback buffer is full: xterm caps retained lines, so any older bytes
+ * would be discarded on render — fetching/re-rendering them is pure wasted
+ * (and ever-growing) work, so we stop offering "load earlier".
+ */
+export function markReachedEarliest(sessionId: string): void {
+  const m = getOrCreateMeta(sessionId);
+  if (m.reachedEarliest) return;
+  m.reachedEarliest = true;
+  emitMeta(sessionId);
+}
+
 export function subscribeSessionMeta(sessionId: string, listener: MetaListener): () => void {
   let set = metaListeners.get(sessionId);
   if (!set) {

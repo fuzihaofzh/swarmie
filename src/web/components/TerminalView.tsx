@@ -13,6 +13,7 @@ import {
   getSessionMeta,
   subscribeSessionMeta,
   subscribeHistorySnapshot,
+  markReachedEarliest,
   type SessionMeta,
 } from '../terminalBus';
 import { MobileToolbar } from './MobileToolbar';
@@ -1052,6 +1053,14 @@ export function TerminalView({
         capturedDuringLoadBytesRef.current = 0;
         for (const c of tail) {
           term.write(decodeTerminalBytes([c.bin], term));
+        }
+        // If the rebuilt buffer already fills xterm's scrollback, older bytes
+        // can't be displayed (they'd be discarded on the next rebuild), so stop
+        // offering "load earlier". Without this, each further load re-renders an
+        // ever-larger [start, END] window whose oldest lines are thrown away —
+        // the "scrolling up keeps getting slower" problem.
+        if (term.buffer.active.baseY >= TERMINAL_SCROLLBACK_LINES) {
+          markReachedEarliest(sessionId);
         }
         historyLoadingRef.current = false;
         setHistoryLoading(false);
