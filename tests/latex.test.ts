@@ -66,6 +66,10 @@ describe('detectMathSpans — single-letter variables', () => {
     expect(texOf('当 $x = y$ 时')).toEqual([{ tex: 'x = y', display: false }]);
     expect(texOf('$a < b$')).toEqual([{ tex: 'a < b', display: false }]);
   });
+  it('renders bars and function application', () => {
+    expect(texOf('复杂度 $|H|$ 越大')).toEqual([{ tex: '|H|', display: false }]);
+    expect(texOf('函数 $f(x)$ 的')).toEqual([{ tex: 'f(x)', display: false }]);
+  });
   it('still rejects multi-letter barewords and numbers', () => {
     expect(detectMathSpans('echo $PATH end')).toEqual([]);
     expect(detectMathSpans('costs $5 and $10')).toEqual([]);

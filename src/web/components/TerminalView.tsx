@@ -6,7 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 import { useUIStore } from '../hooks/useUI';
-import { detectMath, renderMath, cellWidthOf } from '../latex';
+import { detectMath, renderMath, cellWidthOf, type MathItem } from '../latex';
 import { themes } from '../themes';
 import {
   registerTerminalWriter,
@@ -57,6 +57,11 @@ const MAX_PENDING_WRITE_BYTES = 2 * 1024 * 1024;
 // for smooth interaction. Very large xterm buffers stay expensive even when a
 // tab is hidden, especially over remote desktop.
 const TERMINAL_SCROLLBACK_LINES = 10000;
+// Tall inline math is shrunk to fit within this fraction of one row, so it never
+// overlaps the lines above/below (user preference: no-overlap over size). Tall
+// formulas (sqrt/fraction) end up smaller as a result. Display blocks ($$…$$)
+// are never shrunk.
+const MAX_INLINE_MATH_LINES = 0.95;
 // How many bytes earlier to fetch each time the user asks for more history.
 // Kept modest (not multi-MB) on purpose: the server's history:snapshot spans
 // [fromOffset, current-end], so the client term.reset()s and re-renders the
@@ -635,6 +640,11 @@ export function TerminalView({
     });
   }, [currentTheme, fontSize, fontFamily]);
 
+  // NOTE: we intentionally do NOT bump term.options.lineHeight for math mode —
+  // changing it forces an xterm resize/reflow, and rendering with a non-default
+  // line height while scrolling triggers an xterm renderer crash (loadCell on an
+  // undefined buffer line). Tall inline math is handled by scaling instead.
+
   // KaTeX math overlay. When enabled, scan the visible buffer (plus a little
   // lookback for multi-line blocks) for LaTeX and lay KaTeX-rendered HTML in an
   // absolutely-positioned layer ON TOP of the source text. Off by default and
@@ -681,26 +691,28 @@ export function TerminalView({
     const rescan = () => {
       const xtermEl = term.element;
       const screenEl = xtermEl?.querySelector('.xterm-screen') as HTMLElement | null;
-      if (!xtermEl || !screenEl || screenEl.clientWidth === 0) {
+      // The mount <div> that CONTAINS .xterm (term.open's target). It has no
+      // React children, so adding our own child is safe, and it's OUTSIDE
+      // xterm's render tree — putting the overlay anywhere inside .xterm can
+      // corrupt the WebGL/Canvas renderer's row model and crash it (loadCell).
+      const mount = xtermEl?.parentElement as HTMLElement | null;
+      if (!xtermEl || !screenEl || !mount || screenEl.clientWidth === 0) {
         if (debug) console.log('[swarmie-math] no .xterm-screen yet');
         return;
       }
-      // Mount the overlay layer on the .xterm ROOT (not .xterm-screen, which the
-      // WebGL/Canvas renderer manages — injecting DOM there corrupts its row
-      // model and crashes rendering; and not the React-owned wrapper, which
-      // React would try to reconcile). Align it to .xterm-screen via offsets.
+      mount.style.position = 'relative'; // positioning context for the layer
       let layer = mathLayerRef.current;
-      if (!layer || layer.parentElement !== xtermEl) {
+      if (!layer || layer.parentElement !== mount) {
         layer?.remove();
         layer = document.createElement('div');
         layer.className = 'term-math-layer';
-        xtermEl.appendChild(layer);
+        mount.appendChild(layer);
         mathLayerRef.current = layer;
       }
       const sr = screenEl.getBoundingClientRect();
-      const xr = xtermEl.getBoundingClientRect();
-      layer.style.left = `${sr.left - xr.left}px`;
-      layer.style.top = `${sr.top - xr.top}px`;
+      const mr = mount.getBoundingClientRect();
+      layer.style.left = `${sr.left - mr.left}px`;
+      layer.style.top = `${sr.top - mr.top}px`;
       layer.style.width = `${sr.width}px`;
       layer.style.height = `${sr.height}px`;
 
@@ -720,7 +732,7 @@ export function TerminalView({
       // `$…$` split across a wrap is still detected. Each logical line records
       // the absolute buffer row it starts on; a logical (cell) column maps back
       // to a buffer row via floor(cellCol / cols).
-      const logical: Array<{ text: string; bufStart: number }> = [];
+      const logical: Array<{ text: string; bufStart: number; segCount: number }> = [];
       let abs = winStart;
       while (abs < winEnd) {
         const bufStart = abs;
@@ -730,7 +742,7 @@ export function TerminalView({
           text += buf.getLine(next)?.translateToString(false) ?? '';
           next += 1;
         }
-        logical.push({ text, bufStart });
+        logical.push({ text, bufStart, segCount: next - bufStart });
         abs = next;
       }
 
@@ -745,18 +757,47 @@ export function TerminalView({
         return { absRow: log.bufStart + Math.floor(cellCol / cols), col: cellCol % cols };
       };
 
-      for (const it of items) {
+      const escHtml = (s: string) =>
+        s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
+
+      // A row qualifies for gap-closing if it uses only DEFAULT colors (we can
+      // reproduce bold/italic/underline when re-rendering the text, but not
+      // arbitrary palette/RGB colors without a full mapping). Colored lines fall
+      // back to the per-formula overlay.
+      const rowGapEligible = (rowAbs: number): boolean => {
+        const line = buf.getLine(rowAbs);
+        if (!line) return true;
+        for (let x = 0; x < cols; x++) {
+          const c = line.getCell(x);
+          if (!c) continue;
+          if (c.getChars() === '' && c.getWidth() === 1) continue; // blank cell
+          if (!c.isFgDefault() || !c.isBgDefault() || c.isInverse()) return false;
+        }
+        return true;
+      };
+
+      // CSS for a cell's text attributes (bold/italic/underline). Colors are not
+      // reproduced here — rowGapEligible already excluded non-default colors.
+      const cellStyle = (c: ReturnType<NonNullable<ReturnType<typeof buf.getLine>>['getCell']> | undefined): string => {
+        if (!c) return '';
+        let s = '';
+        if (c.isBold()) s += 'font-weight:bold;';
+        if (c.isItalic()) s += 'font-style:italic;';
+        if (c.isUnderline()) s += 'text-decoration:underline;';
+        return s;
+      };
+
+      // Per-formula overlay (the fallback): covers the source span, math left-
+      // aligned, tall math scaled to fit one cell so it doesn't bleed.
+      const renderItem = (it: MathItem) => {
         const html = renderMath(it.tex, it.display);
-        if (!html) continue;
+        if (!html) return;
         const start = locate(it.startLine, it.startCol);
         const end = locate(it.endLine, Math.max(it.startCol, it.endCol - 1));
         const startAbs = start.absRow;
         const endAbs = end.absRow;
         const vTop = startAbs - viewTop;
-        const vBottom = endAbs - viewTop;
-        if (vTop >= rows || vBottom < 0) continue; // fully outside the viewport
-        // Anything that wraps onto another buffer row, or an explicit display
-        // block, is laid out as a full-width box spanning its rows.
+        if (vTop >= rows || endAbs - viewTop < 0) return;
         const multiline = it.display || endAbs !== startAbs;
         const key = `${startAbs}:${start.col}:${it.display ? 'D' : 'I'}:${endAbs - startAbs}:${it.tex}`;
         seen.add(key);
@@ -786,10 +827,6 @@ export function TerminalView({
           el.style.minWidth = `${Math.max(1, end.col + 1 - start.col) * cw}px`;
         }
         el.style.height = `${maxH}px`;
-        // Scale tall math down so it fits its source footprint instead of
-        // bleeding over neighbouring lines. Simple math (fits already) stays at
-        // full size. Natural height is measured once and cached so resizes/
-        // scrolls can re-derive the scale without another reflow.
         const inner = el.firstElementChild as HTMLElement | null;
         if (inner) {
           if (isNew) {
@@ -797,11 +834,113 @@ export function TerminalView({
             el.dataset.nh = String(inner.getBoundingClientRect().height || 0);
           }
           const nh = Number(el.dataset.nh) || 0;
-          const scale = nh > maxH && nh > 0 ? maxH / nh : 1;
+          // Display blocks ($$…$$) render at full size. Inline math is shrunk
+          // only down to MAX_INLINE_MATH_LINES line-heights so it stays legible.
+          const limit = (multiline ? maxH : ch) * MAX_INLINE_MATH_LINES;
+          const scale = !it.display && nh > limit && nh > 0 ? limit / nh : 1;
           inner.style.transformOrigin = multiline ? 'center center' : 'left center';
           inner.style.transform = scale < 1 ? `scale(${scale})` : '';
         }
         placed += 1;
+      };
+
+      // Gap-closing overlay: re-render the WHOLE (unwrapped, default-color) line
+      // as inline [text][math][text]… so the rendered math sits flush against the
+      // text — no reserved-source whitespace. Text runs reproduce bold/italic/
+      // underline. Tall math is shrunk via font-size (reflows, unlike transform)
+      // so the line stays one row.
+      const renderGapLine = (logIdx: number, lineItems: MathItem[]) => {
+        const log = logical[logIdx];
+        const startAbs = log.bufStart;
+        const vTop = startAbs - viewTop;
+        if (vTop >= rows || vTop < -1) return;
+        lineItems.sort((a, b) => a.startCol - b.startCol);
+        const text = log.text;
+        const trimmed = text.replace(/\s+$/, '');
+        const line = buf.getLine(startAbs);
+        const mathAt = new Map(lineItems.map((it) => [it.startCol, it]));
+
+        // Walk the line character by character (tracking the cell column so CJK
+        // double-width chars stay aligned), grouping equal-styled runs and
+        // splicing in rendered math at each span.
+        let inner = '';
+        let runStyle = '';
+        let runText = '';
+        const flushRun = () => {
+          if (runText) inner += `<span class="tm-t" style="${runStyle}">${escHtml(runText)}</span>`;
+          runText = '';
+        };
+        let cellCol = 0;
+        let ci = 0;
+        while (ci < trimmed.length) {
+          const it = mathAt.get(ci);
+          if (it) {
+            const mhtml = renderMath(it.tex, it.display);
+            if (mhtml) { flushRun(); inner += `<span class="tm-m">${mhtml}</span>`; }
+            cellCol += cellWidthOf(text.slice(it.startCol, it.endCol));
+            ci = it.endCol;
+            continue;
+          }
+          const chr = text[ci];
+          const style = cellStyle(line?.getCell(cellCol));
+          if (style !== runStyle) { flushRun(); runStyle = style; }
+          runText += chr;
+          cellCol += cellWidthOf(chr);
+          ci += 1;
+        }
+        flushRun();
+
+        const key = `gap:${startAbs}:${trimmed}`;
+        seen.add(key);
+        const existing = overlays.get(key);
+        let el = existing?.el;
+        const isNew = !el;
+        if (!el) {
+          el = document.createElement('div');
+          el.className = 'term-math term-math-line';
+          el.style.background = bg;
+          el.style.color = fg;
+          el.style.fontSize = `${fontSize}px`;
+          el.style.fontFamily = fontFamily;
+          el.innerHTML = inner;
+          layer.appendChild(el);
+        }
+        overlays.set(key, { el, startAbs, endAbs: startAbs });
+        el.style.display = '';
+        el.style.left = '0px';
+        el.style.top = `${vTop * ch}px`;
+        el.style.height = `${ch}px`;
+        el.style.lineHeight = `${ch}px`;
+        el.style.width = `${Math.max(1, cellWidthOf(trimmed)) * cw}px`;
+        if (isNew) {
+          // Keep formulas readable: only shrink ones taller than MAX_INLINE_H
+          // lines, and only down to that bound (so a sqrt/fraction stays legible
+          // while overflowing at most ~0.7 line onto its neighbours).
+          el.querySelectorAll<HTMLElement>('.tm-m').forEach((m) => {
+            const k = (m.querySelector('.katex') as HTMLElement | null) ?? m;
+            const kh = k.getBoundingClientRect().height;
+            const limit = ch * MAX_INLINE_MATH_LINES;
+            if (kh > limit && kh > 0) m.style.fontSize = `${Math.max(6, fontSize * (limit / kh))}px`;
+          });
+        }
+        placed += 1;
+      };
+
+      // Display blocks render per-item; single-line inline math is grouped per
+      // logical line so a qualifying line can be gap-closed in one overlay.
+      const inlineByLine = new Map<number, MathItem[]>();
+      for (const it of items) {
+        if (it.display) { renderItem(it); continue; }
+        const arr = inlineByLine.get(it.startLine);
+        if (arr) arr.push(it); else inlineByLine.set(it.startLine, [it]);
+      }
+      for (const [logIdx, lineItems] of inlineByLine) {
+        const log = logical[logIdx];
+        if (log.segCount === 1 && rowGapEligible(log.bufStart)) {
+          renderGapLine(logIdx, lineItems);
+        } else {
+          for (const it of lineItems) renderItem(it);
+        }
       }
 
       for (const [key, entry] of overlays) {
@@ -839,7 +978,7 @@ export function TerminalView({
       clearTimeout(kick);
       teardown();
     };
-  }, [mathRender, termReady, currentTheme, fontSize]);
+  }, [mathRender, termReady, currentTheme, fontSize, fontFamily]);
 
   // Focus search input when search opens
   useEffect(() => {

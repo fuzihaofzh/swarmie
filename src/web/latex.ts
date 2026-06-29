@@ -41,22 +41,23 @@ export interface MathItem {
 // `$ a sentence $`). Accept it if it carries a real LaTeX signal OR is a lone
 // variable like `$C$` / `$H$` (extremely common in real math) — but NOT a
 // multi-letter bareword (`$PATH`) or a bare number (`$5`).
-const STRONG_MATH_SIGNAL = /[\\^_{}]/;
 const SINGLE_VARIABLE = /^[A-Za-z]$/;
-// A relation operator (rare inside shell text) — $x = y$, $a < b$, $a \neq b$.
-const RELATION = /[=<>≤≥≠]/;
-// A bracketed expression with a separator — $[a,b]$, $(0,1)$, $[1,2,3]$.
-const BRACKETED_EXPR = /^[[(].*[,;].*[)\]]$/;
+// Characters that strongly indicate math: LaTeX commands, sub/superscripts,
+// braces, relations, grouping, bars (|H|), operators. Their presence (in
+// non-prose content) is enough to treat a `$…$` as an equation.
+const MATH_CHARS = /[\\^_{}=<>+*/|()[\]~≤≥≠]/;
+// CJK / fullwidth text — real inline math is ASCII (Greek comes via \commands),
+// so any of these means we grabbed prose, not an equation.
+const CJK_TEXT = /[⺀-鿿　-〿＀-￯]/;
 
 function looksLikeInlineMath(raw: string): boolean {
   const t = raw.trim();
   if (!t) return false;
-  return (
-    STRONG_MATH_SIGNAL.test(t) ||
-    SINGLE_VARIABLE.test(t) ||
-    RELATION.test(t) ||
-    BRACKETED_EXPR.test(t)
-  );
+  if (CJK_TEXT.test(t)) return false;
+  if (SINGLE_VARIABLE.test(t)) return true;       // $H$, $x$
+  if (/^\d+(\.\d+)?$/.test(t)) return false;       // pure number / price ($5, $10.50)
+  if (/^[A-Za-z]{2,}$/.test(t)) return false;      // bareword / shell var ($PATH, $HOME)
+  return MATH_CHARS.test(t);                        // |H|, f(x), x^2, a<b, [a,b], \alpha
 }
 // Upper bound so a stray unmatched delimiter can't swallow a whole long line.
 const MAX_TEX_LEN = 240;
@@ -147,6 +148,7 @@ export function renderMath(tex: string, display: boolean): string | null {
       displayMode: display,
       throwOnError: true,
       output: 'html',
+      strict: 'ignore', // don't spam the console for benign non-strict input
     });
   } catch {
     html = null;
@@ -262,9 +264,9 @@ export function detectMath(lines: string[]): MathItem[] {
   for (const [open, close] of blockDelims) {
     for (const r of findBlocks(masked, open, close)) {
       const tex = blockTex(masked, r, open.length, close.length);
-      // Require a real math signal so two stray shell `$$` (the PID variable) on
-      // separate lines don't get paired into a bogus block.
-      if (tex && tex.length <= MAX_BLOCK_TEX_LEN && STRONG_MATH_SIGNAL.test(tex)) {
+      // Require a real math character so two stray shell `$$` (the PID variable)
+      // on separate lines don't get paired into a bogus block.
+      if (tex && tex.length <= MAX_BLOCK_TEX_LEN && MATH_CHARS.test(tex)) {
         items.push({
           startLine: r.openLine, startCol: r.openCol,
           endLine: r.closeLine, endCol: r.closeCol,

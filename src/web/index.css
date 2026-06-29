@@ -792,6 +792,27 @@ body,
   line-height: normal;
 }
 
+/* Gap-closing line overlay: re-renders a whole line as inline text + math so
+   the rendered formula sits flush against the surrounding text (no reserved
+   source whitespace). Uses normal inline flow, not flex. */
+.term-math-line {
+  display: block;
+  white-space: nowrap;
+  overflow: visible;
+}
+.term-math-line .tm-t {
+  white-space: pre;
+  vertical-align: middle;
+}
+.term-math-line .tm-m {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+.term-math-line .tm-m .katex {
+  line-height: normal;
+}
+
 
 /* Session Items */
 .session-item {
