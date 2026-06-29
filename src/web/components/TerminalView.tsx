@@ -152,6 +152,8 @@ export function TerminalView({
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const isActiveRef = useRef(isActive);
+  const activatedOnceRef = useRef(false);
+  const reactivateRedrawRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevSearchOpenRef = useRef(searchOpen);
   const lastReportedSizeRef = useRef<{ cols: number; rows: number } | null>(null);
 
@@ -498,6 +500,10 @@ export function TerminalView({
         clearTimeout(historyLoadTimeoutRef.current);
         historyLoadTimeoutRef.current = null;
       }
+      if (reactivateRedrawRef.current) {
+        clearTimeout(reactivateRedrawRef.current);
+        reactivateRedrawRef.current = null;
+      }
       historyLoadingRef.current = false;
       capturedDuringLoadRef.current = [];
       capturedDuringLoadBytesRef.current = 0;
@@ -519,10 +525,27 @@ export function TerminalView({
   // and yanked scrolled-up users back to the bottom). Latest reportResize is
   // pulled via reportResizeRef. getFocusPolicyEnv is also pulled fresh inside.
   useEffect(() => {
+    if (reactivateRedrawRef.current) {
+      clearTimeout(reactivateRedrawRef.current);
+      reactivateRedrawRef.current = null;
+    }
     if (!isActive) return;
     const term = termRef.current;
     const fitAddon = fitRef.current;
     if (!term) return;
+    // On a genuine re-activation (tab switched back, not the first show), force
+    // ink/TUI apps (codex, Claude Code) to repaint. While hidden, live output is
+    // buffered and the bounded pending queue may have dropped intermediate
+    // frames, so the retained buffer can be stale/blank — a SIGWINCH makes the
+    // app redraw the whole screen cleanly. The first show is covered by the
+    // writer effect's mount/reconnect redraw, so skip it here to avoid a double.
+    if (activatedOnceRef.current) {
+      reactivateRedrawRef.current = setTimeout(() => {
+        reactivateRedrawRef.current = null;
+        onRedraw?.();
+      }, 120);
+    }
+    activatedOnceRef.current = true;
     const autoFocus = shouldAutoFocusTerminal(getFocusPolicyEnv());
     requestAnimationFrame(() => {
       // The component may have unmounted (term disposed) between scheduling and
@@ -542,6 +565,13 @@ export function TerminalView({
       if (autoFocus) {
         term.focus();
       }
+      // The WebGL/Canvas renderer is disposed on blur and freshly re-attached on
+      // focus (the effect below). A new renderer starts with an empty atlas and
+      // only paints rows marked dirty — nothing marks the retained buffer dirty,
+      // so the terminal can come back BLANK after a tab switch (notably for
+      // in-place-redraw TUIs like codex/Claude Code that don't re-emit on their
+      // own). Force a full repaint. This rAF runs after the renderer re-attaches.
+      try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, termReady]);
