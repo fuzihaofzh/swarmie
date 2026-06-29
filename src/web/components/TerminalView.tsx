@@ -6,6 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 import { useUIStore } from '../hooks/useUI';
+import { detectMath, renderMath } from '../latex';
 import { themes } from '../themes';
 import {
   registerTerminalWriter,
@@ -156,10 +157,15 @@ export function TerminalView({
   const reactivateRedrawRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevSearchOpenRef = useRef(searchOpen);
   const lastReportedSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  // KaTeX overlay layer (a div over .xterm-screen) + the math elements in it,
+  // keyed by `${absLine}:${col}:${mode}:${rows}:${tex}`.
+  const mathLayerRef = useRef<HTMLDivElement | null>(null);
+  const mathOverlaysRef = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const themeName = useUIStore((s) => s.theme);
   const fontSize = useUIStore((s) => s.fontSize);
   const fontFamily = useUIStore((s) => s.fontFamily);
+  const mathRender = useUIStore((s) => s.mathRender);
   const currentTheme = themes[themeName] ?? themes['github-dark'];
 
   // History-load state. `historyLoading` drives the UI overlay + input lock.
@@ -626,6 +632,154 @@ export function TerminalView({
       try { fitRef.current?.fit(); } catch { /* ignore */ }
     });
   }, [currentTheme, fontSize, fontFamily]);
+
+  // KaTeX math overlay. When enabled, scan the visible buffer (plus a little
+  // lookback for multi-line blocks) for LaTeX and lay KaTeX-rendered HTML in an
+  // absolutely-positioned layer ON TOP of the source text. Off by default and
+  // fully torn down when off, so it costs nothing unless the user opts in.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const overlays = mathOverlaysRef.current;
+    const debug = typeof localStorage !== 'undefined' && localStorage.getItem('swarmie-math-debug') === '1';
+
+    const teardown = () => {
+      for (const el of overlays.values()) el.remove();
+      overlays.clear();
+      mathLayerRef.current?.remove();
+      mathLayerRef.current = null;
+    };
+
+    if (!mathRender) { teardown(); return; }
+
+    const bg = currentTheme.terminal.background ?? '#000';
+    const fg = currentTheme.terminal.foreground ?? '#fff';
+
+    const rescan = () => {
+      const xtermEl = term.element;
+      const screenEl = xtermEl?.querySelector('.xterm-screen') as HTMLElement | null;
+      if (!xtermEl || !screenEl || screenEl.clientWidth === 0) {
+        if (debug) console.log('[swarmie-math] no .xterm-screen yet');
+        return;
+      }
+      // Mount the overlay layer on the .xterm ROOT (not .xterm-screen, which the
+      // WebGL/Canvas renderer manages — injecting DOM there corrupts its row
+      // model and crashes rendering; and not the React-owned wrapper, which
+      // React would try to reconcile). Align it to .xterm-screen via offsets.
+      let layer = mathLayerRef.current;
+      if (!layer || layer.parentElement !== xtermEl) {
+        layer?.remove();
+        layer = document.createElement('div');
+        layer.className = 'term-math-layer';
+        xtermEl.appendChild(layer);
+        mathLayerRef.current = layer;
+      }
+      const sr = screenEl.getBoundingClientRect();
+      const xr = xtermEl.getBoundingClientRect();
+      layer.style.left = `${sr.left - xr.left}px`;
+      layer.style.top = `${sr.top - xr.top}px`;
+      layer.style.width = `${sr.width}px`;
+      layer.style.height = `${sr.height}px`;
+
+      const buf = term.buffer.active;
+      const cols = term.cols;
+      const rows = term.rows;
+      const cw = sr.width / cols;
+      const ch = sr.height / rows;
+      const viewTop = buf.viewportY;
+      const lookback = 80;
+      const winStart = Math.max(0, viewTop - lookback);
+      const winEnd = Math.min(buf.length, viewTop + rows);
+      const lines: string[] = [];
+      for (let abs = winStart; abs < winEnd; abs++) {
+        lines.push(buf.getLine(abs)?.translateToString(true) ?? '');
+      }
+
+      const items = detectMath(lines);
+      const seen = new Set<string>();
+      let placed = 0;
+
+      for (const it of items) {
+        const html = renderMath(it.tex, it.display);
+        if (!html) continue;
+        const startAbs = winStart + it.startLine;
+        const endAbs = winStart + it.endLine;
+        const vTop = startAbs - viewTop;
+        const vBottom = endAbs - viewTop;
+        if (vTop >= rows || vBottom < 0) continue; // fully outside the viewport
+        const multiline = it.endLine !== it.startLine;
+        const key = `${startAbs}:${it.startCol}:${it.display ? 'D' : 'I'}:${endAbs - startAbs}:${it.tex}`;
+        seen.add(key);
+
+        let el = overlays.get(key);
+        const isNew = !el;
+        if (!el) {
+          el = document.createElement('div');
+          el.className = `term-math${it.display ? ' term-math-display' : ''}`;
+          el.style.background = bg;
+          el.style.color = fg;
+          el.style.fontSize = `${fontSize}px`;
+          el.innerHTML = html;
+          layer.appendChild(el);
+          overlays.set(key, el);
+        }
+        el.style.top = `${vTop * ch}px`;
+        const boxRows = multiline ? endAbs - startAbs + 1 : 1;
+        const maxH = boxRows * ch;
+        if (multiline) {
+          el.style.left = '0px';
+          el.style.width = `${cols * cw}px`;
+        } else {
+          el.style.left = `${it.startCol * cw}px`;
+          el.style.minWidth = `${Math.max(1, it.endCol - it.startCol) * cw}px`;
+        }
+        el.style.height = `${maxH}px`;
+        // Scale tall math down so it fits its source footprint instead of
+        // bleeding over neighbouring lines. Simple math (fits already) stays at
+        // full size. Natural height is measured once and cached so resizes/
+        // scrolls can re-derive the scale without another reflow.
+        const inner = el.firstElementChild as HTMLElement | null;
+        if (inner) {
+          if (isNew) {
+            inner.style.transform = '';
+            el.dataset.nh = String(inner.getBoundingClientRect().height || 0);
+          }
+          const nh = Number(el.dataset.nh) || 0;
+          const scale = nh > maxH && nh > 0 ? maxH / nh : 1;
+          inner.style.transformOrigin = multiline ? 'center center' : 'left center';
+          inner.style.transform = scale < 1 ? `scale(${scale})` : '';
+        }
+        placed += 1;
+      }
+
+      for (const [key, el] of overlays) {
+        if (!seen.has(key)) { el.remove(); overlays.delete(key); }
+      }
+      if (debug) {
+        console.log(`[swarmie-math] lines=${lines.length} detected=${items.length} placed=${placed} cell=${cw.toFixed(1)}x${ch.toFixed(1)}`);
+      }
+    };
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (timer !== null) return;
+      timer = setTimeout(() => { timer = null; rescan(); }, 100);
+    };
+
+    const renderDisp = term.onRender(schedule);
+    const scrollDisp = term.onScroll(schedule);
+    // Initial scan(s): the screen may not be laid out on the first tick.
+    rescan();
+    const kick = setTimeout(rescan, 150);
+
+    return () => {
+      renderDisp.dispose();
+      scrollDisp.dispose();
+      if (timer !== null) clearTimeout(timer);
+      clearTimeout(kick);
+      teardown();
+    };
+  }, [mathRender, termReady, currentTheme, fontSize]);
 
   // Focus search input when search opens
   useEffect(() => {

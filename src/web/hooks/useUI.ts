@@ -5,6 +5,7 @@ interface UIState {
   fontSize: number;
   fontFamily: string;
   bellSound: boolean;
+  mathRender: boolean;
   showNewSession: boolean;
   settingsOpen: boolean;
   agentOverlayMode: 'overview' | 'switcher' | null;
@@ -22,6 +23,7 @@ interface UIState {
   setFontSize: (size: number) => void;
   setFontFamily: (family: string) => void;
   setBellSound: (enabled: boolean) => void;
+  setMathRender: (enabled: boolean) => void;
   setShowNewSession: (show: boolean) => void;
   setAutoCompactMinutes: (minutes: number) => void;
   _setAutoCompactMinutesLocal: (minutes: number) => void;
@@ -37,6 +39,7 @@ const savedTheme = localStorage.getItem('swarmie-theme') || 'solarized-light';
 const savedFontSize = parseInt(localStorage.getItem('swarmie-font-size') || '20', 10);
 const savedFontFamily = localStorage.getItem('swarmie-font-family') || "'SF Mono', Monaco, Menlo, monospace";
 const savedBellSound = localStorage.getItem('swarmie-bell-sound') !== 'false'; // default on
+const savedMathRender = localStorage.getItem('swarmie-math-render') === 'true'; // default off
 const savedAutoCompactMinutes = parseInt(localStorage.getItem('swarmie-auto-compact-minutes') || '60', 10);
 const savedTileLayoutEnabled = localStorage.getItem('swarmie-tile-layout-enabled') === 'true';
 const savedTileColumns = parseInt(localStorage.getItem('swarmie-tile-columns') || '2', 10);
@@ -77,6 +80,7 @@ export const useUIStore = create<UIState>((set) => ({
   fontSize: savedFontSize,
   fontFamily: savedFontFamily,
   bellSound: savedBellSound,
+  mathRender: savedMathRender,
   showNewSession: false,
   settingsOpen: false,
   agentOverlayMode: null,
@@ -109,6 +113,10 @@ export const useUIStore = create<UIState>((set) => ({
   setBellSound: (bellSound) => {
     localStorage.setItem('swarmie-bell-sound', String(bellSound));
     set({ bellSound });
+  },
+  setMathRender: (mathRender) => {
+    localStorage.setItem('swarmie-math-render', String(mathRender));
+    set({ mathRender });
   },
   setShowNewSession: (showNewSession) => set({ showNewSession }),
   setAutoCompactMinutes: (minutes) => {

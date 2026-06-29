@@ -765,6 +765,33 @@ body,
   background: var(--terminal-bg, #000);
 }
 
+/* KaTeX math overlay drawn on top of the source LaTeX in the terminal. A single
+   layer is positioned over .xterm-screen; each formula is an absolutely-placed
+   box covering its source text (terminal background) with the rendered math on
+   top. pointer-events:none lets clicks/selection pass through to the terminal. */
+.term-math-layer {
+  position: absolute;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 10;
+}
+.term-math {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  white-space: nowrap;
+  line-height: normal;
+  pointer-events: none;
+  overflow: visible;
+}
+.term-math-display {
+  justify-content: center;
+}
+.term-math .katex {
+  line-height: normal;
+}
+
 
 /* Session Items */
 .session-item {

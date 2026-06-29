@@ -504,10 +504,12 @@ function DrawerSettings() {
   const fontSize = useUIStore((s) => s.fontSize);
   const fontFamily = useUIStore((s) => s.fontFamily);
   const bellSound = useUIStore((s) => s.bellSound);
+  const mathRender = useUIStore((s) => s.mathRender);
   const setTheme = useUIStore((s) => s.setTheme);
   const setFontSize = useUIStore((s) => s.setFontSize);
   const setFontFamily = useUIStore((s) => s.setFontFamily);
   const setBellSound = useUIStore((s) => s.setBellSound);
+  const setMathRender = useUIStore((s) => s.setMathRender);
 
   return (
     <div className="settings-section">
@@ -553,6 +555,18 @@ function DrawerSettings() {
             className={`toggle-switch ${bellSound ? 'on' : ''}`}
             onClick={() => setBellSound(!bellSound)}
             aria-label="Toggle bell sound"
+          >
+            <span className="toggle-knob" />
+          </button>
+        </label>
+      </div>
+      <div className="setting-group">
+        <label className="toggle-label">
+          <span>Render LaTeX (KaTeX)</span>
+          <button
+            className={`toggle-switch ${mathRender ? 'on' : ''}`}
+            onClick={() => setMathRender(!mathRender)}
+            aria-label="Toggle LaTeX math rendering"
           >
             <span className="toggle-knob" />
           </button>
