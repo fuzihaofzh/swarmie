@@ -55,8 +55,14 @@ const MAX_PENDING_WRITE_BYTES = 2 * 1024 * 1024;
 // for smooth interaction. Very large xterm buffers stay expensive even when a
 // tab is hidden, especially over remote desktop.
 const TERMINAL_SCROLLBACK_LINES = 10000;
-/** How many bytes earlier to fetch each time the user asks for more history. */
-const HISTORY_CHUNK_BYTES = 2 * 1024 * 1024;
+// How many bytes earlier to fetch each time the user asks for more history.
+// Kept modest (not multi-MB) on purpose: the server's history:snapshot spans
+// [fromOffset, current-end], so the client term.reset()s and re-renders the
+// whole window on the main thread each load. A 2MB window made "scroll up a
+// bit" stall for seconds (and risk the retry timeout, which re-requests another
+// full snapshot and compounds). A smaller window loads near-instantly and the
+// user can keep scrolling to pull more, infinite-scroll style.
+const HISTORY_CHUNK_BYTES = 512 * 1024;
 // How long to wait for a history:snapshot before re-sending the request. The
 // reply can be lost (e.g. it raced a WS reconnect, or the socket was briefly
 // not OPEN when we sent) — without a resend the load would just spin until the
@@ -221,13 +227,21 @@ export function TerminalView({
     const el = containerRef.current;
     if (!el) return;
 
-    initStartedRef.current = true;
+    let cancelled = false;
+    let rafId = 0;
 
     const init = () => {
+      if (cancelled) return;
       if (el.clientWidth === 0 || el.clientHeight === 0) {
-        requestAnimationFrame(init);
+        rafId = requestAnimationFrame(init);
         return;
       }
+
+      // Commit point: a real size exists and xterm is about to be created. Mark
+      // init as started only here so that if the panel is deactivated/unmounted
+      // before it ever gets a size, a later reactivation can retry instead of
+      // being blocked forever by the guard above.
+      initStartedRef.current = true;
 
       const t = themeRef.current;
       const term = new Terminal({
@@ -419,7 +433,11 @@ export function TerminalView({
       });
     };
 
-    requestAnimationFrame(init);
+    rafId = requestAnimationFrame(init);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, sessionId]);
 
@@ -506,11 +524,20 @@ export function TerminalView({
     if (!term) return;
     const autoFocus = shouldAutoFocusTerminal(getFocusPolicyEnv());
     requestAnimationFrame(() => {
+      // The component may have unmounted (term disposed) between scheduling and
+      // running this frame; bail rather than operate on a dead terminal.
+      if (termRef.current !== term) return;
+      // Capture whether the user was following live output BEFORE fit() can
+      // shift the buffer. Only snap back to the bottom if they were already
+      // there — otherwise returning to a tab would yank a scrolled-up reader
+      // back down and lose their place.
+      const buf = term.buffer.active;
+      const wasAtBottom = buf.viewportY >= buf.baseY;
       try {
         fitAddon?.fit();
         reportResizeRef.current(term);
       } catch { /* ignore */ }
-      term.scrollToBottom();
+      if (wasAtBottom) term.scrollToBottom();
       if (autoFocus) {
         term.focus();
       }

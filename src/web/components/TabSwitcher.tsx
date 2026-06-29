@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useSessionStore } from '../hooks/useSessions';
 import { ToolIcon } from './ToolIcon';
 import { useKeybindingStore, matchesAction } from '../hooks/useKeybindings';
@@ -9,32 +9,31 @@ interface TabSwitcherProps {
   mruRef: React.RefObject<string[]>;
 }
 
+/**
+ * True for real editable form fields (the tag/server/password inputs) but NOT
+ * the xterm helper <textarea>, which holds focus whenever a terminal is active.
+ * Global shortcuts must keep working while a terminal is focused.
+ */
+function isNonTerminalFormField(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest('.xterm')) return false;
+  const tag = target.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
+}
+
 export function TabSwitcher({ mruRef }: TabSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Display order, frozen at open time. Deliberately NOT recomputed while the
+  // switcher is open — re-sorting on every render (e.g. when a background
+  // session flips to waiting_input) used to shuffle items out from under the
+  // user's selection, so releasing the modifier activated the wrong agent.
+  const [orderIds, setOrderIds] = useState<string[]>([]);
   const sessions = useSessionStore((s) => s.sessions);
   const archivedSessionIds = useSessionStore((s) => s.archivedSessionIds);
-  const tagFilter = useUIStore((s) => s.tagFilter);
   const mruListRef = useRef<string[]>([]);
 
   const setSessionAutoApprove = useSessionStore((s) => s.setSessionAutoApprove);
-
-  const getMRUSessions = useCallback(() => {
-    const mru = mruListRef.current;
-    const archived = new Set(archivedSessionIds);
-    const workspaceSessions = sessions.filter((s) => !archived.has(s.id));
-    const visibleSessions = tagFilter.length === 0
-      ? workspaceSessions
-      : workspaceSessions.filter((s) => (s.tags ?? []).some((tag) => tagFilter.includes(tag)));
-    const sessionMap = new Map(visibleSessions.map((s) => [s.id, s]));
-    const list = mru.map((id) => sessionMap.get(id)).filter(Boolean) as typeof sessions;
-    // Sort: waiting_input (bell) first, then preserve MRU order
-    return list.sort((a, b) => {
-      const aBell = a.status === 'waiting_input' ? 0 : 1;
-      const bBell = b.status === 'waiting_input' ? 0 : 1;
-      return aBell - bBell;
-    });
-  }, [archivedSessionIds, sessions, tagFilter]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -67,25 +66,35 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
         return;
       }
 
-      // Open switcher
+      // Open switcher. Ignore the shortcut while the user is typing in a real
+      // form field (tag rename, server URL/password, …) — but NOT the xterm
+      // helper textarea, which holds focus whenever a terminal is active and is
+      // the normal context for invoking the switcher.
       if (matchesAction(e, 'tab-switcher') || matchesAction(e, 'tab-switcher-prev')) {
+        if (isNonTerminalFormField(e.target)) return;
         e.preventDefault();
         e.stopPropagation();
         const state = useSessionStore.getState();
         const archived = new Set(state.archivedSessionIds);
         const currentTagFilter = useUIStore.getState().tagFilter;
-        const visibleIds = new Set(
-          state.sessions
-            .filter((s) => !archived.has(s.id))
-            .filter((s) => currentTagFilter.length === 0 || sessionMatchesTagFilter(s, currentTagFilter))
-            .map((s) => s.id),
-        );
-        mruListRef.current = [...(mruRef.current ?? [])].filter((id) => visibleIds.has(id));
-        if (mruListRef.current.length < 2) {
+        const visibleSessions = state.sessions
+          .filter((s) => !archived.has(s.id))
+          .filter((s) => currentTagFilter.length === 0 || sessionMatchesTagFilter(s, currentTagFilter));
+        const visibleById = new Map(visibleSessions.map((s) => [s.id, s]));
+        const filtered = [...(mruRef.current ?? [])].filter((id) => visibleById.has(id));
+        if (filtered.length < 2) {
           return;
         }
+        // Apply the bell-first sort exactly once, here, then freeze it.
+        const ordered = filtered.sort((a, b) => {
+          const aBell = visibleById.get(a)?.status === 'waiting_input' ? 0 : 1;
+          const bBell = visibleById.get(b)?.status === 'waiting_input' ? 0 : 1;
+          return aBell - bBell;
+        });
+        mruListRef.current = ordered;
+        setOrderIds(ordered);
         setOpen(true);
-        setSelectedIndex(Math.min(1, mruListRef.current.length - 1));
+        setSelectedIndex(Math.min(1, ordered.length - 1));
       }
     };
 
@@ -118,14 +127,19 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
 
   if (!open) return null;
 
-  const mruSessions = getMRUSessions();
-  // Keep mruListRef in sync with the sorted display order
-  mruListRef.current = mruSessions.map((s) => s.id);
+  // Render from the frozen order. Look each id up in the live session list so
+  // status/host details stay current, but the ORDER and the index→id mapping
+  // (mruListRef) never change while open, keeping the highlighted row and the
+  // keyboard selection in lock-step.
+  const archived = new Set(archivedSessionIds);
+  const sessionById = new Map(sessions.map((s) => [s.id, s]));
 
   return (
     <div className="tab-switcher-overlay" onClick={() => setOpen(false)}>
       <div className="tab-switcher" onClick={(e) => e.stopPropagation()}>
-        {mruSessions.map((s, i) => {
+        {orderIds.map((id, i) => {
+          const s = sessionById.get(id);
+          if (!s || archived.has(id)) return null;
           const short = s.cwd
             .replace(/^\/Users\/[^/]+/, '~')
             .replace(/^\/home\/[^/]+/, '~');

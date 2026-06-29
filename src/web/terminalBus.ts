@@ -115,11 +115,16 @@ export function writeToTerminal(sessionId: string, binData: string, offsetEnd?: 
   if (typeof offsetEnd === 'number' && Number.isFinite(offsetEnd)) {
     const m = getOrCreateMeta(sessionId);
     const offsetStart = offsetEnd - binData.length;
+    const prevLowest = m.lowestOffset;
     if (m.highestOffset === 0 && m.lowestOffset === 0) {
       m.lowestOffset = Math.max(0, offsetStart);
     }
     if (offsetEnd > m.highestOffset) m.highestOffset = offsetEnd;
-    emitMeta(sessionId);
+    // Only notify listeners when a field the UI actually renders on changes.
+    // highestOffset advances on every output frame but nothing reads it in
+    // render, so emitting here unconditionally re-rendered TerminalView (and
+    // re-ran its history-load effect) on every single WS frame.
+    if (m.lowestOffset !== prevLowest) emitMeta(sessionId);
   }
 
   const writer = writers.get(sessionId);

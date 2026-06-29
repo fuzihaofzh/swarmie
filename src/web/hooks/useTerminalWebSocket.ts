@@ -18,6 +18,11 @@ export interface ClipboardImagePaste {
 
 const REPLAY_GROUP_BYTES = 64 * 1024;
 
+// Reused across every binary frame — decoding the few session-id header bytes
+// is stateless, so allocating a fresh TextDecoder per frame (the hottest path
+// in the app) was pure GC pressure during heavy output.
+const SID_DECODER = new TextDecoder();
+
 function wsUrlForServer(serverUrl: string): string {
   if (serverUrl === LOCAL_SERVER) {
     return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws?terminal=1`;
@@ -117,7 +122,7 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
     const sidLen = view.getUint8(1);
     const headerEnd = 2 + sidLen + 8;
     if (buf.byteLength < headerEnd) return;
-    const sid = new TextDecoder().decode(new Uint8Array(buf, 2, sidLen));
+    const sid = SID_DECODER.decode(new Uint8Array(buf, 2, sidLen));
     if (sid !== sessionId) return;
     const offsetEnd = view.getFloat64(2 + sidLen, true);
     const bin = bytesToBinaryString(new Uint8Array(buf, headerEnd));

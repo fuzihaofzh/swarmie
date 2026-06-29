@@ -68,7 +68,11 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
   // a height on every event triggers a refit→resize→SIGWINCH storm that
   // garbles ink-based TUI output mid-render.
   useEffect(() => {
-    if (!shouldShowMobileToolbar(getFocusPolicyEnv()) || !window.visualViewport) return;
+    // Gate on `visible` (kept in sync by the resize effect) rather than a
+    // one-time env check, and depend on it below — otherwise rotating/resizing
+    // into the mobile layout after mount would never install the soft-keyboard
+    // viewport handling.
+    if (!visible || !window.visualViewport) return;
 
     const vv = window.visualViewport;
     let maxHeight = vv.height;
@@ -101,23 +105,37 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
       const root = document.getElementById('root');
       if (root) root.style.height = '';
     };
-  }, []);
+  }, [visible]);
 
   const resolveKey = useCallback(
     (key?: string, seq?: string): string => {
-      if (seq) return seq;
-      if (!key) return '';
+      let effectiveKey = key;
+      if (seq) {
+        // A single-character seq (the "/", "[", "]" buttons) should still honour
+        // an active Ctrl/Alt modifier so chords like Ctrl+[ (= ESC) work from the
+        // toolbar. Multi-char escape sequences pass straight through.
+        if (seq.length === 1 && (ctrlActive || altActive)) {
+          effectiveKey = seq;
+        } else {
+          return seq;
+        }
+      }
+      if (!effectiveKey) return '';
       if (ctrlActive) {
-        if (CTRL_KEY_MAP[key]) return CTRL_KEY_MAP[key];
-        if (key.length === 1) return String.fromCharCode(key.toUpperCase().charCodeAt(0) - 64);
-        return KEY_MAP[key] || '';
+        if (CTRL_KEY_MAP[effectiveKey]) return CTRL_KEY_MAP[effectiveKey];
+        if (effectiveKey.length === 1) {
+          const code = effectiveKey.toUpperCase().charCodeAt(0) - 64;
+          if (code >= 0 && code <= 31) return String.fromCharCode(code);
+          return effectiveKey; // no valid control code (e.g. "/") → send literal
+        }
+        return KEY_MAP[effectiveKey] || '';
       }
       if (altActive) {
-        if (ALT_KEY_MAP[key]) return ALT_KEY_MAP[key];
-        if (key.length === 1) return '\x1b' + key;
-        return KEY_MAP[key] || '';
+        if (ALT_KEY_MAP[effectiveKey]) return ALT_KEY_MAP[effectiveKey];
+        if (effectiveKey.length === 1) return '\x1b' + effectiveKey;
+        return KEY_MAP[effectiveKey] || '';
       }
-      return KEY_MAP[key] || '';
+      return KEY_MAP[effectiveKey] || '';
     },
     [ctrlActive, altActive],
   );

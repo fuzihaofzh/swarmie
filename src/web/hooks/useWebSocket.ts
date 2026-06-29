@@ -20,6 +20,7 @@ export class ServerConnection {
   private shutdown = false;
   private disposed = false;
   private retryPaused = false;
+  private reconnectAttempts = 0;
   private pendingSessionSettings = new Map<string, SessionSettingsPatch>();
   private pendingAutoCompactMinutes: number | null = null;
   constructor(serverUrl: string, token?: string) {
@@ -72,6 +73,7 @@ export class ServerConnection {
         return;
       }
       this.retryPaused = false;
+      this.reconnectAttempts = 0;
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'connected');
       ws.send(JSON.stringify({ type: 'subscribe:all' }));
       this.flushPendingSettings();
@@ -100,14 +102,22 @@ export class ServerConnection {
       clearInterval(this.pingTimer);
       if (!this.shutdown && !this.disposed) {
         if (this.retryPaused) {
+          // A remote server errored (often a transient blip or a momentarily
+          // unreachable host). Surface the error and drop its now-stale
+          // sessions, but schedule a backoff reconnect so it recovers on its
+          // own instead of staying dead until a manual retry.
           useServerStore.getState().setConnectionStatus(this.serverUrl, 'error');
           if (!this.isLocal) {
             useSessionStore.getState().removeServerSessions(this.serverUrl);
           }
+          this.reconnectTimer = setTimeout(() => {
+            this.retryPaused = false;
+            this.connect();
+          }, this.nextReconnectDelay());
           return;
         }
         useServerStore.getState().setConnectionStatus(this.serverUrl, 'disconnected');
-        this.reconnectTimer = setTimeout(() => this.connect(), 2000);
+        this.reconnectTimer = setTimeout(() => this.connect(), this.nextReconnectDelay());
       }
     };
 
@@ -119,6 +129,17 @@ export class ServerConnection {
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'error');
       ws.close();
     };
+  }
+
+  /**
+   * Exponential backoff (1s → 30s cap) with ±20% jitter so a downed server
+   * isn't hammered every 2s and many tabs don't reconnect in lockstep. Reset
+   * to 0 on a successful open.
+   */
+  private nextReconnectDelay(): number {
+    const base = Math.min(30000, 1000 * 2 ** this.reconnectAttempts);
+    this.reconnectAttempts++;
+    return Math.round(base * (0.8 + Math.random() * 0.4));
   }
 
   /** Reconnect immediately if the WebSocket is not open (e.g. after returning from background tab) */
@@ -139,6 +160,7 @@ export class ServerConnection {
     if (this.disposed) return;
     this.shutdown = false;
     this.retryPaused = false;
+    this.reconnectAttempts = 0;
     clearTimeout(this.reconnectTimer);
     if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
       this.ws.close();

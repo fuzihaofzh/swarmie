@@ -205,6 +205,18 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
 }
 
+/**
+ * Like isEditableTarget, but excludes the xterm helper <textarea> that holds
+ * focus whenever a terminal is active. Use this for global shortcuts that must
+ * keep working in the terminal yet not fire while typing in a real form field
+ * (tag rename, server URL/password, …).
+ */
+function isNonTerminalFormField(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest('.xterm')) return false;
+  return isEditableTarget(target);
+}
+
 export function App() {
   const wsFunctions = useMultiWebSocket();
   const [api, setApi] = useState<DockviewApi | null>(null);
@@ -314,6 +326,10 @@ export function App() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
+      // Don't swallow Cmd+Left/Right (line start/end) or Ctrl+Cmd+T while the
+      // user is typing in a real form field — but keep them working in the
+      // terminal, whose helper textarea would otherwise count as editable.
+      if (isNonTerminalFormField(e.target)) return;
       if (e.key === 't' && e.ctrlKey) {
         e.preventDefault();
         useUIStore.getState().setShowNewSession(true);
