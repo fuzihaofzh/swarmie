@@ -6,7 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 import { useUIStore } from '../hooks/useUI';
-import { detectMath, renderMath } from '../latex';
+import { detectMath, renderMath, cellWidthOf } from '../latex';
 import { themes } from '../themes';
 import {
   registerTerminalWriter,
@@ -690,25 +690,50 @@ export function TerminalView({
       const lookback = 80;
       const winStart = Math.max(0, viewTop - lookback);
       const winEnd = Math.min(buf.length, viewTop + rows);
-      const lines: string[] = [];
-      for (let abs = winStart; abs < winEnd; abs++) {
-        lines.push(buf.getLine(abs)?.translateToString(true) ?? '');
+
+      // Build LOGICAL lines by joining xterm's wrapped continuation rows, so a
+      // `$…$` split across a wrap is still detected. Each logical line records
+      // the absolute buffer row it starts on; a logical (cell) column maps back
+      // to a buffer row via floor(cellCol / cols).
+      const logical: Array<{ text: string; bufStart: number }> = [];
+      let abs = winStart;
+      while (abs < winEnd) {
+        const bufStart = abs;
+        let text = buf.getLine(abs)?.translateToString(false) ?? '';
+        let next = abs + 1;
+        while (next < winEnd && buf.getLine(next)?.isWrapped) {
+          text += buf.getLine(next)?.translateToString(false) ?? '';
+          next += 1;
+        }
+        logical.push({ text, bufStart });
+        abs = next;
       }
 
-      const items = detectMath(lines);
+      const items = detectMath(logical.map((l) => l.text));
       const seen = new Set<string>();
       let placed = 0;
+
+      // Map a (logical line, char index) to absolute buffer row + cell column.
+      const locate = (logIdx: number, charIdx: number) => {
+        const log = logical[logIdx];
+        const cellCol = cellWidthOf(log.text.slice(0, charIdx));
+        return { absRow: log.bufStart + Math.floor(cellCol / cols), col: cellCol % cols };
+      };
 
       for (const it of items) {
         const html = renderMath(it.tex, it.display);
         if (!html) continue;
-        const startAbs = winStart + it.startLine;
-        const endAbs = winStart + it.endLine;
+        const start = locate(it.startLine, it.startCol);
+        const end = locate(it.endLine, Math.max(it.startCol, it.endCol - 1));
+        const startAbs = start.absRow;
+        const endAbs = end.absRow;
         const vTop = startAbs - viewTop;
         const vBottom = endAbs - viewTop;
         if (vTop >= rows || vBottom < 0) continue; // fully outside the viewport
-        const multiline = it.endLine !== it.startLine;
-        const key = `${startAbs}:${it.startCol}:${it.display ? 'D' : 'I'}:${endAbs - startAbs}:${it.tex}`;
+        // Anything that wraps onto another buffer row, or an explicit display
+        // block, is laid out as a full-width box spanning its rows.
+        const multiline = it.display || endAbs !== startAbs;
+        const key = `${startAbs}:${start.col}:${it.display ? 'D' : 'I'}:${endAbs - startAbs}:${it.tex}`;
         seen.add(key);
 
         let el = overlays.get(key);
@@ -730,8 +755,8 @@ export function TerminalView({
           el.style.left = '0px';
           el.style.width = `${cols * cw}px`;
         } else {
-          el.style.left = `${it.startCol * cw}px`;
-          el.style.minWidth = `${Math.max(1, it.endCol - it.startCol) * cw}px`;
+          el.style.left = `${start.col * cw}px`;
+          el.style.minWidth = `${Math.max(1, end.col + 1 - start.col) * cw}px`;
         }
         el.style.height = `${maxH}px`;
         // Scale tall math down so it fits its source footprint instead of
@@ -756,7 +781,7 @@ export function TerminalView({
         if (!seen.has(key)) { el.remove(); overlays.delete(key); }
       }
       if (debug) {
-        console.log(`[swarmie-math] lines=${lines.length} detected=${items.length} placed=${placed} cell=${cw.toFixed(1)}x${ch.toFixed(1)}`);
+        console.log(`[swarmie-math] logical=${logical.length} detected=${items.length} placed=${placed} cell=${cw.toFixed(1)}x${ch.toFixed(1)}`);
       }
     };
 

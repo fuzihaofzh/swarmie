@@ -37,9 +37,18 @@ export interface MathItem {
   display: boolean;
 }
 
-// A single-`$` span must contain at least one of these to count as math, so we
-// don't render `$PATH`, `$5`, or `$ a sentence $` as equations.
+// A single-`$` span must look like math, not shell noise (`$PATH`, `$5`, prices,
+// `$ a sentence $`). Accept it if it carries a real LaTeX signal OR is a lone
+// variable like `$C$` / `$H$` (extremely common in real math) — but NOT a
+// multi-letter bareword (`$PATH`) or a bare number (`$5`).
 const STRONG_MATH_SIGNAL = /[\\^_{}]/;
+const SINGLE_VARIABLE = /^[A-Za-z]$/;
+
+function looksLikeInlineMath(raw: string): boolean {
+  const t = raw.trim();
+  if (!t) return false;
+  return STRONG_MATH_SIGNAL.test(t) || SINGLE_VARIABLE.test(t);
+}
 // Upper bound so a stray unmatched delimiter can't swallow a whole long line.
 const MAX_TEX_LEN = 240;
 // Blocks (display math) may legitimately be longer than an inline span.
@@ -97,7 +106,7 @@ export function detectMathSpans(line: string): MathSpan[] {
       }
       if (close !== -1 && close > i + 1) {
         const inner = line.slice(i + 1, close);
-        if (STRONG_MATH_SIGNAL.test(inner)) {
+        if (looksLikeInlineMath(inner)) {
           pushSpan(spans, i, close + 1, inner, false);
           i = close + 1;
           continue;
@@ -142,6 +151,33 @@ export function renderMath(tex: string, display: boolean): string | null {
 /** Test-only: reset the render cache. */
 export function _clearRenderCache(): void {
   renderCache.clear();
+}
+
+function isWideCodePoint(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    cp === 0x2329 || cp === 0x232a ||
+    (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) || // CJK radicals … Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK compatibility ideographs
+    (cp >= 0xfe10 && cp <= 0xfe19) ||
+    (cp >= 0xfe30 && cp <= 0xfe6f) || // CJK compatibility forms
+    (cp >= 0xff00 && cp <= 0xff60) || // fullwidth forms
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1faff) || // emoji / symbols
+    (cp >= 0x20000 && cp <= 0x3fffd)    // CJK extension B+
+  );
+}
+
+/**
+ * Terminal cell width of a string. CJK/fullwidth/emoji glyphs occupy 2 cells,
+ * so a character index in the line text is NOT the terminal column — overlay
+ * positioning must convert through this.
+ */
+export function cellWidthOf(s: string): number {
+  let w = 0;
+  for (const ch of s) w += isWideCodePoint(ch.codePointAt(0) ?? 0) ? 2 : 1;
+  return w;
 }
 
 interface Region {

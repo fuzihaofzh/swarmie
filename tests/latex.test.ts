@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectMathSpans, detectMath, renderMath, _clearRenderCache } from '../src/web/latex';
+import { detectMathSpans, detectMath, renderMath, cellWidthOf, _clearRenderCache } from '../src/web/latex';
 
 const texOf = (line: string) => detectMathSpans(line).map((s) => ({ tex: s.tex, display: s.display }));
 
@@ -51,6 +51,29 @@ describe('detectMathSpans — should NOT detect shell/terminal noise', () => {
   });
   it('prompt line', () => {
     expect(detectMathSpans('bash-5.3$ ls')).toEqual([]);
+  });
+});
+
+describe('detectMathSpans — single-letter variables', () => {
+  it('renders bare variables $C$ $H$ $h$', () => {
+    expect(texOf('概念类 $C$ 是 PAC')).toEqual([{ tex: 'C', display: false }]);
+    expect(texOf('当 $H$ 有限')).toEqual([{ tex: 'H', display: false }]);
+    expect(texOf('输出 $h$ 满足')).toEqual([{ tex: 'h', display: false }]);
+  });
+  it('still rejects multi-letter barewords and numbers', () => {
+    expect(detectMathSpans('echo $PATH end')).toEqual([]);
+    expect(detectMathSpans('costs $5 and $10')).toEqual([]);
+    expect(detectMathSpans('$HOME$')).toEqual([]);
+  });
+});
+
+describe('cellWidthOf', () => {
+  it('ASCII is one cell each', () => {
+    expect(cellWidthOf('abc$x$')).toBe(6);
+  });
+  it('CJK chars are two cells each', () => {
+    expect(cellWidthOf('概念类')).toBe(6);
+    expect(cellWidthOf('当 $H$')).toBe(2 + 1 + 3); // 当=2, space=1, $H$=3
   });
 });
 
