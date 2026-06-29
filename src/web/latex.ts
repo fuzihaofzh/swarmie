@@ -43,11 +43,20 @@ export interface MathItem {
 // multi-letter bareword (`$PATH`) or a bare number (`$5`).
 const STRONG_MATH_SIGNAL = /[\\^_{}]/;
 const SINGLE_VARIABLE = /^[A-Za-z]$/;
+// A relation operator (rare inside shell text) — $x = y$, $a < b$, $a \neq b$.
+const RELATION = /[=<>≤≥≠]/;
+// A bracketed expression with a separator — $[a,b]$, $(0,1)$, $[1,2,3]$.
+const BRACKETED_EXPR = /^[[(].*[,;].*[)\]]$/;
 
 function looksLikeInlineMath(raw: string): boolean {
   const t = raw.trim();
   if (!t) return false;
-  return STRONG_MATH_SIGNAL.test(t) || SINGLE_VARIABLE.test(t);
+  return (
+    STRONG_MATH_SIGNAL.test(t) ||
+    SINGLE_VARIABLE.test(t) ||
+    RELATION.test(t) ||
+    BRACKETED_EXPR.test(t)
+  );
 }
 // Upper bound so a stray unmatched delimiter can't swallow a whole long line.
 const MAX_TEX_LEN = 240;

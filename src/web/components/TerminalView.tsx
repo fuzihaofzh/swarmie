@@ -158,9 +158,11 @@ export function TerminalView({
   const prevSearchOpenRef = useRef(searchOpen);
   const lastReportedSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   // KaTeX overlay layer (a div over .xterm-screen) + the math elements in it,
-  // keyed by `${absLine}:${col}:${mode}:${rows}:${tex}`.
+  // keyed by `${absLine}:${col}:${mode}:${rows}:${tex}`. Each entry keeps its
+  // absolute buffer rows so it can be repositioned every frame as the buffer
+  // scrolls, without re-running detection.
   const mathLayerRef = useRef<HTMLDivElement | null>(null);
-  const mathOverlaysRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const mathOverlaysRef = useRef<Map<string, { el: HTMLDivElement; startAbs: number; endAbs: number }>>(new Map());
 
   const themeName = useUIStore((s) => s.theme);
   const fontSize = useUIStore((s) => s.fontSize);
@@ -644,7 +646,7 @@ export function TerminalView({
     const debug = typeof localStorage !== 'undefined' && localStorage.getItem('swarmie-math-debug') === '1';
 
     const teardown = () => {
-      for (const el of overlays.values()) el.remove();
+      for (const { el } of overlays.values()) el.remove();
       overlays.clear();
       mathLayerRef.current?.remove();
       mathLayerRef.current = null;
@@ -654,6 +656,27 @@ export function TerminalView({
 
     const bg = currentTheme.terminal.background ?? '#000';
     const fg = currentTheme.terminal.foreground ?? '#fff';
+    // Cell geometry cached by the (debounced) scan; the (per-frame) reposition
+    // reads it without forcing a reflow.
+    let cellH = 0;
+    let gridRows = 0;
+
+    // Cheap: runs on every scroll/render frame so formulas track the buffer
+    // tightly (no ghosting). Only updates vertical position + visibility from
+    // the current scroll offset; never re-runs detection or measurement.
+    const reposition = () => {
+      if (!cellH || !gridRows) return;
+      const vt = term.buffer.active.viewportY;
+      for (const { el, startAbs, endAbs } of overlays.values()) {
+        const vTop = startAbs - vt;
+        if (vTop >= gridRows || endAbs - vt < 0) {
+          el.style.display = 'none';
+        } else {
+          el.style.display = '';
+          el.style.top = `${vTop * cellH}px`;
+        }
+      }
+    };
 
     const rescan = () => {
       const xtermEl = term.element;
@@ -686,6 +709,8 @@ export function TerminalView({
       const rows = term.rows;
       const cw = sr.width / cols;
       const ch = sr.height / rows;
+      cellH = ch;
+      gridRows = rows;
       const viewTop = buf.viewportY;
       const lookback = 80;
       const winStart = Math.max(0, viewTop - lookback);
@@ -736,7 +761,8 @@ export function TerminalView({
         const key = `${startAbs}:${start.col}:${it.display ? 'D' : 'I'}:${endAbs - startAbs}:${it.tex}`;
         seen.add(key);
 
-        let el = overlays.get(key);
+        const existing = overlays.get(key);
+        let el = existing?.el;
         const isNew = !el;
         if (!el) {
           el = document.createElement('div');
@@ -746,8 +772,9 @@ export function TerminalView({
           el.style.fontSize = `${fontSize}px`;
           el.innerHTML = html;
           layer.appendChild(el);
-          overlays.set(key, el);
         }
+        overlays.set(key, { el, startAbs, endAbs });
+        el.style.display = '';
         el.style.top = `${vTop * ch}px`;
         const boxRows = multiline ? endAbs - startAbs + 1 : 1;
         const maxH = boxRows * ch;
@@ -777,8 +804,8 @@ export function TerminalView({
         placed += 1;
       }
 
-      for (const [key, el] of overlays) {
-        if (!seen.has(key)) { el.remove(); overlays.delete(key); }
+      for (const [key, entry] of overlays) {
+        if (!seen.has(key)) { entry.el.remove(); overlays.delete(key); }
       }
       if (debug) {
         console.log(`[swarmie-math] logical=${logical.length} detected=${items.length} placed=${placed} cell=${cw.toFixed(1)}x${ch.toFixed(1)}`);
@@ -790,9 +817,16 @@ export function TerminalView({
       if (timer !== null) return;
       timer = setTimeout(() => { timer = null; rescan(); }, 100);
     };
+    // Reposition existing overlays immediately (tracks scroll with no lag),
+    // then schedule a debounced full re-scan to pick up newly-revealed math.
+    const tick = () => { reposition(); schedule(); };
 
-    const renderDisp = term.onRender(schedule);
-    const scrollDisp = term.onScroll(schedule);
+    const renderDisp = term.onRender(tick);
+    const scrollDisp = term.onScroll(tick);
+    // xterm sets suppressScrollEvent for wheel/touch-driven scrolls, so onScroll
+    // misses those — listen to the viewport's native scroll too for tight tracking.
+    const viewportEl = term.element?.querySelector('.xterm-viewport') as HTMLElement | null;
+    viewportEl?.addEventListener('scroll', reposition, { passive: true });
     // Initial scan(s): the screen may not be laid out on the first tick.
     rescan();
     const kick = setTimeout(rescan, 150);
@@ -800,6 +834,7 @@ export function TerminalView({
     return () => {
       renderDisp.dispose();
       scrollDisp.dispose();
+      viewportEl?.removeEventListener('scroll', reposition);
       if (timer !== null) clearTimeout(timer);
       clearTimeout(kick);
       teardown();

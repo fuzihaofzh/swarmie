@@ -60,6 +60,12 @@ describe('detectMathSpans — single-letter variables', () => {
     expect(texOf('当 $H$ 有限')).toEqual([{ tex: 'H', display: false }]);
     expect(texOf('输出 $h$ 满足')).toEqual([{ tex: 'h', display: false }]);
   });
+  it('renders bracketed expressions and relations', () => {
+    expect(texOf('区间 $[a,b]$ 上')).toEqual([{ tex: '[a,b]', display: false }]);
+    expect(texOf('$(0,1)$')).toEqual([{ tex: '(0,1)', display: false }]);
+    expect(texOf('当 $x = y$ 时')).toEqual([{ tex: 'x = y', display: false }]);
+    expect(texOf('$a < b$')).toEqual([{ tex: 'a < b', display: false }]);
+  });
   it('still rejects multi-letter barewords and numbers', () => {
     expect(detectMathSpans('echo $PATH end')).toEqual([]);
     expect(detectMathSpans('costs $5 and $10')).toEqual([]);
