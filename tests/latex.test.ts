@@ -125,9 +125,11 @@ describe('renderMath', () => {
     expect(html).toBeTruthy();
     expect(html).toContain('katex');
   });
-  it('returns null for invalid LaTeX', () => {
+  it('renders invalid LaTeX best-effort (does not fail the whole formula)', () => {
     _clearRenderCache();
-    expect(renderMath('\\frac{1}{', false)).toBeNull();
+    const html = renderMath('\\frac{1}{', false);
+    expect(html).toBeTruthy();
+    expect(html).toContain('katex');
   });
   it('caches results (same reference logic, no throw on repeat)', () => {
     _clearRenderCache();

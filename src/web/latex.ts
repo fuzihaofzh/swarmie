@@ -146,7 +146,10 @@ export function renderMath(tex: string, display: boolean): string | null {
   try {
     html = katex.renderToString(tex, {
       displayMode: display,
-      throwOnError: true,
+      // Best-effort: a single bad token (often upstream markdown eating LaTeX,
+      // e.g. `\_`/`\;` stripped) renders in red instead of failing the whole
+      // formula. Detection (looksLikeInlineMath) is the real false-positive gate.
+      throwOnError: false,
       output: 'html',
       strict: 'ignore', // don't spam the console for benign non-strict input
     });
