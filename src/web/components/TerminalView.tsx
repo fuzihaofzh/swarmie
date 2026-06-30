@@ -18,6 +18,7 @@ import {
   type SessionMeta,
 } from '../terminalBus';
 import { MobileToolbar } from './MobileToolbar';
+import { resolveKeyWithMods, useMobileModifiers } from '../mobileModifiers';
 import { useKeybindingStore, matchesBinding } from '../hooks/useKeybindings';
 import {
   shouldAutoFocusTerminal,
@@ -385,10 +386,27 @@ export function TerminalView({
           const swallow = (e: Event) => {
             if (isTextarea(e)) e.stopImmediatePropagation();
           };
+          // Send a soft-keyboard key, applying any Ctrl/Alt modifier armed from
+          // the mobile toolbar (tap Ctrl, then type "c" → \x03; Ctrl+Backspace →
+          // \x08; …). The toolbar buttons and the soft keyboard share that
+          // modifier via the store and resolve it the same way, so we consume +
+          // clear it here. `key` is a named key ('Enter', 'Backspace') or a
+          // single typed character; `raw` is the unmodified fallback.
+          const sendKey = (key: string, raw: string) => {
+            const { ctrl, alt, clear } = useMobileModifiers.getState();
+            if (!ctrl && !alt) {
+              mobileInput(raw);
+              return;
+            }
+            // A chord is only meaningful for a single key/character; multi-char
+            // commits (pastes, IME words) ignore the modifier and pass through.
+            mobileInput([...key].length === 1 ? resolveKeyWithMods(key, ctrl, alt) || raw : raw);
+            clear();
+          };
           const onCompositionEnd = (e: CompositionEvent) => {
             if (!isTextarea(e)) return;
             e.stopImmediatePropagation();
-            if (textarea.value) mobileInput(textarea.value);
+            if (textarea.value) sendKey(textarea.value, textarea.value);
             textarea.value = '';
           };
           const onInputEvent = (e: Event) => {
@@ -399,11 +417,11 @@ export function TerminalView({
             // are sent on compositionend; don't send them character-by-character.
             if (ie.isComposing || ie.inputType === 'insertCompositionText') return;
             if (ie.inputType === 'deleteContentBackward' || ie.inputType === 'deleteWordBackward') {
-              mobileInput('\x7f');
+              sendKey('Backspace', '\x7f');
             } else if (ie.inputType === 'insertLineBreak' || ie.inputType === 'insertParagraph') {
-              mobileInput('\r');
+              sendKey('Enter', '\r');
             } else if (ie.data) {
-              mobileInput(ie.data);
+              sendKey(ie.data, ie.data);
             }
             textarea.value = '';
           };

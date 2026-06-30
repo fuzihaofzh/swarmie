@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { shouldShowMobileToolbar } from '../focusPolicy';
+import { useMobileModifiers, resolveKeyWithMods } from '../mobileModifiers';
 
 function getFocusPolicyEnv() {
   return {
@@ -10,35 +11,6 @@ function getFocusPolicyEnv() {
   };
 }
 
-const KEY_MAP: Record<string, string> = {
-  Escape: '\x1b',
-  Tab: '\t',
-  Backspace: '\x7f',
-  Enter: '\r',
-  ArrowUp: '\x1b[A',
-  ArrowDown: '\x1b[B',
-  ArrowRight: '\x1b[C',
-  ArrowLeft: '\x1b[D',
-};
-
-const CTRL_KEY_MAP: Record<string, string> = {
-  Escape: '\x1b',
-  Tab: '\t',
-  Backspace: '\x08',
-  Enter: '\r',
-  ArrowUp: '\x1b[1;5A',
-  ArrowDown: '\x1b[1;5B',
-  ArrowRight: '\x1b[1;5C',
-  ArrowLeft: '\x1b[1;5D',
-};
-
-const ALT_KEY_MAP: Record<string, string> = {
-  ArrowUp: '\x1b[1;3A',
-  ArrowDown: '\x1b[1;3B',
-  ArrowRight: '\x1b[1;3C',
-  ArrowLeft: '\x1b[1;3D',
-};
-
 const ARROW_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 
 interface MobileToolbarProps {
@@ -47,8 +19,12 @@ interface MobileToolbarProps {
 
 export function MobileToolbar({ onInput }: MobileToolbarProps) {
   const [visible, setVisible] = useState(false);
-  const [ctrlActive, setCtrlActive] = useState(false);
-  const [altActive, setAltActive] = useState(false);
+  // Modifier state lives in a shared store so the soft keyboard's input path
+  // (in TerminalView) can honour an armed Ctrl/Alt too, not just these buttons.
+  const ctrlActive = useMobileModifiers((s) => s.ctrl);
+  const altActive = useMobileModifiers((s) => s.alt);
+  const setCtrlActive = useMobileModifiers((s) => s.setCtrl);
+  const setAltActive = useMobileModifiers((s) => s.setAlt);
   const ctrlTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const repeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -121,21 +97,7 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
         }
       }
       if (!effectiveKey) return '';
-      if (ctrlActive) {
-        if (CTRL_KEY_MAP[effectiveKey]) return CTRL_KEY_MAP[effectiveKey];
-        if (effectiveKey.length === 1) {
-          const code = effectiveKey.toUpperCase().charCodeAt(0) - 64;
-          if (code >= 0 && code <= 31) return String.fromCharCode(code);
-          return effectiveKey; // no valid control code (e.g. "/") → send literal
-        }
-        return KEY_MAP[effectiveKey] || '';
-      }
-      if (altActive) {
-        if (ALT_KEY_MAP[effectiveKey]) return ALT_KEY_MAP[effectiveKey];
-        if (effectiveKey.length === 1) return '\x1b' + effectiveKey;
-        return KEY_MAP[effectiveKey] || '';
-      }
-      return KEY_MAP[effectiveKey] || '';
+      return resolveKeyWithMods(effectiveKey, ctrlActive, altActive);
     },
     [ctrlActive, altActive],
   );
