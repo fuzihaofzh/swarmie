@@ -118,6 +118,29 @@ describe('detectMath — multi-line blocks', () => {
   });
 });
 
+describe('detectMath — inline $…$ hard-wrapped across lines', () => {
+  it('pairs an inline $…$ split by a hard newline', () => {
+    const items = detectMath(['记 $\\mu =', '  \\mathbb{E}[S]$. 则对任意 $t > 0$,']);
+    const wrapped = items.find((i) => i.startLine !== i.endLine);
+    expect(wrapped).toMatchObject({ display: false, startLine: 0, endLine: 1 });
+    expect(wrapped!.tex.replace(/\s+/g, ' ')).toBe('\\mu = \\mathbb{E}[S]');
+    // the same-line span on the second row is still detected too
+    expect(items.some((i) => i.tex === 't > 0')).toBe(true);
+  });
+  it('pairs $t = n\\varepsilon$ split across lines', () => {
+    const items = detectMath(['其中 $t =', '  n\\varepsilon$ 表示']);
+    expect(items).toHaveLength(1);
+    expect(items[0].tex.replace(/\s+/g, ' ')).toBe('t = n\\varepsilon');
+    expect(items[0].endLine).toBe(1);
+  });
+  it('requires a LaTeX command — does not pair shell $ across lines', () => {
+    expect(detectMath(['user@host:~ $ ls -la /usr', 'total 5 drwxr-xr-x $'])).toEqual([]);
+  });
+  it('does not pair prices/CJK prose across lines', () => {
+    expect(detectMath(['价格 $5 起', '到 $10 不等'])).toEqual([]);
+  });
+});
+
 describe('renderMath', () => {
   it('renders valid LaTeX to HTML', () => {
     _clearRenderCache();

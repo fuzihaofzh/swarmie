@@ -814,11 +814,26 @@ export function TerminalView({
           el.innerHTML = html;
           layer.appendChild(el);
         }
-        overlays.set(key, { el, startAbs, endAbs });
-        el.style.display = '';
-        el.style.top = `${vTop * ch}px`;
-        const boxRows = multiline ? endAbs - startAbs + 1 : 1;
+        // A display block claims adjacent BLANK rows for vertical room: a block
+        // sitting in its own whitespace stays full-size, while one packed between
+        // text lines (e.g. inside a list) shrinks to fit instead of overlapping.
+        let boxTop = startAbs;
+        let boxBottom = endAbs;
+        if (it.display) {
+          const isBlank = (r: number) => {
+            const l = buf.getLine(r);
+            return !l || l.translateToString(true).trim() === '';
+          };
+          let n = 0;
+          while (n < 3 && isBlank(boxTop - 1)) { boxTop -= 1; n += 1; }
+          n = 0;
+          while (n < 3 && isBlank(boxBottom + 1)) { boxBottom += 1; n += 1; }
+        }
+        const boxRows = boxBottom - boxTop + 1;
         const maxH = boxRows * ch;
+        overlays.set(key, { el, startAbs: boxTop, endAbs: boxBottom });
+        el.style.display = '';
+        el.style.top = `${(boxTop - viewTop) * ch}px`;
         if (multiline) {
           el.style.left = '0px';
           el.style.width = `${cols * cw}px`;
@@ -834,10 +849,10 @@ export function TerminalView({
             el.dataset.nh = String(inner.getBoundingClientRect().height || 0);
           }
           const nh = Number(el.dataset.nh) || 0;
-          // Display blocks ($$…$$) render at full size. Inline math is shrunk
-          // only down to MAX_INLINE_MATH_LINES line-heights so it stays legible.
-          const limit = (multiline ? maxH : ch) * MAX_INLINE_MATH_LINES;
-          const scale = !it.display && nh > limit && nh > 0 ? limit / nh : 1;
+          // Fit to the available box (display: source + claimed blank rows;
+          // inline: one row) so a formula never bleeds onto neighbouring text.
+          const limit = maxH * (it.display ? 0.96 : MAX_INLINE_MATH_LINES);
+          const scale = nh > limit && nh > 0 ? limit / nh : 1;
           inner.style.transformOrigin = multiline ? 'center center' : 'left center';
           inner.style.transform = scale < 1 ? `scale(${scale})` : '';
         }
@@ -930,7 +945,10 @@ export function TerminalView({
       // logical line so a qualifying line can be gap-closed in one overlay.
       const inlineByLine = new Map<number, MathItem[]>();
       for (const it of items) {
-        if (it.display) { renderItem(it); continue; }
+        // Display blocks AND inline math that spans a hard line break both need
+        // the per-formula overlay (it covers the full row span); only single-row
+        // inline math can be gap-closed.
+        if (it.display || it.startLine !== it.endLine) { renderItem(it); continue; }
         const arr = inlineByLine.get(it.startLine);
         if (arr) arr.push(it); else inlineByLine.set(it.startLine, [it]);
       }

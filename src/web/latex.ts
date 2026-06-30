@@ -252,6 +252,58 @@ function blankRegion(masked: string[], r: Region): void {
   blank(r.closeLine, 0, r.closeCol);
 }
 
+// Max logical lines an unterminated inline `$…$` may span when hard-wrapped.
+const MAX_INLINE_WRAP_LINES = 3;
+
+/**
+ * Pair inline `$…$` whose opening and closing `$` land on DIFFERENT logical
+ * lines — a long inline formula emitted by the model can be hard-wrapped (a real
+ * newline, not an xterm soft-wrap), so its delimiters straddle the break.
+ *
+ * Same-line spans are detected and masked out before this runs, so every `$`
+ * left here is genuinely unpaired. Pairing a lone `$` across lines is risky in a
+ * terminal (shell prompts, `$PATH`, prices), so on top of the usual inline gate
+ * and length/line-span caps we REQUIRE a real LaTeX command (`\`) in the joined
+ * content — prose and shell almost never contain one, but wrapped math does.
+ */
+function detectInlineDollarAcrossLines(masked: string[], items: MathItem[]): void {
+  let li = 0;
+  while (li < masked.length) {
+    const openIdx = masked[li].indexOf('$');
+    if (openIdx === -1) { li += 1; continue; }
+
+    const blankOpener = () => {
+      masked[li] = masked[li].slice(0, openIdx) + ' ' + masked[li].slice(openIdx + 1);
+    };
+
+    // Find the next `$` on a LATER line (a leftover same-line `$` is shell noise).
+    let cli = -1;
+    let closeIdx = -1;
+    for (let k = li + 1; k < masked.length && k - li <= MAX_INLINE_WRAP_LINES; k++) {
+      const idx = masked[k].indexOf('$');
+      if (idx !== -1) { cli = k; closeIdx = idx; break; }
+    }
+    if (cli === -1) { blankOpener(); continue; }
+
+    const parts = [masked[li].slice(openIdx + 1)];
+    for (let k = li + 1; k < cli; k++) parts.push(masked[k]);
+    parts.push(masked[cli].slice(0, closeIdx));
+    const inner = parts.join(' ').trim();
+
+    if (inner.includes('\\') && inner.length <= MAX_TEX_LEN && looksLikeInlineMath(inner)) {
+      items.push({
+        startLine: li, startCol: openIdx,
+        endLine: cli, endCol: closeIdx + 1,
+        tex: inner, display: false,
+      });
+      blankRegion(masked, { openLine: li, openCol: openIdx, closeLine: cli, closeCol: closeIdx + 1 });
+      li = cli; // resume scanning from the closer's line
+    } else {
+      blankOpener(); // not math — drop just this `$` and retry the line
+    }
+  }
+}
+
 /**
  * Detect all math in a window of terminal lines, including DISPLAY blocks that
  * span multiple lines (`$$ … $$`, `\[ … \]`). Coordinates are relative to the
@@ -285,8 +337,13 @@ export function detectMath(lines: string[]): MathItem[] {
     if (t.indexOf('$') === -1 && t.indexOf('\\') === -1) continue;
     for (const s of detectMathSpans(t)) {
       items.push({ startLine: li, startCol: s.start, endLine: li, endCol: s.end, tex: s.tex, display: s.display });
+      // Blank consumed columns so the cross-line pass below only sees `$`
+      // delimiters that were left genuinely unpaired on their own line.
+      masked[li] = masked[li].slice(0, s.start) + ' '.repeat(s.end - s.start) + masked[li].slice(s.end);
     }
   }
+
+  detectInlineDollarAcrossLines(masked, items);
 
   return items;
 }
