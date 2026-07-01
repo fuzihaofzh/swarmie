@@ -116,6 +116,21 @@ describe('detectMath — multi-line blocks', () => {
   it('does not treat shell noise as a block', () => {
     expect(detectMath(['echo $$', 'PID is set', 'done'])).toEqual([]);
   });
+  it('detects a tall block whose lines are width-padded like a terminal buffer', () => {
+    // xterm's translateToString space-pads every row to the terminal width, so a
+    // block spanning many rows carries rows×cols of trailing padding. blockTex
+    // must strip it, or the joined tex blows past MAX_BLOCK_TEX_LEN and the whole
+    // block is silently dropped (regression: a 20-row `aligned` never rendered).
+    const inner = Array.from({ length: 22 }, (_, i) => `x_{${i}} &= y_{${i}} \\\\`);
+    const lines = ['\\[', '\\begin{aligned}', ...inner, '\\end{aligned}', '\\]']
+      .map((l) => l.padEnd(99, ' '));
+    const items = detectMath(lines);
+    expect(items).toHaveLength(1);
+    expect(items[0].display).toBe(true);
+    expect(items[0].tex.startsWith('\\begin{aligned}')).toBe(true);
+    // padding stripped → length reflects real content, not ~22×99 of spaces
+    expect(items[0].tex.length).toBeLessThan(600);
+  });
 });
 
 describe('detectMath — inline $…$ hard-wrapped across lines', () => {

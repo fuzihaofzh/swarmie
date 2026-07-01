@@ -236,7 +236,13 @@ function blockTex(lines: string[], r: Region, openLen: number, closeLen: number)
   const parts: string[] = [lines[r.openLine].slice(r.openCol + openLen)];
   for (let li = r.openLine + 1; li < r.closeLine; li++) parts.push(lines[li]);
   parts.push(lines[r.closeLine].slice(0, r.closeCol - closeLen));
-  return parts.join(' ').trim();
+  // Trim each source line before joining: terminal buffer rows come space-padded
+  // to the full terminal width (xterm's translateToString), so a block spanning
+  // ~20 rows would otherwise carry ~20×cols of trailing padding and blow past
+  // MAX_BLOCK_TEX_LEN, causing detectMath to silently drop the whole block.
+  // Whitespace between tokens is insignificant in LaTeX math mode, so trimming
+  // each line and rejoining with a single space is equivalent for rendering.
+  return parts.map((p) => p.trim()).filter((p) => p.length > 0).join(' ').trim();
 }
 
 // Blank out a region's columns in the masked copy so the later inline pass

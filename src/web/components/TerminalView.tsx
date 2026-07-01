@@ -742,9 +742,16 @@ export function TerminalView({
       cellH = ch;
       gridRows = rows;
       const viewTop = buf.viewportY;
+      // Scan beyond the viewport in BOTH directions: a multi-line display block
+      // (`\[ … \]`, `$$ … $$`) is only detected once BOTH delimiters are inside
+      // the window, so a lookahead below the fold is as necessary as the
+      // lookback above it — without it a tall block (e.g. a 20-row `aligned`)
+      // whose closing `\]` sits just past the visible bottom never renders while
+      // its top is on screen. Off-screen items are early-returned when placed.
       const lookback = 80;
+      const lookahead = 80;
       const winStart = Math.max(0, viewTop - lookback);
-      const winEnd = Math.min(buf.length, viewTop + rows);
+      const winEnd = Math.min(buf.length, viewTop + rows + lookahead);
 
       // Build LOGICAL lines by joining xterm's wrapped continuation rows, so a
       // `$…$` split across a wrap is still detected. Each logical line records
