@@ -3,8 +3,13 @@ import pkg from '@xterm/headless';
 const { Terminal } = pkg;
 
 const DEFAULT_SCROLLBACK = 200;
+const DEFAULT_COLS = 80;
+const DEFAULT_ROWS = 24;
 const MIN_COLS = 20;
 const MIN_ROWS = 5;
+const MAX_COLS = 1000;
+const MAX_ROWS = 300;
+const WRITE_CHUNK_SIZE = 64 * 1024;
 
 interface HeadlessWriteBuffer {
   writeSync(data: string): void;
@@ -56,9 +61,13 @@ export class HeadlessScreen {
   private _rows: number;
 
   constructor(cols: number, rows: number) {
-    this._cols = Math.max(MIN_COLS, cols);
-    this._rows = Math.max(MIN_ROWS, rows);
-    this.term = new (Terminal as unknown as new (opts: Record<string, unknown>) => HeadlessTerminal)({
+    this._cols = normalizeDimension(cols, MIN_COLS, MAX_COLS, DEFAULT_COLS);
+    this._rows = normalizeDimension(rows, MIN_ROWS, MAX_ROWS, DEFAULT_ROWS);
+    this.term = this.createTerminal();
+  }
+
+  private createTerminal(): HeadlessTerminal {
+    return new (Terminal as unknown as new (opts: Record<string, unknown>) => HeadlessTerminal)({
       cols: this._cols,
       rows: this._rows,
       scrollback: DEFAULT_SCROLLBACK,
@@ -66,8 +75,36 @@ export class HeadlessScreen {
     });
   }
 
+  private resetTerminal(): void {
+    try {
+      this.term?.dispose();
+    } catch {
+      // Best-effort cleanup after xterm entered a bad internal state.
+    }
+    this.term = this.createTerminal();
+  }
+
   write(chunk: string): void {
     if (!chunk) return;
+    for (let offset = 0; offset < chunk.length; offset += WRITE_CHUNK_SIZE) {
+      this.writeChunk(chunk.slice(offset, offset + WRITE_CHUNK_SIZE));
+    }
+  }
+
+  private writeChunk(chunk: string): void {
+    try {
+      this.writeUnsafe(chunk);
+    } catch {
+      this.resetTerminal();
+      try {
+        this.writeUnsafe(chunk);
+      } catch {
+        this.resetTerminal();
+      }
+    }
+  }
+
+  private writeUnsafe(chunk: string): void {
     // Sync write so the buffer reflects this chunk before we return —
     // detection samples the screen on the same tick.
     const wb = this.term._core?._writeBuffer;
@@ -79,12 +116,16 @@ export class HeadlessScreen {
   }
 
   resize(cols: number, rows: number): void {
-    const c = Math.max(MIN_COLS, cols);
-    const r = Math.max(MIN_ROWS, rows);
+    const c = normalizeDimension(cols, MIN_COLS, MAX_COLS, this._cols);
+    const r = normalizeDimension(rows, MIN_ROWS, MAX_ROWS, this._rows);
     if (c === this._cols && r === this._rows) return;
     this._cols = c;
     this._rows = r;
-    this.term.resize(c, r);
+    try {
+      this.term.resize(c, r);
+    } catch {
+      this.resetTerminal();
+    }
   }
 
   /**
@@ -93,14 +134,19 @@ export class HeadlessScreen {
    * Trailing whitespace is trimmed per line.
    */
   getViewportText(): string {
-    const buf = this.term.buffer.active;
-    const top = buf.viewportY;
-    const out: string[] = [];
-    for (let i = 0; i < this._rows; i++) {
-      const line = buf.getLine(top + i);
-      out.push(line ? line.translateToString(true) : '');
+    try {
+      const buf = this.term.buffer.active;
+      const top = buf.viewportY;
+      const out: string[] = [];
+      for (let i = 0; i < this._rows; i++) {
+        const line = buf.getLine(top + i);
+        out.push(line ? line.translateToString(true) : '');
+      }
+      return out.join('\n');
+    } catch {
+      this.resetTerminal();
+      return '';
     }
-    return out.join('\n');
   }
 
   /**
@@ -109,21 +155,35 @@ export class HeadlessScreen {
    * to whatever the scrollback buffer retains.
    */
   getRecentText(extraScrollback = 20): string {
-    const buf = this.term.buffer.active;
-    const top = Math.max(0, buf.viewportY - extraScrollback);
-    const bottom = Math.min(buf.length, buf.viewportY + this._rows);
-    const out: string[] = [];
-    for (let i = top; i < bottom; i++) {
-      const line = buf.getLine(i);
-      out.push(line ? line.translateToString(true) : '');
+    try {
+      const buf = this.term.buffer.active;
+      const top = Math.max(0, buf.viewportY - extraScrollback);
+      const bottom = Math.min(buf.length, buf.viewportY + this._rows);
+      const out: string[] = [];
+      for (let i = top; i < bottom; i++) {
+        const line = buf.getLine(i);
+        out.push(line ? line.translateToString(true) : '');
+      }
+      return out.join('\n');
+    } catch {
+      this.resetTerminal();
+      return '';
     }
-    return out.join('\n');
   }
 
   get cols(): number { return this._cols; }
   get rows(): number { return this._rows; }
 
   dispose(): void {
-    this.term.dispose();
+    try {
+      this.term.dispose();
+    } catch {
+      // Ignore cleanup failures from an already-corrupt headless terminal.
+    }
   }
+}
+
+function normalizeDimension(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
 }
