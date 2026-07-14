@@ -463,7 +463,24 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   const RAW_BEHIND_HIGH = 256 * 1024; // queued bytes → client is behind
   const RAW_BEHIND_LOW = 32 * 1024;   // drained below → safe to resync
   const RAW_RESYNC_TAIL_BYTES = 256 * 1024;
-  const TERMINAL_RESET = '\x1bc'; // RIS — clears screen + dangling escape state
+  // Reset before the resync tail. It must clear the dangling escape state left by
+  // cutting the stream mid-sequence, but must NOT clear content — neither the
+  // scrollback NOR the visible screen:
+  //   - RIS (`\x1bc`) wiped the whole buffer incl. scrollback → all history gone
+  //     on every resync over a slow/remote link ("codex -p hpc flooded, earlier
+  //     output vanished").
+  //   - Adding `\x1b[2J` (erase display) fixed scrollback but still blanked the
+  //     VISIBLE screen. codex/Claude Code redraw incrementally — after an erase
+  //     they only repaint the bits that change next (the ticking "Working…"
+  //     line), leaving the rest of the screen empty until a full redraw. That was
+  //     the "codex TUI sometimes goes blank" bug.
+  // So: soft reset only. `\x1b[!p` (DECSTR) resets scroll region, origin mode,
+  // charset, saved cursor and attributes WITHOUT erasing the screen, moving the
+  // cursor, or touching any buffer; `\x1b[0m` explicitly drops dangling SGR. The
+  // stale visible screen stays put and the tail's own cursor-addressed redraws
+  // paint over it — briefly stale beats blank, and codex's next frame (or a tab-
+  // focus SIGWINCH) fully repaints. Only the dropped middle gap is lost.
+  const TERMINAL_RESET = '\x1b[!p\x1b[0m';
   const behindRaw = new WeakMap<WebSocket, Set<string>>();
 
   // Build a binary raw:output frame for the terminal hot path. The old wire
