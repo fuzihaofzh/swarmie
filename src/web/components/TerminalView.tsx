@@ -54,10 +54,20 @@ const MIN_TERMINAL_WRITE_BYTES_PER_FRAME = 4 * 1024;
 // ring — that is the most history a fresh replay could ever produce anyway, so
 // dropping older queued bytes loses nothing the backend can still show.
 const MAX_PENDING_WRITE_BYTES = 2 * 1024 * 1024;
-// The server owns deep history; the browser only keeps enough local scrollback
-// for smooth interaction. Very large xterm buffers stay expensive even when a
-// tab is hidden, especially over remote desktop.
-const TERMINAL_SCROLLBACK_LINES = 10000;
+// How many lines of local scrollback each terminal retains. The server owns the
+// deep history (16MB raw ring), but the client cap is what actually decides how
+// far back the user can scroll WITHOUT a round-trip — and, because every history
+// render keeps only the last N lines, it's also the ceiling on what "Load
+// earlier" can ever show (past N, older lines are discarded on render anyway).
+// 10k was too low: a busy codex/Claude Code session blew past it and the earlier
+// output became unreachable. Raised to 100k so the client holds essentially the
+// whole server ring for these apps — most of their bytes are in-place redraws
+// (statusline/spinner) that update existing rows rather than pushing new
+// scrollback, so 100k lines comfortably covers 16MB of such output. Trade-off
+// (accepted): a terminal actively scrolled through a huge session uses more
+// memory and its history re-renders cost more. Hidden tabs are unsubscribed and
+// stay small, so this only grows for the terminal you're actually reading.
+const TERMINAL_SCROLLBACK_LINES = 100000;
 // Tall inline math is shrunk to fit within this fraction of one row, so it never
 // overlaps the lines above/below (user preference: no-overlap over size). Tall
 // formulas (sqrt/fraction) end up smaller as a result. Display blocks ($$…$$)
@@ -1100,10 +1110,17 @@ export function TerminalView({
   const handleLoadEarlier = useCallback(() => {
     if (historyLoadingRef.current) return;
     if (sessionMeta.reachedEarliest) return;
-    if (sessionMeta.lowestOffset <= 0) return;
     if (!onLoadHistory) return;
     const fromOffset = Math.max(0, sessionMeta.lowestOffset - HISTORY_CHUNK_BYTES);
-    if (fromOffset >= sessionMeta.lowestOffset) return;
+    // lowestOffset is frozen at ~0 for a session watched from the start (it only
+    // advances via snapshots, not as xterm drops old lines at the scrollback
+    // cap), so it can't be used to mean "the client already has everything." When
+    // it's 0 we still allow one load: fromOffset=0 re-fetches [earliest, END] so
+    // the enlarged buffer can hold the older lines that were dropped. The server
+    // replies reachedEarliest=true (we asked from its earliest), which flips the
+    // gate above and prevents any re-trigger. For lowestOffset>0 sessions the
+    // load stays chunk-by-chunk and we skip no-op loads that wouldn't go older.
+    if (sessionMeta.lowestOffset > 0 && fromOffset >= sessionMeta.lowestOffset) return;
     historyLoadingRef.current = true;
     historyLoadAttemptsRef.current = 0;
     capturedDuringLoadRef.current = [];
@@ -1586,7 +1603,7 @@ export function TerminalView({
         ref={containerCallbackRef}
         style={{ width: '100%', height: '100%', minHeight: 0, padding: '4px' }}
       />
-      {atTop && !sessionMeta.reachedEarliest && sessionMeta.lowestOffset > 0 && (
+      {atTop && !sessionMeta.reachedEarliest && (
         <button
           type="button"
           className="terminal-load-earlier-btn"
