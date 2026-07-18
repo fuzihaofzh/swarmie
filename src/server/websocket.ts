@@ -723,7 +723,16 @@ function handleMessage(
       const fromOffset = typeof msg.fromOffset === 'number'
         ? msg.fromOffset
         : Number(msg.fromOffset);
+      // Optional upper bound: a client that already holds the newer bytes asks
+      // for just the older delta, so paging back costs one bounded chunk rather
+      // than a re-send of everything up to the live end. Absent (older clients)
+      // means "up to the end", the previous behaviour.
+      const rawTo = msg.toOffset;
+      const toOffset = rawTo === undefined || rawTo === null
+        ? undefined
+        : Number(rawTo);
       if (!sessionId || !Number.isFinite(fromOffset)) break;
+      if (toOffset !== undefined && !Number.isFinite(toOffset)) break;
       const session = manager.getSession(sessionId);
       if (!session) {
         // Always answer so the client clears its loading state instead of
@@ -739,7 +748,7 @@ function handleMessage(
         });
         break;
       }
-      const snapshot = session.getRawHistorySnapshot(fromOffset);
+      const snapshot = session.getRawHistorySnapshot(fromOffset, toOffset);
       send(socket, {
         type: 'history:snapshot',
         sessionId,

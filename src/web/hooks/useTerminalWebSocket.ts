@@ -258,8 +258,11 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
     send({ type: 'redraw', sessionId });
   }, [send, sessionId]);
 
-  const sendLoadHistory = useCallback((fromOffset: number) => {
-    return send({ type: 'history:load', sessionId, fromOffset });
+  // toOffset bounds the reply to [fromOffset, toOffset) — the caller already
+  // holds everything newer, so this keeps a page bounded instead of re-sending
+  // the whole ring up to the live end.
+  const sendLoadHistory = useCallback((fromOffset: number, toOffset?: number) => {
+    return send({ type: 'history:load', sessionId, fromOffset, toOffset });
   }, [send, sessionId]);
 
   const sendClipboardImage = useCallback((image: ClipboardImagePaste) => {

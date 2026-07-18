@@ -6,6 +6,16 @@ import { useUIStore } from '../hooks/useUI';
 import { useWsContext } from '../contexts/WsContext';
 import { ToolIcon } from './ToolIcon';
 import { sessionMatchesTagFilter } from '../tagFilter';
+import { shouldShowMobileToolbar } from '../focusPolicy';
+
+function getFocusPolicyEnv() {
+  return {
+    userAgent: navigator.userAgent,
+    viewportWidth: window.innerWidth,
+    hasTouchStart: 'ontouchstart' in window,
+    maxTouchPoints: navigator.maxTouchPoints,
+  };
+}
 
 const NEW_SESSION_PANEL_ID = '__new_session__';
 
@@ -198,6 +208,7 @@ function isBusyForAutoCompact(status: string): boolean {
 export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
   const [hovered, setHovered] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
   const [panelPos, setPanelPos] = useState({ top: 0, left: 0, width: 260 });
   const [repeatDraft, setRepeatDraft] = useState('');
   const [tagDraft, setTagDraft] = useState('');
@@ -306,8 +317,20 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
     setPanelOpen((open) => !open);
   };
 
+  // On touch devices the close "×" sits next to the tab label with no hover
+  // step, so a stray tap while scrolling the tab strip would kill a session
+  // outright. Ask first there; desktop keeps the immediate close.
   const handleClose = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (shouldShowMobileToolbar(getFocusPolicyEnv())) {
+      setConfirmClose(true);
+      return;
+    }
+    await killSession(session.id);
+  };
+
+  const confirmKill = async () => {
+    setConfirmClose(false);
     await killSession(session.id);
   };
 
@@ -505,6 +528,25 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
       >
         &times;
       </span>
+      {confirmClose && createPortal(
+        <div
+          className="tab-close-confirm-overlay"
+          onClick={(e) => { e.stopPropagation(); setConfirmClose(false); }}
+        >
+          <div className="tab-close-confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="tab-close-confirm-title">Close session?</div>
+            <div className="tab-close-confirm-body">
+              {displayHost ? `${displayHost}:${shortPath(session.cwd)}` : shortPath(session.cwd)}
+              <span className="tab-close-confirm-hint">This kills the running process.</span>
+            </div>
+            <div className="tab-close-confirm-actions">
+              <button onClick={() => setConfirmClose(false)}>Cancel</button>
+              <button className="danger" onClick={confirmKill}>Close</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

@@ -4,6 +4,11 @@ import {
   registerTerminalWriter,
   unregisterTerminalWriter,
   writeToTerminal,
+  getRawCacheStart,
+  getRawCacheEnd,
+  getRawCacheChunks,
+  prependRawCache,
+  isRawCacheFull,
 } from '../src/web/terminalBus.js';
 
 function b64(size: number, fill: number): string {
@@ -82,5 +87,96 @@ describe('terminalBus', () => {
     } finally {
       clearTerminalBuffer(sessionId);
     }
+  });
+
+  describe('raw history cache', () => {
+    // The cache exists so "load earlier" fetches only the older delta. Its one
+    // invariant: it must stay a contiguous run ending at the newest byte seen —
+    // a rebuild renders it, so a gap or a missing tail is a corrupt terminal.
+    const bin = (size: number, fill: number) => String.fromCharCode(fill).repeat(size);
+
+    it('tracks start and end as output streams in', () => {
+      const sessionId = 'raw-cache-track';
+      try {
+        expect(getRawCacheStart(sessionId)).toBe(null);
+        expect(getRawCacheEnd(sessionId)).toBe(null);
+
+        // A client that joins mid-session starts at a non-zero offset.
+        writeToTerminal(sessionId, bin(100, 65), 1100);
+        expect(getRawCacheStart(sessionId)).toBe(1000);
+        expect(getRawCacheEnd(sessionId)).toBe(1100);
+
+        writeToTerminal(sessionId, bin(50, 66), 1150);
+        expect(getRawCacheStart(sessionId)).toBe(1000);
+        expect(getRawCacheEnd(sessionId)).toBe(1150);
+        expect(getRawCacheChunks(sessionId).join('')).toBe(bin(100, 65) + bin(50, 66));
+      } finally {
+        clearTerminalBuffer(sessionId);
+      }
+    });
+
+    it('prepends a fetched page and stays contiguous through to the live edge', () => {
+      const sessionId = 'raw-cache-prepend';
+      try {
+        writeToTerminal(sessionId, bin(100, 65), 1100);
+        expect(getRawCacheStart(sessionId)).toBe(1000);
+
+        // Server returns the page below the cache start.
+        prependRawCache(sessionId, bin(400, 67), 600, 1000);
+        expect(getRawCacheStart(sessionId)).toBe(600);
+        expect(getRawCacheEnd(sessionId)).toBe(1100);
+        expect(getRawCacheChunks(sessionId).join('')).toBe(bin(400, 67) + bin(100, 65));
+
+        // Live output after a page-in still lands at the end.
+        writeToTerminal(sessionId, bin(10, 68), 1110);
+        expect(getRawCacheStart(sessionId)).toBe(600);
+        expect(getRawCacheEnd(sessionId)).toBe(1110);
+        expect(getRawCacheChunks(sessionId).join('').length).toBe(510);
+
+        // A second page stacks below the first.
+        prependRawCache(sessionId, bin(600, 69), 0, 600);
+        expect(getRawCacheStart(sessionId)).toBe(0);
+        expect(getRawCacheEnd(sessionId)).toBe(1110);
+        expect(getRawCacheChunks(sessionId).join('')).toBe(
+          bin(600, 69) + bin(400, 67) + bin(100, 65) + bin(10, 68),
+        );
+      } finally {
+        clearTerminalBuffer(sessionId);
+      }
+    });
+
+    it('evicts from the front so the cache always reaches the newest byte', () => {
+      const sessionId = 'raw-cache-evict';
+      try {
+        // Overrun the cap: the tail must survive, the head must go, and
+        // startOffset must advance to match what is actually still held.
+        const chunk = 1024 * 1024;
+        let offset = 0;
+        for (let i = 0; i < 30; i++) {
+          offset += chunk;
+          writeToTerminal(sessionId, bin(chunk, 65 + (i % 26)), offset);
+        }
+        const start = getRawCacheStart(sessionId);
+        const end = getRawCacheEnd(sessionId);
+        expect(end).toBe(offset); // still reaches the live edge
+        expect(start).toBeGreaterThan(0); // old bytes were dropped
+        // startOffset must equal end minus what is actually retained, or a
+        // "load earlier" would ask for a range the client already has (or skip
+        // one it doesn't).
+        const held = getRawCacheChunks(sessionId).join('').length;
+        expect((end as number) - (start as number)).toBe(held);
+        expect(isRawCacheFull(sessionId)).toBe(true);
+      } finally {
+        clearTerminalBuffer(sessionId);
+      }
+    });
+
+    it('is dropped with the session', () => {
+      const sessionId = 'raw-cache-clear';
+      writeToTerminal(sessionId, bin(10, 65), 10);
+      expect(getRawCacheStart(sessionId)).toBe(0);
+      clearTerminalBuffer(sessionId);
+      expect(getRawCacheStart(sessionId)).toBe(null);
+    });
   });
 });

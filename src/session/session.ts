@@ -7,6 +7,26 @@ import { getDefaultHostTag } from './host.js';
 
 const _hostname = osHostname();
 
+/**
+ * Exact decoded byte length of a base64 string.
+ *
+ * Every raw offset in this file is built from this, so it has to be the TRUE
+ * byte count. The previous `Math.ceil(len * 3 / 4)` ignored the `=` padding and
+ * over-counted by up to 2 bytes per event. That is invisible on one event, but
+ * a busy session holds ~19k of them, so offsets drifted ~36KB from real byte
+ * positions across a full ring — enough that a client cannot do byte arithmetic
+ * against them (e.g. splicing a fetched page onto bytes it already holds), and
+ * enough that the ring's own accounting was off.
+ */
+function base64ByteLength(b64: string): number {
+  const n = b64.length;
+  if (n === 0) return 0;
+  let padding = 0;
+  if (b64.charCodeAt(n - 1) === 0x3d) padding++;
+  if (n > 1 && b64.charCodeAt(n - 2) === 0x3d) padding++;
+  return (n / 4) * 3 - padding;
+}
+
 const MAX_RECENT_EVENTS = 1000;
 // In-memory cap for raw terminal output per session. Held so the dashboard
 // can scroll back through history on demand without persisting to disk.
@@ -347,12 +367,18 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * Snapshot of raw chunks from `fromOffset` (inclusive) up to the current end.
-   * Returns the actual start (may be > fromOffset if older bytes were evicted
-   * from the in-memory ring) and a flag indicating whether the start matches
-   * the earliest data the server still retains.
+   * Snapshot of raw chunks in [fromOffset, toOffset), defaulting to the current
+   * end. Returns the actual start (may be > fromOffset if older bytes were
+   * evicted from the in-memory ring) and a flag indicating whether the start
+   * matches the earliest data the server still retains.
+   *
+   * `toOffset` lets a client that already holds the newer bytes ask for ONLY the
+   * older delta. Without it a "load earlier" re-sends everything from the
+   * requested offset to the live end — for a full ring that is one ~21MB base64
+   * message per page, which is the history-load freeze. A client that caches
+   * what it has streamed can instead page back in bounded chunks.
    */
-  getRawHistorySnapshot(fromOffset: number): {
+  getRawHistorySnapshot(fromOffset: number, toOffset?: number): {
     startOffset: number;
     endOffset: number;
     chunks: string[];
@@ -361,20 +387,56 @@ export class Session extends EventEmitter {
     const earliest = this._rawBytesEverWritten - this.rawBytes;
     const requested = Math.max(0, Math.floor(fromOffset));
     const startTarget = Math.max(earliest, requested);
-    const matched: string[] = [];
-    let startOffset = this._rawBytesEverWritten;
-    for (const evt of this.rawEvents) {
-      const data = evt.data as RawOutputData;
-      const offsetEnd = data.offsetEnd ?? 0;
-      const size = Math.ceil(data.data.length * 3 / 4);
-      const chunkStart = offsetEnd - size;
-      if (offsetEnd <= startTarget) continue;
-      if (matched.length === 0) startOffset = Math.max(chunkStart, startTarget);
-      matched.push(data.data);
+    const endTarget = typeof toOffset === 'number' && Number.isFinite(toOffset)
+      ? Math.min(this._rawBytesEverWritten, Math.max(startTarget, Math.floor(toOffset)))
+      : this._rawBytesEverWritten;
+    // Walk BACKWARD from the newest event and stop at startTarget, rather than
+    // scanning the whole ring from the front and skipping everything older. The
+    // cost is then O(events in the requested window), not O(events in the ring):
+    // a busy session holds 100k+ tiny raw events, so a front-to-back scan made
+    // even a small "load earlier" pay for the entire ring — and that price grows
+    // with MAX_RAW_BYTES, which is why enlarging the ring used to slow paging
+    // down. Same traversal shape as _rawTailUpTo(). The result is identical:
+    // still [startTarget, END], just assembled in reverse.
+    const reversed: string[] = [];
+    let startOffset = endTarget;
+    let endOffset = endTarget;
+    let sawChunk = false;
+    for (let i = this.rawEvents.length - 1; i >= 0; i--) {
+      const data = this.rawEvents[i].data as RawOutputData;
+      const offsetEnd = data.offsetEnd;
+      // Offsets are assigned in handleEvent and only ever grow, so the first
+      // event at or before startTarget means everything below it is older too.
+      // Guard the missing-offset case the way the forward scan did (skip, don't
+      // stop) so one unstamped event can't truncate the window.
+      if (typeof offsetEnd !== 'number') continue;
+      if (offsetEnd <= startTarget) break;
+      const size = base64ByteLength(data.data);
+      // Wholly newer than the window — keep walking back into range.
+      if (offsetEnd - size >= endTarget) continue;
+      // A chunk STRADDLING endTarget is included whole and endOffset reports how
+      // far it actually reaches, which may overshoot what was asked for. Chunks
+      // are never split (they are opaque base64 units), and dropping a straddler
+      // instead would silently leave a hole between this page and what the
+      // caller already holds — a torn rebuild. Callers must trim the overlap
+      // using endOffset.
+      if (!sawChunk) {
+        endOffset = offsetEnd;
+        sawChunk = true;
+      }
+      // The TRUE start of the oldest chunk returned, not the requested bound.
+      // Chunks come back whole at both ends, so clamping this up to startTarget
+      // (what this used to do) under-reported the range and left the reply
+      // covering more bytes than [startOffset, endOffset) claimed — which breaks
+      // any caller splicing by byte count.
+      startOffset = offsetEnd - size;
+      reversed.push(data.data);
     }
+    // Collected newest-first; unshift() per event would be O(n^2).
+    const matched = reversed.reverse();
     return {
       startOffset,
-      endOffset: this._rawBytesEverWritten,
+      endOffset,
       // Coalesce the (often 100k+) tiny chunks into a handful of large ones.
       // Purely a transport/processing optimization — the client concatenates
       // them, so the rendered bytes are identical.
@@ -432,7 +494,7 @@ export class Session extends EventEmitter {
     for (let i = this.rawEvents.length - 1; i >= 0; i--) {
       const evt = this.rawEvents[i];
       if (evt.timestamp < cutoff) break;
-      bytes += Math.ceil((evt.data as RawOutputData).data.length * 3 / 4);
+      bytes += base64ByteLength((evt.data as RawOutputData).data);
     }
     return bytes;
   }
@@ -445,7 +507,7 @@ export class Session extends EventEmitter {
     for (let i = this.rawEvents.length - 1; i >= 0; i--) {
       const evt = this.rawEvents[i];
       const b64 = (evt.data as RawOutputData).data;
-      const size = Math.ceil(b64.length * 3 / 4);
+      const size = base64ByteLength(b64);
       if (bytes + size > maxBytes && out.length > 0) break;
       out.unshift(evt);
       bytes += size;
@@ -457,7 +519,7 @@ export class Session extends EventEmitter {
     if (event.type === 'raw:output') {
       const rawData = event.data as RawOutputData;
       const b64 = rawData.data;
-      const size = Math.ceil(b64.length * 3 / 4);
+      const size = base64ByteLength(b64);
       this._rawBytesEverWritten += size;
       rawData.offsetEnd = this._rawBytesEverWritten;
       this.rawEvents.push(event);
@@ -465,7 +527,7 @@ export class Session extends EventEmitter {
       while (this.rawBytes > MAX_RAW_BYTES && this.rawEvents.length > 0) {
         const old = this.rawEvents.shift()!;
         const oldB64 = (old.data as RawOutputData).data;
-        this.rawBytes -= Math.ceil(oldB64.length * 3 / 4);
+        this.rawBytes -= base64ByteLength(oldB64);
       }
     } else {
       this.events.push(event);

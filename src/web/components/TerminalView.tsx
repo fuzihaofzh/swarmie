@@ -15,6 +15,11 @@ import {
   subscribeSessionMeta,
   subscribeHistorySnapshot,
   markReachedEarliest,
+  getRawCacheStart,
+  getRawCacheEnd,
+  getRawCacheChunks,
+  prependRawCache,
+  isRawCacheFull,
   type SessionMeta,
 } from '../terminalBus';
 import { MobileToolbar } from './MobileToolbar';
@@ -35,7 +40,7 @@ interface TerminalViewProps {
   onInput?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
   onRedraw?: () => void;
-  onLoadHistory?: (fromOffset: number) => boolean | void;
+  onLoadHistory?: (fromOffset: number, toOffset?: number) => boolean | void;
   onClipboardImagePaste?: (image: ClipboardImagePaste) => boolean | void;
 }
 
@@ -353,7 +358,11 @@ export function TerminalView({
 
       if (onInput) {
         term.onData((data) => {
-          if (historyLoadingRef.current) return;
+          // Keep typing live during a history load. The echo comes back as raw
+          // output that writer() parks in capturedDuringLoadRef, and it always
+          // carries offsetEnd > snapshot.endOffset (the snapshot's end was
+          // sampled before the keystroke), so afterSnapshot replays it. Dropping
+          // input here instead silently ate keystrokes for the whole load.
           onInput(data);
         });
       }
@@ -1083,13 +1092,13 @@ export function TerminalView({
   // reply can go missing — lost to a WS reconnect, or sent while the socket
   // wasn't OPEN — so we resend rather than spin out the whole wait and then
   // drop a late snapshot. The snapshot handler clears this timeout on arrival.
-  const armHistoryLoad = useCallback((fromOffset: number) => {
-    onLoadHistory?.(fromOffset);
+  const armHistoryLoad = useCallback((fromOffset: number, toOffset?: number) => {
+    onLoadHistory?.(fromOffset, toOffset);
     historyLoadTimeoutRef.current = setTimeout(() => {
       clearHistoryLoadTimeout();
       historyLoadAttemptsRef.current += 1;
       if (historyLoadAttemptsRef.current < HISTORY_LOAD_MAX_ATTEMPTS) {
-        armHistoryLoadRef.current?.(fromOffset);
+        armHistoryLoadRef.current?.(fromOffset, toOffset);
         return;
       }
       // Gave up. Don't discard what streamed in during the wait — flush it to
@@ -1111,23 +1120,34 @@ export function TerminalView({
     if (historyLoadingRef.current) return;
     if (sessionMeta.reachedEarliest) return;
     if (!onLoadHistory) return;
-    const fromOffset = Math.max(0, sessionMeta.lowestOffset - HISTORY_CHUNK_BYTES);
-    // lowestOffset is frozen at ~0 for a session watched from the start (it only
-    // advances via snapshots, not as xterm drops old lines at the scrollback
-    // cap), so it can't be used to mean "the client already has everything." When
-    // it's 0 we still allow one load: fromOffset=0 re-fetches [earliest, END] so
-    // the enlarged buffer can hold the older lines that were dropped. The server
-    // replies reachedEarliest=true (we asked from its earliest), which flips the
-    // gate above and prevents any re-trigger. For lowestOffset>0 sessions the
-    // load stays chunk-by-chunk and we skip no-op loads that wouldn't go older.
-    if (sessionMeta.lowestOffset > 0 && fromOffset >= sessionMeta.lowestOffset) return;
+    // Anchor on the raw cache, not on lowestOffset. The client holds
+    // [cacheStart, live edge], so it only needs the page BELOW cacheStart —
+    // bounding a load to HISTORY_CHUNK_BYTES. Asking from lowestOffset instead
+    // made the server reply with everything up to the live end (~21MB of base64
+    // on a full ring), which is what froze the page on every "load earlier".
+    const cacheStart = getRawCacheStart(sessionId);
+    if (cacheStart === null) return; // nothing streamed yet — no anchor
+    if (cacheStart <= 0) {
+      // Already holding byte 0: nothing older can exist.
+      markReachedEarliest(sessionId);
+      return;
+    }
+    if (isRawCacheFull(sessionId)) {
+      // Paging further back can't be retained — the live append side would just
+      // evict it again. Same reasoning as xterm's scrollback cap below.
+      markReachedEarliest(sessionId);
+      return;
+    }
+    const toOffset = cacheStart;
+    const fromOffset = Math.max(0, cacheStart - HISTORY_CHUNK_BYTES);
+    if (fromOffset >= toOffset) return;
     historyLoadingRef.current = true;
     historyLoadAttemptsRef.current = 0;
     capturedDuringLoadRef.current = [];
     capturedDuringLoadBytesRef.current = 0;
     setHistoryLoading(true);
-    armHistoryLoad(fromOffset);
-  }, [armHistoryLoad, sessionMeta, onLoadHistory]);
+    armHistoryLoad(fromOffset, toOffset);
+  }, [armHistoryLoad, sessionMeta, onLoadHistory, sessionId]);
 
   // Keep the latest handler reachable from imperative paths (onScroll, wheel)
   // without re-binding listeners every render.
@@ -1471,7 +1491,31 @@ export function TerminalView({
       pendingChunks.length = 0;
       pendingBytes = 0;
 
-      // Anchor by distance-from-bottom. The snapshot ends at the same content
+      // Splice the fetched older page onto the front of the raw cache. The cache
+      // then spans [snapshot.startOffset, live edge], so rebuilding FROM IT (and
+      // not from the server payload, which now covers only the older delta)
+      // still leaves the buffer ending at the present.
+      // Cache raw, unstripped bytes: the cache mixes live output (never
+      // stripped) with fetched history, so stripping here would make its
+      // contents inconsistent. Device queries are stripped at rebuild time
+      // instead, where every byte is historical by definition.
+      const decoded = snapshot.chunks
+        .map((c) => { try { return atob(c); } catch { return ''; } })
+        .join('');
+      // The reply may overshoot the requested upper bound: chunks are opaque
+      // base64 units, so one straddling the boundary comes back whole rather
+      // than being split (dropping it would leave a hole instead). Trim the
+      // bytes we already hold so the splice is exact — offsets are byte counts,
+      // so this is arithmetic, not guesswork.
+      const cacheStartNow = getRawCacheStart(sessionId);
+      const overlap = cacheStartNow === null
+        ? 0
+        : Math.max(0, Math.min(snapshot.endOffset - cacheStartNow, decoded.length));
+      const older = overlap > 0 ? decoded.slice(0, decoded.length - overlap) : decoded;
+      const olderEnd = snapshot.endOffset - overlap;
+      prependRawCache(sessionId, older, snapshot.startOffset, olderEnd);
+
+      // Anchor by distance-from-bottom. The rebuild ends at the same content
       // the user already had at the bottom, so the number of lines they were
       // scrolled up from the bottom maps to the same content after the rebuild.
       // This is robust to how many older lines get prepended AND to the
@@ -1482,15 +1526,23 @@ export function TerminalView({
       const buf0 = term.buffer.active;
       const linesFromBottom = Math.max(0, buf0.baseY - buf0.viewportY);
 
+      // Render the cache as of now; bytes still streaming in are parked and
+      // replayed against this offset once the rebuild lands.
+      const rebuildChunks = getRawCacheChunks(sessionId);
+      const rebuiltThrough = getRawCacheEnd(sessionId) ?? snapshot.endOffset;
+
       const afterSnapshot = () => {
         if (disposed) return;
         const buf = term.buffer.active;
         const target = Math.max(0, buf.baseY - linesFromBottom);
         try { term.scrollToLine(target); } catch { /* ignore */ }
         // Replay live tail at the bottom; with scrollOnOutput off this leaves
-        // the anchored viewport untouched.
+        // the anchored viewport untouched. Filter against what the rebuild
+        // actually covered (the cache's end), NOT snapshot.endOffset — the
+        // snapshot now stops at the old cache start, so everything newer than it
+        // is already in the rebuild and replaying it here would double-write.
         const tail = capturedDuringLoadRef.current.filter((c) =>
-          typeof c.offsetEnd !== 'number' || c.offsetEnd > snapshot.endOffset,
+          typeof c.offsetEnd !== 'number' || c.offsetEnd > rebuiltThrough,
         );
         capturedDuringLoadRef.current = [];
         capturedDuringLoadBytesRef.current = 0;
@@ -1510,15 +1562,30 @@ export function TerminalView({
       };
 
       term.reset();
-      if (snapshot.chunks.length > 0) {
-        // Snapshot chunks are base64 (JSON history path); decode to binary
-        // strings and strip device queries — this is historical output, so
-        // answering its stale cursor/DA/color queries into the live PTY would
-        // produce garbage.
-        const cleaned = snapshot.chunks.map((c) => {
-          try { return stripDeviceQueries(atob(c)); } catch { return ''; }
-        });
-        term.write(decodeTerminalBytes(cleaned, term), afterSnapshot);
+      if (rebuildChunks.length > 0) {
+        // Write ONE cached chunk at a time, chained on term.write's callback,
+        // rather than joining and decoding the whole window up front:
+        // protectStatusLineRedraws (a backtracking regex) and binaryStringToBytes
+        // are full synchronous passes, so doing them over a multi-MB window in
+        // one go blocked the page before the first write even started. xterm
+        // parses asynchronously and fires the callback per chunk, so this yields
+        // to the event loop between chunks and input/paint stay responsive.
+        // protectStatusLineRedraws already runs per-batch on the live path, so
+        // per-chunk application is not a new boundary risk. Everything replayed
+        // here is historical, so strip device queries from all of it — the cache
+        // holds raw bytes, live output included.
+        let chunkIndex = 0;
+        const writeNextChunk = () => {
+          if (disposed) return;
+          if (chunkIndex >= rebuildChunks.length) {
+            afterSnapshot();
+            return;
+          }
+          let bin = rebuildChunks[chunkIndex++];
+          try { bin = stripDeviceQueries(bin); } catch { /* keep original */ }
+          term.write(decodeTerminalBytes([bin], term), writeNextChunk);
+        };
+        writeNextChunk();
       } else {
         afterSnapshot();
       }

@@ -21,11 +21,118 @@ type MetaListener = (meta: SessionMeta) => void;
 
 const MAX_BUFFERED_BYTES_PER_SESSION = 512 * 1024;
 
+/**
+ * Cap for the per-session raw-history cache (see rawCaches). xterm discards
+ * anything past its scrollback cap on render, so caching much more than it can
+ * display buys nothing; this is roughly a full server ring's worth.
+ */
+const RAW_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+
 const writers = new Map<string, Writer>();
 const buffers = new Map<string, { chunks: Array<{ bin: string; offsetEnd?: number; isReplay?: boolean }>; bytes: number }>();
 const meta = new Map<string, SessionMeta>();
 const metaListeners = new Map<string, Set<MetaListener>>();
 const snapshotListeners = new Map<string, Set<SnapshotListener>>();
+
+/**
+ * Every raw byte this client has seen, kept so "load earlier" can fetch only
+ * the older DELTA instead of re-fetching everything up to the live end.
+ *
+ * Without it the client holds no raw history (it writes to xterm and drops the
+ * bytes), so rebuilding a scrolled-back view means asking the server for
+ * [from, END] — on a full 16MB ring that is a single ~21MB base64 message per
+ * page, which is the history-load freeze. With the cache the client already has
+ * [cacheStart, END] and only needs [newFrom, cacheStart), a bounded chunk.
+ */
+interface RawCache {
+  chunks: Array<{ bin: string; offsetEnd: number }>;
+  bytes: number;
+  /** Offset of the first byte held in chunks[0]. */
+  startOffset: number;
+}
+const rawCaches = new Map<string, RawCache>();
+
+function appendRawCache(sessionId: string, bin: string, offsetEnd: number): void {
+  if (bin.length === 0) return;
+  let c = rawCaches.get(sessionId);
+  if (!c) {
+    c = { chunks: [], bytes: 0, startOffset: Math.max(0, offsetEnd - bin.length) };
+    rawCaches.set(sessionId, c);
+  }
+  c.chunks.push({ bin, offsetEnd });
+  c.bytes += bin.length;
+  while (c.bytes > RAW_CACHE_MAX_BYTES && c.chunks.length > 1) {
+    const removed = c.chunks.shift();
+    if (!removed) break;
+    c.bytes -= removed.bin.length;
+    const head = c.chunks[0];
+    if (head) c.startOffset = Math.max(0, head.offsetEnd - head.bin.length);
+  }
+}
+
+/** Offset of the oldest byte this client still holds, or null if it holds none. */
+export function getRawCacheStart(sessionId: string): number | null {
+  const c = rawCaches.get(sessionId);
+  if (!c || c.chunks.length === 0) return null;
+  return c.startOffset;
+}
+
+/** The cached bytes, oldest first — the source for a scrolled-back rebuild. */
+export function getRawCacheChunks(sessionId: string): string[] {
+  const c = rawCaches.get(sessionId);
+  if (!c) return [];
+  return c.chunks.map((x) => x.bin);
+}
+
+/**
+ * Offset one past the newest cached byte, or null when nothing is cached. A
+ * rebuild renders the cache as of this point, so anything that streams in
+ * afterwards is replayed by offset against it.
+ */
+export function getRawCacheEnd(sessionId: string): number | null {
+  const c = rawCaches.get(sessionId);
+  if (!c || c.chunks.length === 0) return null;
+  return c.chunks[c.chunks.length - 1].offsetEnd;
+}
+
+/**
+ * Splice a server-fetched older block onto the front of the cache. `bin` must
+ * cover exactly [startOffset, endOffset) and end where the cache currently
+ * begins, so the cache stays a contiguous run ending at the live edge.
+ */
+export function prependRawCache(sessionId: string, bin: string, startOffset: number, endOffset: number): void {
+  let c = rawCaches.get(sessionId);
+  if (!c) {
+    c = { chunks: [], bytes: 0, startOffset };
+    rawCaches.set(sessionId, c);
+  }
+  if (bin.length === 0) {
+    c.startOffset = Math.min(c.startOffset, startOffset);
+    return;
+  }
+  c.chunks.unshift({ bin, offsetEnd: endOffset });
+  c.bytes += bin.length;
+  c.startOffset = startOffset;
+  // Deliberately no trim here. Dropping from the end would cut the live edge and
+  // break the invariant this cache exists to hold (it must stay contiguous
+  // through to the newest byte); dropping from the front would discard the very
+  // page just fetched. The cap is instead enforced by refusing to page further
+  // back — see isRawCacheFull().
+}
+
+/**
+ * True once the cache holds its cap, meaning "load earlier" should stop: paging
+ * back further can't be retained (the live append side would evict it again),
+ * exactly like xterm dropping lines past its scrollback cap.
+ */
+export function isRawCacheFull(sessionId: string): boolean {
+  const c = rawCaches.get(sessionId);
+  return !!c && c.bytes >= RAW_CACHE_MAX_BYTES;
+}
+
+export function clearRawCache(sessionId: string): void {
+  rawCaches.delete(sessionId);
+}
 
 export interface SessionMeta {
   /** Lowest offset still represented in the client's xterm buffer (0 if none seen yet). */
@@ -113,6 +220,10 @@ export function writeToTerminal(sessionId: string, binData: string, offsetEnd?: 
   // Track offsets regardless of whether a writer is present — keeps history
   // metadata accurate even if the terminal is still mounting.
   if (typeof offsetEnd === 'number' && Number.isFinite(offsetEnd)) {
+    // Keep the bytes so "load earlier" can fetch only the older delta. Both the
+    // live and replay paths land here, so the cache stays contiguous through to
+    // the newest byte.
+    appendRawCache(sessionId, binData, offsetEnd);
     const m = getOrCreateMeta(sessionId);
     const offsetStart = offsetEnd - binData.length;
     const prevLowest = m.lowestOffset;
@@ -145,6 +256,7 @@ export function clearTerminalBuffer(sessionId: string): void {
   meta.delete(sessionId);
   metaListeners.delete(sessionId);
   snapshotListeners.delete(sessionId);
+  rawCaches.delete(sessionId);
 }
 
 export function getSessionMeta(sessionId: string): SessionMeta {

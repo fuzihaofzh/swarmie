@@ -118,6 +118,120 @@ describe('Session', () => {
     expect(joined).toBe(expected);
   });
 
+  it('keeps raw offsets equal to true byte counts regardless of base64 padding', () => {
+    const adapter = createMockAdapter('sess-offsets');
+    const session = new Session('sess-offsets', 'test', adapter);
+
+    // Lengths 1..3 mod 3 produce base64 with 2, 1 and 0 padding chars. Offsets
+    // must track real bytes for all of them — a per-event over-count is what
+    // made offsets drift ~36KB across a full ring and broke byte arithmetic.
+    let expectedBytes = 0;
+    for (let len = 1; len <= 60; len++) {
+      const payload = Buffer.alloc(len, 65);
+      expectedBytes += len;
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-offsets',
+        timestamp: Date.now() + len,
+        data: { data: payload.toString('base64') },
+      });
+    }
+
+    const snapshot = session.getRawHistorySnapshot(0);
+    const decodedBytes = snapshot.chunks
+      .reduce((sum, c) => sum + Buffer.from(c, 'base64').length, 0);
+
+    expect(decodedBytes).toBe(expectedBytes);
+    // The offset span must equal the bytes actually returned — not one byte more.
+    expect(snapshot.endOffset - snapshot.startOffset).toBe(expectedBytes);
+    expect(snapshot.startOffset).toBe(0);
+  });
+
+  it('returns only the requested range when toOffset is given', () => {
+    const adapter = createMockAdapter('sess-range');
+    const session = new Session('sess-range', 'test', adapter);
+
+    // Offsets are derived from base64 length (Math.ceil(len * 3 / 4)), which is
+    // only exact when the payload is a multiple of 3 bytes — otherwise padding
+    // makes the ring over-count. Keep every chunk at 12 bytes so the offsets in
+    // this test are true byte counts.
+    const texts: string[] = [];
+    for (let i = 0; i < 500; i++) {
+      const text = `chunk-${String(i).padStart(5, '0')};`;
+      expect(text.length).toBe(12);
+      texts.push(text);
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-range',
+        timestamp: Date.now() + i,
+        data: { data: Buffer.from(text).toString('base64') },
+      });
+    }
+    const all = texts.join('');
+    const decode = (s: { chunks: string[] }) =>
+      s.chunks.map((c) => Buffer.from(c, 'base64').toString('utf-8')).join('');
+
+    const full = session.getRawHistorySnapshot(0);
+    expect(full.endOffset).toBe(all.length);
+
+    // Ask only for the older half — the newer half must NOT be sent. This is
+    // what lets a client that already holds the tail page back in bounded
+    // chunks instead of re-fetching everything up to the live end.
+    const mid = texts.slice(0, 250).join('').length;
+    const older = session.getRawHistorySnapshot(0, mid);
+    expect(older.startOffset).toBe(0);
+    expect(older.endOffset).toBe(mid);
+    expect(decode(older)).toBe(all.slice(0, mid));
+    expect(older.reachedEarliest).toBe(true);
+
+    // The two halves must stitch back into the whole with no gap or overlap.
+    const newer = session.getRawHistorySnapshot(mid);
+    expect(newer.startOffset).toBe(mid);
+    expect(newer.endOffset).toBe(all.length);
+    expect(decode(older) + decode(newer)).toBe(all);
+
+    // A window in the middle.
+    const loOff = texts.slice(0, 100).join('').length;
+    const hiOff = texts.slice(0, 300).join('').length;
+    const window = session.getRawHistorySnapshot(loOff, hiOff);
+    expect(window.startOffset).toBe(loOff);
+    expect(window.endOffset).toBe(hiOff);
+    expect(decode(window)).toBe(all.slice(loOff, hiOff));
+    expect(window.reachedEarliest).toBe(false);
+
+    // The single invariant every caller relies on: the bytes returned are
+    // exactly [startOffset, endOffset). Chunks come back whole at both ends, so
+    // the reported bounds must describe what was actually sent — never less.
+    for (const [f, t] of [[0, mid], [loOff, hiOff], [loOff + 3, hiOff - 5], [7, 9], [0, undefined]] as const) {
+      const s = session.getRawHistorySnapshot(f, t);
+      expect(decode(s).length).toBe(s.endOffset - s.startOffset);
+      expect(decode(s)).toBe(all.slice(s.startOffset, s.endOffset));
+    }
+
+    // A toOffset that falls INSIDE a chunk must not silently drop it — that
+    // would leave a hole between this page and what the caller already holds.
+    // The straddler comes back whole and endOffset reports the overshoot, so
+    // the caller can trim by byte count.
+    const straddle = hiOff - 5; // mid-chunk
+    const s = session.getRawHistorySnapshot(loOff, straddle);
+    expect(s.endOffset).toBeGreaterThanOrEqual(straddle);
+    expect(s.startOffset).toBe(loOff);
+    // No hole: what came back covers [loOff, endOffset) exactly.
+    expect(decode(s)).toBe(all.slice(loOff, s.endOffset));
+    // And trimming the overshoot reproduces the requested window exactly.
+    const overshoot = s.endOffset - straddle;
+    expect(decode(s).slice(0, decode(s).length - overshoot)).toBe(all.slice(loOff, straddle));
+
+    // Degenerate bounds must not throw or over-return.
+    expect(decode(session.getRawHistorySnapshot(0, 0))).toBe('');
+    expect(session.getRawHistorySnapshot(0, 0).endOffset).toBe(0);
+    expect(decode(session.getRawHistorySnapshot(mid, mid))).toBe('');
+    // toOffset below fromOffset is clamped up to fromOffset (empty), not inverted.
+    expect(decode(session.getRawHistorySnapshot(hiOff, loOff))).toBe('');
+    // toOffset past the end behaves like no bound at all.
+    expect(decode(session.getRawHistorySnapshot(0, all.length + 9999))).toBe(all);
+  });
+
   it('tracks metadata accumulation', () => {
     const adapter = createMockAdapter('sess-3');
     const session = new Session('sess-3', 'test', adapter);
