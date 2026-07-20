@@ -7,6 +7,14 @@ import { RemoteAdapter, getRemoteAdapter } from '../adapters/remote.js';
 import type { BaseAdapter } from '../adapters/base.js';
 import { logObservabilityEvent, resolveRequestId } from './observability.js';
 import { syncClipboardImageToRemote } from './clipboard.js';
+import * as PROF from './profile.js';
+
+/**
+ * hrtime of the most recent keystroke per session. Profiling only — lets
+ * flushRawPending report how long a keystroke took to turn into an echo frame,
+ * measured entirely server-side (no client clock involved).
+ */
+const lastInputAtNs = new Map<string, bigint>();
 
 interface WSMessage {
   type: string;
@@ -443,9 +451,17 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     buffers: Buffer[];
     offsetEnd: number;
     timestamp: number;
-    timer: ReturnType<typeof setTimeout>;
+    /** Unset when the batch is flushed inline (first chunk after a quiet period). */
+    timer?: ReturnType<typeof setTimeout>;
+    /** hrtime of the first chunk in this batch — profiling only. */
+    firstEnqueueNs?: bigint;
   }
   const rawPending = new Map<string, RawPending>();
+  /**
+   * When each session's raw stream last flushed. Drives the Nagle-style rule
+   * in the raw:output handler: quiet longer than the window → send now.
+   */
+  const lastRawFlushAt = new Map<string, number>();
 
   // Per-client output backpressure. On a link slower than the output rate, a
   // sustained flood makes ws.bufferedAmount grow without bound, so a keystroke's
@@ -481,6 +497,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   // paint over it — briefly stale beats blank, and codex's next frame (or a tab-
   // focus SIGWINCH) fully repaints. Only the dropped middle gap is lost.
   const TERMINAL_RESET = '\x1b[!p\x1b[0m';
+
   const behindRaw = new WeakMap<WebSocket, Set<string>>();
 
   // Build a binary raw:output frame for the terminal hot path. The old wire
@@ -509,11 +526,29 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   const flushRawPending = (sessionId: string): void => {
     const pending = rawPending.get(sessionId);
     if (!pending) return;
-    clearTimeout(pending.timer);
+    const tFlush = PROF.profiling ? PROF.nowNs() : 0n;
+    if (pending.timer) clearTimeout(pending.timer);
     rawPending.delete(sessionId);
+    lastRawFlushAt.set(sessionId, Date.now());
+    if (PROF.profiling) {
+      // How long the first chunk of this batch sat waiting for the coalesce window.
+      const enq = pending.firstEnqueueNs;
+      if (enq) PROF.markMs('coalesce.wait', Number(PROF.nowNs() - enq) / 1e6, pending.buffers.length, sessionId);
+      // Time from the keystroke reaching the server to this echo being flushed.
+      const li = lastInputAtNs.get(sessionId);
+      if (li) {
+        PROF.markMs('echo.inputToFlush', Number(PROF.nowNs() - li) / 1e6, undefined, sessionId);
+        lastInputAtNs.delete(sessionId);
+      }
+    }
+    const tConcat = PROF.profiling ? PROF.nowNs() : 0n;
     const mergedBuf = Buffer.concat(pending.buffers);
+    if (PROF.profiling) PROF.mark('flush.concat', tConcat, mergedBuf.length, sessionId);
     // Binary frame for terminal sockets (the only raw subscribers in practice).
+    const tEnc = PROF.profiling ? PROF.nowNs() : 0n;
     const binFrame = encodeRawFrame(sessionId, mergedBuf, pending.offsetEnd);
+    if (PROF.profiling) PROF.mark('flush.encodeFrame', tEnc, binFrame.length, sessionId);
+    void tFlush;
     // JSON fallback, built lazily, only if a non-terminal client is subscribed
     // to this session's raw stream (keeps the legacy path correct).
     let jsonPayload: string | null = null;
@@ -540,6 +575,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
       if (buffered > RAW_BEHIND_HIGH) {
         // Backlog building — stop adding live frames for this session.
         if (!behind) { behind = new Set(); behindRaw.set(ws, behind); }
+        if (PROF.profiling && !behind.has(sessionId)) PROF.markMs('behind.enter', 0, buffered, sessionId);
         behind.add(sessionId);
         continue;
       }
@@ -555,6 +591,11 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
             Buffer.from(TERMINAL_RESET),
             Buffer.from(tail.data, 'base64'),
           ]);
+          if (PROF.profiling) {
+            // Resync cost: how many bytes we re-send to snap a "behind" client
+            // back to the live edge, vs the ~4KB the visible screen actually is.
+            PROF.markMs('resync.sent', 0, resyncBuf.length, sessionId);
+          }
           if (isTerminal) {
             sendRaw(ws, encodeRawFrame(sessionId, resyncBuf, tail.offsetEnd));
           } else {
@@ -572,7 +613,14 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
         continue;
       }
 
+      const tSend = PROF.profiling ? PROF.nowNs() : 0n;
       sendRaw(ws, isTerminal ? binFrame : jsonPayloadFor());
+      if (PROF.profiling) {
+        PROF.mark('flush.wsSend', tSend, binFrame.length, sessionId);
+        // Backlog already queued in the kernel/ws layer for this socket. If this
+        // grows, the client is receiving slower than the PTY produces.
+        PROF.markMs('flush.bufferedAfter', 0, ws.bufferedAmount ?? 0, sessionId);
+      }
     }
   };
 
@@ -581,25 +629,44 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   manager.on('event', (event: NormalizedEvent) => {
     if (event.type === 'raw:output') {
       const rawData = event.data as RawOutputData;
-      let pending = rawPending.get(event.sessionId);
+      const sid = event.sessionId;
+      let pending = rawPending.get(sid);
+      const startsBatch = !pending;
       if (!pending) {
-        const sid = event.sessionId;
         pending = {
           buffers: [],
           offsetEnd: 0,
           timestamp: event.timestamp,
-          timer: setTimeout(() => flushRawPending(sid), RAW_COALESCE_MS),
+          firstEnqueueNs: PROF.profiling ? PROF.nowNs() : undefined,
         };
         rawPending.set(sid, pending);
       }
       pending.buffers.push(Buffer.from(rawData.data, 'base64'));
       if (typeof rawData.offsetEnd === 'number') pending.offsetEnd = rawData.offsetEnd;
+
+      if (startsBatch) {
+        // Nagle-style: the first chunk after a quiet period ships immediately.
+        // A keystroke echo has nothing to coalesce with, so parking it for the
+        // full window adds RAW_COALESCE_MS of pure latency to every character
+        // (measured: it was ~16ms of a ~16.7ms server-side echo path). Only
+        // once output is actually streaming — i.e. we already flushed inside
+        // the current window — do we batch, which is where coalescing pays.
+        const sinceFlush = Date.now() - (lastRawFlushAt.get(sid) ?? 0);
+        if (sinceFlush >= RAW_COALESCE_MS) {
+          flushRawPending(sid);
+          return;
+        }
+        pending.timer = setTimeout(() => flushRawPending(sid), RAW_COALESCE_MS);
+      }
       return;
     }
 
     // Non-raw event: flush this session's buffered raw first so ordering holds
     // (e.g. a status:change must not overtake the output that triggered it).
     flushRawPending(event.sessionId);
+    // The flush above re-seeded lastRawFlushAt; a dead session never flushes
+    // again, so drop its entry rather than retaining one per session ever seen.
+    if (event.type === 'session:end') lastRawFlushAt.delete(event.sessionId);
 
     const eventPayload = JSON.stringify({ type: 'event', event });
     const session = event.type === 'status:change' ? manager.getSession(event.sessionId) : undefined;
@@ -693,8 +760,13 @@ function handleMessage(
       const sessionId = msg.sessionId as string;
       const data = msg.data as string;
       if (sessionId && data) {
+        const tIn = PROF.profiling ? PROF.nowNs() : 0n;
         const session = manager.getSession(sessionId);
         session?.write(data);
+        if (PROF.profiling) {
+          PROF.mark('ws.inputWrite', tIn, data.length, sessionId);
+          lastInputAtNs.set(sessionId, PROF.nowNs());
+        }
       }
       break;
     }

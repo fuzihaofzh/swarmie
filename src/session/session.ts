@@ -3,6 +3,7 @@ import { hostname as osHostname } from 'node:os';
 import { type BaseAdapter } from '../adapters/base.js';
 import type { NormalizedEvent, MetadataData, RawOutputData, SessionStatus } from '../adapters/types.js';
 import type { SessionInfo, SessionSummary } from './types.js';
+import * as PROF from '../server/profile.js';
 import { getDefaultHostTag } from './host.js';
 
 const _hostname = osHostname();
@@ -524,6 +525,7 @@ export class Session extends EventEmitter {
 
   private handleEvent(event: NormalizedEvent): void {
     if (event.type === 'raw:output') {
+      const tRing = PROF.profiling ? PROF.nowNs() : 0n;
       const rawData = event.data as RawOutputData;
       const b64 = rawData.data;
       const size = base64ByteLength(b64);
@@ -546,6 +548,7 @@ export class Session extends EventEmitter {
           this.rawBytes -= freed;
         }
       }
+      if (PROF.profiling) PROF.mark('ring.append', tRing, size, this.id);
     } else {
       this.events.push(event);
 

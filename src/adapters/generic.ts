@@ -8,6 +8,7 @@ import type {
   ToolDetectData,
 } from './types.js';
 import { ESC_CHAR, BEL_CHAR, OSC_ANY_RE, CSI_RE, ESC_OTHER_RE, CONTROL_CHARS_RE } from './ansi.js';
+import * as PROF from '../server/profile.js';
 
 const TOOL_SIGNATURES: { pattern: RegExp; tool: string; displayName: string }[] = [
   { pattern: /claude/i, tool: 'claude', displayName: 'Claude Code' },
@@ -83,12 +84,26 @@ export class GenericAdapter extends BaseAdapter {
     this.startCwdPolling(this.ptyProcess.pid);
 
     this.ptyProcess.onData((data: string) => {
+      const tChunk = PROF.profiling ? PROF.nowNs() : 0n;
       this.detectTool(data);
+      if (PROF.profiling) PROF.mark('pty.detectTool', tChunk, data.length, this.sessionId);
+
+      const tAct = PROF.profiling ? PROF.nowNs() : 0n;
       this.handleActivityDetection(data);
+      if (PROF.profiling) PROF.mark('pty.activityDetect', tAct, data.length, this.sessionId);
+
+      const tOsc = PROF.profiling ? PROF.nowNs() : 0n;
       this.parseOSC(data);
+      if (PROF.profiling) PROF.mark('pty.parseOSC', tOsc, data.length, this.sessionId);
+
+      const tEmit = PROF.profiling ? PROF.nowNs() : 0n;
       this.emitEvent('raw:output', {
         data: Buffer.from(data).toString('base64'),
       } satisfies RawOutputData);
+      if (PROF.profiling) {
+        PROF.mark('pty.emit+base64', tEmit, data.length, this.sessionId);
+        PROF.mark('pty.chunkTotal', tChunk, data.length, this.sessionId);
+      }
     });
 
     this.ptyProcess.onExit(({ exitCode, signal }) => {

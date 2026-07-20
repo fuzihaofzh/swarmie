@@ -6,6 +6,7 @@ import { hostname as osHostname } from 'node:os';
 import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, SessionStatus, CwdChangeData } from './types.js';
 import { ESC_CHAR, BEL_CHAR } from './ansi.js';
 import { HeadlessScreen } from './screen.js';
+import * as PROF from '../server/profile.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -340,7 +341,9 @@ export abstract class BaseAdapter extends EventEmitter {
   protected handleActivityDetection(chunk: string): void {
     // Apply ANSI / cursor moves / alt-buffer toggles to the virtual screen.
     // Never throttled: skipping a write would desync the screen from the PTY.
+    const tScreen = PROF.profiling ? PROF.nowNs() : 0n;
     this._screen.write(chunk);
+    if (PROF.profiling) PROF.mark('act.screenWrite', tScreen, chunk.length, this.sessionId);
 
     // commandExecuting refreshes its activity timer on any output, including
     // pure ANSI redraws — that's what keeps long-running commands marked busy.
@@ -378,10 +381,18 @@ export abstract class BaseAdapter extends EventEmitter {
    * screen write, which must happen for every chunk.
    */
   private evaluateScreenState(): void {
+    const tEval = PROF.profiling ? PROF.nowNs() : 0n;
+    const tRead = PROF.profiling ? PROF.nowNs() : 0n;
     const screen = this._screen.getRecentText(20);
+    if (PROF.profiling) PROF.mark('act.getRecentText', tRead, screen.length, this.sessionId);
     const screenMoved = this.noteMeaningfulScreenMovement();
+    const tRe = PROF.profiling ? PROF.nowNs() : 0n;
     const promptVisible = this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(screen);
     const busyVisible = this.shouldTreatScreenAsBusy(screen);
+    if (PROF.profiling) {
+      PROF.mark('act.promptRegex', tRe, screen.length, this.sessionId);
+      PROF.mark('act.evaluateTotal', tEval, screen.length, this.sessionId);
+    }
 
     if (promptVisible) {
       if (this._status !== 'waiting_input') {
