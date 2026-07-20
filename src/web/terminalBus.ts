@@ -27,6 +27,8 @@ const MAX_BUFFERED_BYTES_PER_SESSION = 512 * 1024;
  * display buys nothing; this is roughly a full server ring's worth.
  */
 const RAW_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+/** Evict down to this in one splice once the cache overflows (see appendRawCache). */
+const RAW_CACHE_LOW_WATER_BYTES = Math.floor(RAW_CACHE_MAX_BYTES * 0.9);
 
 const writers = new Map<string, Writer>();
 const buffers = new Map<string, { chunks: Array<{ bin: string; offsetEnd?: number; isReplay?: boolean }>; bytes: number }>();
@@ -49,6 +51,12 @@ interface RawCache {
   bytes: number;
   /** Offset of the first byte held in chunks[0]. */
   startOffset: number;
+  /**
+   * Set once the cap has forced an eviction. Eviction drops to a low-water
+   * mark, so `bytes` sits below the cap most of the time — this flag is what
+   * "the cache is at capacity" actually means (see isRawCacheFull).
+   */
+  evicted: boolean;
 }
 const rawCaches = new Map<string, RawCache>();
 
@@ -56,17 +64,29 @@ function appendRawCache(sessionId: string, bin: string, offsetEnd: number): void
   if (bin.length === 0) return;
   let c = rawCaches.get(sessionId);
   if (!c) {
-    c = { chunks: [], bytes: 0, startOffset: Math.max(0, offsetEnd - bin.length) };
+    c = { chunks: [], bytes: 0, startOffset: Math.max(0, offsetEnd - bin.length), evicted: false };
     rawCaches.set(sessionId, c);
   }
   c.chunks.push({ bin, offsetEnd });
   c.bytes += bin.length;
-  while (c.bytes > RAW_CACHE_MAX_BYTES && c.chunks.length > 1) {
-    const removed = c.chunks.shift();
-    if (!removed) break;
-    c.bytes -= removed.bin.length;
-    const head = c.chunks[0];
-    if (head) c.startOffset = Math.max(0, head.offsetEnd - head.bin.length);
+  if (c.bytes > RAW_CACHE_MAX_BYTES) {
+    // Same amortization as the server ring: shifting one chunk per overflow is
+    // O(n) on every frame once the cache is full, so drop to a low-water mark
+    // in a single splice instead.
+    const toFree = c.bytes - RAW_CACHE_LOW_WATER_BYTES;
+    let dropCount = 0;
+    let freed = 0;
+    while (dropCount < c.chunks.length - 1 && freed < toFree) {
+      freed += c.chunks[dropCount].bin.length;
+      dropCount++;
+    }
+    if (dropCount > 0) {
+      c.chunks.splice(0, dropCount);
+      c.bytes -= freed;
+      c.evicted = true;
+      const head = c.chunks[0];
+      if (head) c.startOffset = Math.max(0, head.offsetEnd - head.bin.length);
+    }
   }
 }
 
@@ -103,7 +123,7 @@ export function getRawCacheEnd(sessionId: string): number | null {
 export function prependRawCache(sessionId: string, bin: string, startOffset: number, endOffset: number): void {
   let c = rawCaches.get(sessionId);
   if (!c) {
-    c = { chunks: [], bytes: 0, startOffset };
+    c = { chunks: [], bytes: 0, startOffset, evicted: false };
     rawCaches.set(sessionId, c);
   }
   if (bin.length === 0) {
@@ -127,7 +147,7 @@ export function prependRawCache(sessionId: string, bin: string, startOffset: num
  */
 export function isRawCacheFull(sessionId: string): boolean {
   const c = rawCaches.get(sessionId);
-  return !!c && c.bytes >= RAW_CACHE_MAX_BYTES;
+  return !!c && (c.evicted || c.bytes >= RAW_CACHE_MAX_BYTES);
 }
 
 export function clearRawCache(sessionId: string): void {

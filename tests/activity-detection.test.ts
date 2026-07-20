@@ -3,6 +3,11 @@ import { BaseAdapter } from '../src/adapters/base.js';
 import type { AdapterInfo } from '../src/adapters/types.js';
 
 class ActivityDetectionAdapter extends BaseAdapter {
+  // These cases assert the classifier's verdict on a screen, not when the
+  // sample runs, so they feed chunks and read status synchronously. The
+  // throttle itself is covered separately in "screen sample throttling".
+  protected detectSampleIntervalMs = 0;
+
   get info(): AdapterInfo {
     return {
       name: 'test',
@@ -397,5 +402,91 @@ describe('activity detection', () => {
     adapter.feed('\x1b[2J\x1b[H');
     adapter.feed('Working on it…');
     expect(adapter.status).toBe('idle');
+  });
+});
+
+describe('screen sample throttling', () => {
+  // A redrawing spinner delivers dozens of chunks a second and each sample
+  // builds two full-screen strings plus ~20 regexes, so sampling per chunk
+  // pins the event loop. Bursts collapse to a leading + trailing sample.
+  class ThrottledAdapter extends ActivityDetectionAdapter {
+    protected detectSampleIntervalMs = 80;
+    samples = 0;
+
+    protected shouldDetectWaitingPrompt(): boolean {
+      return true;
+    }
+
+    getScreenSnapshot() {
+      return super.getScreenSnapshot();
+    }
+  }
+
+  function createThrottled(): ThrottledAdapter {
+    const adapter = new ThrottledAdapter({ sessionId: 'throttle-test', toolArgs: [] });
+    adapter.start();
+    return adapter;
+  }
+
+  it('defers a prompt that lands inside the window, then classifies it', () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createThrottled();
+
+      // Leading edge: the first chunk samples immediately, settling the
+      // 'running' that start() set into 'idle' for plain visible output.
+      expect(adapter.status).toBe('running');
+      adapter.feed('booting…');
+      expect(adapter.status).toBe('idle');
+
+      // Same window — the prompt is on the virtual screen but not yet sampled.
+      adapter.feed('Press enter to confirm or esc to cancel');
+      expect(adapter.status).not.toBe('waiting_input');
+
+      // The trailing sample runs on the settled screen.
+      vi.advanceTimersByTime(80);
+      expect(adapter.status).toBe('waiting_input');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the screen in sync even for chunks it does not sample', () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createThrottled();
+      adapter.feed('first');
+
+      // Writes are never throttled — only sampling is — so a prompt split
+      // across deferred chunks must still be whole on the screen.
+      adapter.feed('Press enter to confirm');
+      adapter.feed(' or esc to cancel');
+      expect(adapter.getScreenSnapshot().recent).toContain('Press enter to confirm or esc to cancel');
+
+      vi.advanceTimersByTime(80);
+      expect(adapter.status).toBe('waiting_input');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('samples once per window under a sustained burst', () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createThrottled();
+      const transitions: string[] = [];
+      adapter.on('event', (e: { type: string }) => {
+        if (e.type === 'status:change') transitions.push(e.type);
+      });
+
+      // 200 chunks inside one window must not produce 200 samples; the
+      // trailing timer is armed once and re-armed only after it fires.
+      for (let i = 0; i < 200; i++) adapter.feed(`\x1b[2K\rworking ${i}`);
+      vi.advanceTimersByTime(80);
+
+      expect(adapter.getScreenSnapshot().recent).toContain('working 199');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

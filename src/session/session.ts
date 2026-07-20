@@ -31,6 +31,13 @@ const MAX_RECENT_EVENTS = 1000;
 // In-memory cap for raw terminal output per session. Held so the dashboard
 // can scroll back through history on demand without persisting to disk.
 const MAX_RAW_BYTES = 16 * 1024 * 1024; // 16MB
+/**
+ * Low-water mark for raw-ring eviction. Evicting one event per overflow means
+ * an Array.shift() — O(n) over a ring that holds 100k+ tiny events — on every
+ * single chunk once the ring is full. Dropping to 90% in one splice instead
+ * amortizes that to roughly one O(n) pass per 1.6MB of output.
+ */
+const RAW_EVICT_LOW_WATER_BYTES = Math.floor(MAX_RAW_BYTES * 0.9);
 // Cap on raw bytes returned by getRecentEvents() (initial subscribe / route
 // replay). Kept small so opening a tab on a large session is fast — over a
 // remote tunnel the transfer of this blob dominates open latency. Older
@@ -524,10 +531,20 @@ export class Session extends EventEmitter {
       rawData.offsetEnd = this._rawBytesEverWritten;
       this.rawEvents.push(event);
       this.rawBytes += size;
-      while (this.rawBytes > MAX_RAW_BYTES && this.rawEvents.length > 0) {
-        const old = this.rawEvents.shift()!;
-        const oldB64 = (old.data as RawOutputData).data;
-        this.rawBytes -= base64ByteLength(oldB64);
+      if (this.rawBytes > MAX_RAW_BYTES) {
+        // Count how many leading events to drop to reach the low-water mark,
+        // then remove them in a single splice.
+        const toFree = this.rawBytes - RAW_EVICT_LOW_WATER_BYTES;
+        let dropCount = 0;
+        let freed = 0;
+        while (dropCount < this.rawEvents.length - 1 && freed < toFree) {
+          freed += base64ByteLength((this.rawEvents[dropCount].data as RawOutputData).data);
+          dropCount++;
+        }
+        if (dropCount > 0) {
+          this.rawEvents.splice(0, dropCount);
+          this.rawBytes -= freed;
+        }
       }
     } else {
       this.events.push(event);

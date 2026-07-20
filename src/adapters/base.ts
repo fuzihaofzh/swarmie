@@ -69,6 +69,18 @@ const SGR_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[<\\d+;\\d+;\\d+[mM]`);
 const X10_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[M[\\s\\S]{3}`);
 const URXVT_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[\\d+;\\d+;\\d+M`);
 
+/**
+ * Minimum gap between full screen samples in the detection pipeline.
+ *
+ * Sampling builds two whole-screen strings and runs ~20 regexes, so its cost
+ * tracks chunk *count*, not chunk size. A redrawing spinner emits dozens of
+ * chunks a second, which turned that into dozens of full-screen scans a second
+ * on the event loop — enough to show up as keystroke latency. Bursts now
+ * collapse into a leading sample plus a trailing one, so a settled screen is
+ * still always evaluated.
+ */
+const DETECT_SAMPLE_INTERVAL_MS = Number(process.env.SWARMIE_DETECT_INTERVAL_MS ?? '80');
+
 function isSubmittedInput(data: string): boolean {
   return data.includes('\r') || data.includes('\n');
 }
@@ -159,6 +171,16 @@ export abstract class BaseAdapter extends EventEmitter {
   private _cwdTimer: ReturnType<typeof setInterval> | null = null;
   /** Headless terminal that mirrors the rendered screen. */
   private _screen: HeadlessScreen;
+  /**
+   * Throttle window for screen sampling. Overridable so tests can assert the
+   * classification logic directly without driving timers; see the throttle's
+   * own coverage in tests/activity-detection.test.ts.
+   */
+  protected detectSampleIntervalMs: number = DETECT_SAMPLE_INTERVAL_MS;
+  /** Timestamp of the last full screen sample (see DETECT_SAMPLE_INTERVAL_MS). */
+  private _lastDetectAt: number = 0;
+  /** Pending trailing sample for chunks that arrived inside the throttle window. */
+  private _detectTrailingTimer: ReturnType<typeof setTimeout> | null = null;
   /** True when cwd is being tracked via OSC sequences (e.g. SSH session) */
   private _oscCwdActive: boolean = false;
 
@@ -317,6 +339,7 @@ export abstract class BaseAdapter extends EventEmitter {
    */
   protected handleActivityDetection(chunk: string): void {
     // Apply ANSI / cursor moves / alt-buffer toggles to the virtual screen.
+    // Never throttled: skipping a write would desync the screen from the PTY.
     this._screen.write(chunk);
 
     // commandExecuting refreshes its activity timer on any output, including
@@ -327,6 +350,34 @@ export abstract class BaseAdapter extends EventEmitter {
 
     if (this._status === 'completed' || this._status === 'error') return;
 
+    const now = Date.now();
+    const sinceLast = now - this._lastDetectAt;
+    if (sinceLast >= this.detectSampleIntervalMs) {
+      this._lastDetectAt = now;
+      this.evaluateScreenState();
+      return;
+    }
+
+    // Inside the throttle window. Defer to a trailing sample so the screen as
+    // it finally settles is still classified — dropping it outright would let
+    // a status stick at 'running' after the output stops.
+    if (!this._detectTrailingTimer) {
+      this._detectTrailingTimer = setTimeout(() => {
+        this._detectTrailingTimer = null;
+        if (this._status === 'completed' || this._status === 'error') return;
+        this._lastDetectAt = Date.now();
+        this.evaluateScreenState();
+      }, this.detectSampleIntervalMs - sinceLast);
+      (this._detectTrailingTimer as { unref?: () => void }).unref?.();
+    }
+  }
+
+  /**
+   * Sample the rendered screen and pick a status. Split out of
+   * handleActivityDetection so it can be throttled independently of the
+   * screen write, which must happen for every chunk.
+   */
+  private evaluateScreenState(): void {
     const screen = this._screen.getRecentText(20);
     const screenMoved = this.noteMeaningfulScreenMovement();
     const promptVisible = this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(screen);
@@ -497,6 +548,14 @@ export abstract class BaseAdapter extends EventEmitter {
     this.stopUserInputTracking();
     this.stopScreenMovementTimer();
     this.stopCwdPolling();
+    this.stopDetectTrailingTimer();
+  }
+
+  private stopDetectTrailingTimer(): void {
+    if (this._detectTrailingTimer) {
+      clearTimeout(this._detectTrailingTimer);
+      this._detectTrailingTimer = null;
+    }
   }
 
   protected disposeScreen(): void {
