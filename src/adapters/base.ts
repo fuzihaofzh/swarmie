@@ -20,11 +20,10 @@ const SCREEN_MOVEMENT_BUSY_TTL_MS = 5_000;
 // screen frozen this long means the work ended (or the process died) with a
 // busy-looking frame left on it.
 const SCREEN_FROZEN_TIMEOUT_MS = 45_000;
+// How long after a resize/redraw the screen-movement heuristic stays muted.
+// Covers the full SIGWINCH repaint, which spans several sample windows.
+const REPAINT_SUPPRESS_MS = 1_500;
 
-// Patterns that indicate a tool is waiting for user input. Matched against
-// the rendered screen text from the headless terminal — not against the raw
-// PTY stream — so cursor-positioned redraws, animations, kitty/modifyOtherKeys
-// sequences, and chunk fragmentation all wash out before we look.
 // How many logical lines at the bottom of the screen count as the "status
 // region". Agent CLIs draw their spinner and their approval box there; the
 // rows above are transcript prose. Matching status patterns against the prose
@@ -197,6 +196,7 @@ export abstract class BaseAdapter extends EventEmitter {
   private _lastActivity = Date.now();
   private _lastScreenFrame = '';
   private _lastScreenChangeAt = 0;
+  private _repaintSuppressedUntil = 0;
   private _cwdTimer: ReturnType<typeof setInterval> | null = null;
   /** Headless terminal that mirrors the rendered screen. */
   private _screen: HeadlessScreen;
@@ -309,6 +309,13 @@ export abstract class BaseAdapter extends EventEmitter {
     this._screen.resize(cols, rows);
     this._lastScreenFrame = normalizeScreenForMovement(this._screen.getViewportText());
     this._lastScreenChangeAt = 0;
+    // A resize SIGWINCHes the app into repainting its whole screen, and that
+    // repaint is our own doing — not the session working. Re-baselining the
+    // frame above only absorbs the first diff, but an ink repaint spans
+    // several 80ms sample windows, so the second diff still landed inside the
+    // movement window and lit the tab busy for 5s. Switching tabs sends an
+    // explicit redraw, which made every tab switch flash its own icon.
+    this._repaintSuppressedUntil = Date.now() + REPAINT_SUPPRESS_MS;
     this.applyResize(cols, rows);
   }
 
@@ -707,6 +714,14 @@ export abstract class BaseAdapter extends EventEmitter {
     const now = Date.now();
     const frame = normalizeScreenForMovement(this._screen.getViewportText());
     if (frame === this._lastScreenFrame) return false;
+
+    // Keep tracking frames through a self-inflicted repaint so the baseline
+    // stays current, but do not read them as the session doing work.
+    if (now < this._repaintSuppressedUntil) {
+      this._lastScreenFrame = frame;
+      this._lastScreenChangeAt = 0;
+      return false;
+    }
 
     const hadPreviousFrame = hasVisibleText(this._lastScreenFrame);
     const repeated =

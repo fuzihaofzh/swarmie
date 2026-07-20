@@ -30,7 +30,10 @@ class ActivityDetectionAdapter extends BaseAdapter {
     this.handleUserInput(data);
   }
 
-  resize(cols: number, rows: number): void {
+  // Override the tool-specific hook, not resize() itself — resize() is where
+  // the base class re-baselines screen-movement detection, and stubbing it out
+  // meant redraw()/SIGWINCH behavior was never actually exercised.
+  protected applyResize(cols: number, rows: number): void {
     void cols;
     void rows;
   }
@@ -521,6 +524,44 @@ describe('stuck-busy watchdog', () => {
         adapter.feed(`\x1b[1;1H✳ Working… (${s}s · esc to interrupt)`);
         vi.advanceTimersByTime(1_000);
       }
+
+      expect(adapter.status).toBe('running');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('tab switch repaint', () => {
+  // Switching tabs sends an explicit redraw, which SIGWINCHes the CLI into
+  // repainting its whole screen. That repaint is our own doing, so it must not
+  // read as the session working — otherwise every tab switch flashed the icon
+  // busy for 5s. Re-baselining a single frame was not enough: an ink repaint
+  // spans several 80ms sample windows.
+  it('does not mark an idle session busy on redraw', () => {
+    const adapter = new AgentMovementDetectionAdapter('switch', 'claude');
+    adapter.feed('──────────\n❯ \n? for shortcuts');
+    expect(adapter.status).toBe('idle');
+
+    adapter.redraw();
+    // A multi-frame repaint: cleared, then partially drawn, then complete.
+    adapter.feed('\x1b[2J\x1b[1;1H');
+    adapter.feed('\x1b[1;1H────');
+    adapter.feed('\x1b[1;1H──────────\n❯ \n? for shortcuts');
+
+    expect(adapter.status).toBe('idle');
+  });
+
+  it('still detects real movement once the repaint window passes', () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = new AgentMovementDetectionAdapter('after', 'claude');
+      adapter.feed('──────────\n❯ \n? for shortcuts');
+      adapter.redraw();
+      vi.advanceTimersByTime(2_000);
+
+      adapter.feed('\x1b[1;1Hsome real output');
+      adapter.feed('\x1b[1;1Hmore real output');
 
       expect(adapter.status).toBe('running');
     } finally {
