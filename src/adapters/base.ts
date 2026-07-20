@@ -76,7 +76,13 @@ const AGENT_IDLE_SCREEN_PATTERNS = [
   /\bnew task\?\s*\/clear\b/i,
   /\?\s*for shortcuts\b/i,
   /\btab to queue message\b/i,
-  /(?:^|\n)\s*[›❯]\s*(?:\n|$)/,
+  // The input prompt itself, with or without a placeholder after it. Codex
+  // renders a rotating hint there ("› Explain this codebase", "› Find and fix
+  // a bug in @filename"), so requiring a bare prompt matched nothing and left
+  // Codex with no idle marker at all — every visible screen fell through to
+  // running. Matching text after the prompt is safe because the caller checks
+  // matchesBusyScreen first, and a working agent keeps its interrupt hint up.
+  /(?:^|\n)[^\S\n]*[›❯](?:[^\S\n]|$)/m,
 ];
 
 // OSC 7: file://hostname/path — shell reports cwd (+ hostname for SSH)

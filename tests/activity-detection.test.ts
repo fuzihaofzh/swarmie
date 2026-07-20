@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BaseAdapter } from '../src/adapters/base.js';
+import { BaseAdapter, matchesAgentIdleScreen, matchesBusyScreen } from '../src/adapters/base.js';
 import type { AdapterInfo } from '../src/adapters/types.js';
 
 class ActivityDetectionAdapter extends BaseAdapter {
@@ -502,7 +502,7 @@ describe('stuck-busy watchdog', () => {
   it('settles a frozen busy screen to idle', () => {
     vi.useFakeTimers();
     try {
-      const adapter = new ActivityDetectionAdapter('frozen', 'test');
+      const adapter = createAdapter();
       adapter.feed('✳ Working… (12s · esc to interrupt)');
       expect(adapter.status).toBe('running');
 
@@ -518,7 +518,7 @@ describe('stuck-busy watchdog', () => {
   it('keeps a repainting busy screen running', () => {
     vi.useFakeTimers();
     try {
-      const adapter = new ActivityDetectionAdapter('live', 'test');
+      const adapter = createAdapter();
       // The elapsed counter ticks, so the screen keeps changing.
       for (let s = 1; s <= 120; s++) {
         adapter.feed(`\x1b[1;1H✳ Working… (${s}s · esc to interrupt)`);
@@ -539,7 +539,7 @@ describe('tab switch repaint', () => {
   // busy for 5s. Re-baselining a single frame was not enough: an ink repaint
   // spans several 80ms sample windows.
   it('does not mark an idle session busy on redraw', () => {
-    const adapter = new AgentMovementDetectionAdapter('switch', 'claude');
+    const adapter = createAgentMovementAdapter();
     adapter.feed('──────────\n❯ \n? for shortcuts');
     expect(adapter.status).toBe('idle');
 
@@ -555,7 +555,7 @@ describe('tab switch repaint', () => {
   it('still detects real movement once the repaint window passes', () => {
     vi.useFakeTimers();
     try {
-      const adapter = new AgentMovementDetectionAdapter('after', 'claude');
+      const adapter = createAgentMovementAdapter();
       adapter.feed('──────────\n❯ \n? for shortcuts');
       adapter.redraw();
       vi.advanceTimersByTime(2_000);
@@ -567,5 +567,31 @@ describe('tab switch repaint', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('codex idle screen', () => {
+  // Captured from a real `codex` process. Codex renders a rotating placeholder
+  // after its "›" prompt, so a bare-prompt-only idle pattern matched nothing:
+  // Codex had no idle marker at all and every visible screen fell through to
+  // running, which lit the tab busy on every tab switch.
+  const CODEX_IDLE = [
+    '╭─────────────────────────────────────────────────╮',
+    '│ >_ OpenAI Codex (v0.144.6)                      │',
+    '│ model:     gpt-5.6-sol xhigh   /model to change │',
+    '╰─────────────────────────────────────────────────╯',
+    '• You have 3 usage limit resets available. Run /usage to use one.',
+    '› Find and fix a bug in @filename',
+    '  gpt-5.6-sol xhigh · ~',
+  ].join('\n');
+
+  it('recognizes the codex prompt as idle even with a placeholder', () => {
+    expect(matchesAgentIdleScreen(CODEX_IDLE)).toBe(true);
+    expect(matchesBusyScreen(CODEX_IDLE)).toBe(false);
+  });
+
+  it('lets a busy codex screen win over the idle prompt', () => {
+    const busy = `${CODEX_IDLE}\n• Running (12s • esc to interrupt)`;
+    expect(matchesBusyScreen(busy)).toBe(true);
   });
 });
