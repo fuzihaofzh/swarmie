@@ -67,12 +67,6 @@ function normalizeStatus(status?: string): string | undefined {
   return status?.replace(/-/g, '_').toLowerCase();
 }
 
-const BRAND_COLORS: Record<string, string> = {
-  claude: '#da7756',
-  codex: '#ffffff',
-  gemini: '#078EFA',
-};
-
 export function ToolIcon({ tool, status, iconSize }: {
   tool: string;
   status?: string;
@@ -82,16 +76,12 @@ export function ToolIcon({ tool, status, iconSize }: {
   const isBell = normalizedStatus === 'waiting_input';
   const Icon = isBell ? BellIcon : (TOOL_ICONS[tool] ?? TerminalIcon);
   const statusColor = normalizedStatus ? STATUS_COLORS[normalizedStatus] : undefined;
-  // The logo keeps its brand color at every status so a tool stays
-  // recognizable at a glance; status is carried by the corner dot and the
-  // pulse animation instead. Tools with no brand color inherit the theme's
-  // text color. Tinting the logo itself made an idle session's Claude mark
-  // gray and a busy one green, which read as "different tool", not "same tool,
-  // different state" — and duplicated what the dot already says.
-  const color = isBell ? statusColor : BRAND_COLORS[tool];
+  // The whole logo carries the status color: at a glance across a dozen
+  // sessions, a full-size color block reads far faster than the 7px corner
+  // dot. Brand coloring was tried instead and dropped — Codex's brand white
+  // vanishes against the dark background, and idle vs busy became too subtle.
+  const color = statusColor;
   const animated = normalizedStatus === 'running' || normalizedStatus === 'thinking' || normalizedStatus === 'tool_executing';
-  // waiting_input is the one status that overrides the logo: it needs to grab
-  // attention, so it swaps to a shaking bell.
   const bellShake = isBell;
   return (
     <span className={`tool-icon ${animated ? 'tool-icon-pulse' : ''} ${bellShake ? 'tool-icon-bell' : ''}`} data-status={normalizedStatus} style={{

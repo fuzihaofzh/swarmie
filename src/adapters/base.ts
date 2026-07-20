@@ -15,6 +15,11 @@ const ACTIVITY_CHECK_INTERVAL_MS = 2_000;
 const USER_INPUT_ACTIVE_MS = 3_000;
 const SCREEN_MOVEMENT_REPEAT_WINDOW_MS = 10_000;
 const SCREEN_MOVEMENT_BUSY_TTL_MS = 5_000;
+// How long a completely unchanged screen may keep a session marked busy. Agent
+// CLIs repaint their status line about once a second while they work, so a
+// screen frozen this long means the work ended (or the process died) with a
+// busy-looking frame left on it.
+const SCREEN_FROZEN_TIMEOUT_MS = 45_000;
 
 // Patterns that indicate a tool is waiting for user input. Matched against
 // the rendered screen text from the headless terminal — not against the raw
@@ -107,6 +112,10 @@ function isSubmittedInput(data: string): boolean {
 
 function isInactiveStatus(status: SessionStatus): boolean {
   return status === 'idle' || status === 'waiting_input' || status === 'completed' || status === 'error';
+}
+
+function isBusyStatus(status: SessionStatus): boolean {
+  return status === 'running' || status === 'thinking' || status === 'tool_executing';
 }
 
 function passiveInputTokenLength(data: string): number {
@@ -324,6 +333,11 @@ export abstract class BaseAdapter extends EventEmitter {
       this.stopCommandTracking();
       this.stopUserInputTracking();
       this.stopScreenMovementTimer();
+    } else if (isBusyStatus(newStatus) && !this._activityCheckInterval) {
+      // Every route into a busy status arms the idle watchdog, not just
+      // submitted commands — otherwise a session marked busy by a screen
+      // pattern has nothing left to walk it back down.
+      this.startCommandTimeout();
     }
     this.emitEvent('status:change', { from, to: newStatus });
   }
@@ -364,11 +378,12 @@ export abstract class BaseAdapter extends EventEmitter {
     this._screen.write(chunk);
     if (PROF.profiling) PROF.mark('act.screenWrite', tScreen, chunk.length, this.sessionId);
 
-    // commandExecuting refreshes its activity timer on any output, including
-    // pure ANSI redraws — that's what keeps long-running commands marked busy.
-    if (this._commandExecuting) {
-      this._lastActivity = Date.now();
-    }
+    // Any output is activity, including pure ANSI redraws — that's what keeps
+    // long-running work marked busy. This is not gated on commandExecuting:
+    // the idle sweep now watches every busy session, not just submitted
+    // commands, so a session streaming output must refresh its timer whether
+    // or not the user pressed Enter to start it.
+    this._lastActivity = Date.now();
 
     if (this._status === 'completed' || this._status === 'error') return;
 
@@ -609,24 +624,33 @@ export abstract class BaseAdapter extends EventEmitter {
   private startCommandTimeout(): void {
     this.stopCommandActivityInterval();
     this._activityCheckInterval = setInterval(() => {
-      if (!this._commandExecuting) {
+      // Runs for as long as the session is busy, however it got there. It used
+      // to run only for submitted commands, which left a session marked busy
+      // by a screen pattern with no timer at all: once output stopped, nothing
+      // re-evaluated it and it stayed busy forever.
+      if (!isBusyStatus(this._status)) {
         this.stopCommandActivityInterval();
         return;
       }
 
-      const idleTime = Date.now() - this._lastActivity;
-      if (idleTime > COMMAND_IDLE_TIMEOUT_MS) {
-        const screen = this._screen.getRecentText(20);
-        if (this.shouldTreatScreenAsBusy(screen)) {
-          this._lastActivity = Date.now();
-          if (this._status !== 'running' && this._status !== 'thinking' && this._status !== 'tool_executing') {
-            this.setStatus('running');
-          }
-          return;
-        }
-        this.stopCommandTracking();
-        this.setStatus('idle');
+      const now = Date.now();
+      if (now - this._lastActivity <= COMMAND_IDLE_TIMEOUT_MS) return;
+
+      // A working agent repaints — its elapsed-time counter ticks every
+      // second. So a screen that has not changed at all for this long is a
+      // dead session, whatever text is frozen on it. Without this check a
+      // leftover "esc to interrupt" pinned the session busy permanently: the
+      // branch below pushed _lastActivity forward on every tick, so the idle
+      // timeout could never be reached.
+      const screenFrozen = now - this._lastScreenChangeAt > SCREEN_FROZEN_TIMEOUT_MS;
+
+      if (!screenFrozen && this.shouldTreatScreenAsBusy(this._screen.getRecentText(20))) {
+        this._lastActivity = now;
+        return;
       }
+
+      this.stopCommandTracking();
+      this.setStatus('idle');
     }, ACTIVITY_CHECK_INTERVAL_MS);
     (this._activityCheckInterval as { unref?: () => void }).unref?.();
   }

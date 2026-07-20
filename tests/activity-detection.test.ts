@@ -490,3 +490,41 @@ describe('screen sample throttling', () => {
     }
   });
 });
+
+describe('stuck-busy watchdog', () => {
+  // A session whose screen still shows a busy affordance but has stopped
+  // repainting is finished, not working. Before this, the idle sweep saw
+  // "esc to interrupt" on the frozen screen, pushed _lastActivity forward on
+  // every 2s tick, and pinned the tab busy forever.
+  it('settles a frozen busy screen to idle', () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = new ActivityDetectionAdapter('frozen', 'test');
+      adapter.feed('✳ Working… (12s · esc to interrupt)');
+      expect(adapter.status).toBe('running');
+
+      // Screen never changes again — the process died mid-frame.
+      vi.advanceTimersByTime(120_000);
+
+      expect(adapter.status).toBe('idle');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a repainting busy screen running', () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = new ActivityDetectionAdapter('live', 'test');
+      // The elapsed counter ticks, so the screen keeps changing.
+      for (let s = 1; s <= 120; s++) {
+        adapter.feed(`\x1b[1;1H✳ Working… (${s}s · esc to interrupt)`);
+        vi.advanceTimersByTime(1_000);
+      }
+
+      expect(adapter.status).toBe('running');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
