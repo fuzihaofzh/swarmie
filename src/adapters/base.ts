@@ -20,17 +20,30 @@ const SCREEN_MOVEMENT_BUSY_TTL_MS = 5_000;
 // the rendered screen text from the headless terminal — not against the raw
 // PTY stream — so cursor-positioned redraws, animations, kitty/modifyOtherKeys
 // sequences, and chunk fragmentation all wash out before we look.
+// How many logical lines at the bottom of the screen count as the "status
+// region". Agent CLIs draw their spinner and their approval box there; the
+// rows above are transcript prose. Matching status patterns against the prose
+// is what made an assistant sentence like "Do you want me to also update the
+// tests?" ring the waiting-for-input bell, so detection only reads the tail.
+const STATUS_REGION_LINES = 14;
+
+// Patterns that indicate a tool is waiting for user input. These deliberately
+// key off *structure* (a numbered choice list, a keybinding hint) rather than
+// question wording: wording appears in ordinary output, structure does not.
 const WAITING_INPUT_PATTERNS = [
-  /Do.{0,40}you.{0,40}want.{0,40}to/i,
-  /Esc.{0,40}to.{0,40}cancel/i,
-  /Tab.{0,40}to.{0,40}amend/i,
-  /Would.{0,40}you.{0,40}like.{0,40}to/i,
-  /proceed\?/i,
-  /Yes,.{0,40}allow/i,
-  /Yes,.{0,40}proceed/i,
-  /Press.{0,40}enter.{0,40}to.{0,40}confirm/i,
-  /\(y\/n\)/i,
-  /\(yes\/no\)/i,
+  // Approval boxes render a numbered choice list — "❯ 1. Yes" / "  2. No" —
+  // optionally inside a box-drawing border. Far more stable than the prompt
+  // sentence printed above it, which every CLI words differently. Left
+  // unanchored because redraw artifacts (spinner glyphs, box edges) can share
+  // the row; the "N. Yes/No" shape is the signal.
+  /\d+\.[^\S\n]+(?:Yes|No)\b/i,
+  /\bEsc\b[^\n]{0,40}\bto\b[^\n]{0,40}\bcancel\b/i,
+  /\bTab\b[^\n]{0,40}\bto\b[^\n]{0,40}\bamend\b/i,
+  /\bPress\b[^\n]{0,40}\benter\b[^\n]{0,40}\bto\b[^\n]{0,40}\bconfirm\b/i,
+  // Anchored to end-of-line so a "(y/n)" inside a diff or a source line the
+  // agent happens to be printing does not count as a live shell prompt.
+  /\(y\/n\)[^\S\n]*$/im,
+  /\(yes\/no\)[^\S\n]*$/im,
 ];
 const WAITING_PROMPT_TOOL_NAMES = new Set(['claude', 'codex', 'gemini']);
 
@@ -40,10 +53,16 @@ const WAITING_PROMPT_TOOL_NAMES = new Set(['claude', 'codex', 'gemini']);
 // more than COMMAND_IDLE_TIMEOUT_MS while the visible status line still says
 // they are working.
 const BUSY_SCREEN_PATTERNS = [
-  /\b(?:Working|Thinking)\b.{0,80}\b(?:esc to interrupt|esc to cancel|context left|tokens?)\b/i,
-  /\b(?:Claude|Codex|Gemini)\b.{0,80}\b(?:streaming response|working|thinking)\b/i,
+  // The interrupt affordance is the one thing agent CLIs keep on screen for
+  // the whole time they work, and unlike the spinner verb it is not
+  // randomized. This replaces a hardcoded list of Claude Code's spinner words
+  // ("Baking", "Cogitating", …) that could never keep up with the real set.
+  /\besc\b[^\n]{0,20}\bto\b[^\n]{0,20}\binterrupt\b/i,
+  // Elapsed-time counter in a status line: "(12s ·", "(1m 4s ·".
+  /\(\s*(?:\d+m\s*)?\d+s\s*[·•]/,
   /\b(?:streaming response|tool executing|running tool|running command)\b/i,
-  /\b(?:Baking|Brewing|Cogitating|Cooking|Crafting|Germinating|Mulling|Processing|Sautéing|Sauteing)\b(?:…|\.{3})?/i,
+  /\b(?:Working|Thinking)\b[^\n]{0,80}\b(?:context left|tokens?)\b/i,
+  /\b(?:Claude|Codex|Gemini)\b[^\n]{0,80}\b(?:streaming response|working|thinking)\b/i,
 ];
 
 // Agent idle/input prompt text. This is distinct from approval prompts above:
@@ -679,17 +698,31 @@ export abstract class BaseAdapter extends EventEmitter {
 
 /** Exposed so the Session-level auto-approve poller can share the same logic. */
 export function matchesWaitingPrompt(screenText: string): boolean {
+  const region = statusRegion(screenText);
   for (const pattern of WAITING_INPUT_PATTERNS) {
-    if (pattern.test(screenText)) return true;
+    if (pattern.test(region)) return true;
   }
   return false;
 }
 
 export function matchesBusyScreen(screenText: string): boolean {
+  const region = statusRegion(screenText);
   for (const pattern of BUSY_SCREEN_PATTERNS) {
-    if (pattern.test(screenText)) return true;
+    if (pattern.test(region)) return true;
   }
   return false;
+}
+
+/**
+ * The bottom slice of the screen, ignoring trailing blank rows — where agent
+ * CLIs pin their spinner and their approval box. Restricting status matching
+ * to this window keeps transcript prose from being read as a live prompt.
+ */
+function statusRegion(screenText: string): string {
+  const lines = screenText.split('\n');
+  let end = lines.length;
+  while (end > 0 && lines[end - 1].trim() === '') end--;
+  return lines.slice(Math.max(0, end - STATUS_REGION_LINES), end).join('\n');
 }
 
 export function matchesAgentIdleScreen(screenText: string): boolean {

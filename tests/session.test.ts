@@ -336,7 +336,7 @@ describe('Session', () => {
         type: 'raw:output',
         sessionId: 'sess-bound',
         timestamp: Date.now(),
-        data: { data: Buffer.from('Do you want to proceed?').toString('base64') },
+        data: { data: Buffer.from('Do you want to proceed?\r\n  1. Yes\r\n  2. No\r\n').toString('base64') },
       });
       expect(adapter.status).toBe('waiting_input');
 

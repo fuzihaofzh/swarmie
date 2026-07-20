@@ -73,24 +73,26 @@ const BRAND_COLORS: Record<string, string> = {
   gemini: '#078EFA',
 };
 
-export function ToolIcon({ tool, status, brandColor, iconSize }: {
+export function ToolIcon({ tool, status, iconSize }: {
   tool: string;
   status?: string;
-  brandColor?: boolean;
   iconSize?: number;
 }) {
   const normalizedStatus = normalizeStatus(status);
   const isBell = normalizedStatus === 'waiting_input';
   const Icon = isBell ? BellIcon : (TOOL_ICONS[tool] ?? TerminalIcon);
   const statusColor = normalizedStatus ? STATUS_COLORS[normalizedStatus] : undefined;
-  let color: string | undefined;
-  if (brandColor) {
-    color = BRAND_COLORS[tool];
-  } else {
-    color = statusColor;
-  }
+  // The logo keeps its brand color at every status so a tool stays
+  // recognizable at a glance; status is carried by the corner dot and the
+  // pulse animation instead. Tools with no brand color inherit the theme's
+  // text color. Tinting the logo itself made an idle session's Claude mark
+  // gray and a busy one green, which read as "different tool", not "same tool,
+  // different state" — and duplicated what the dot already says.
+  const color = isBell ? statusColor : BRAND_COLORS[tool];
   const animated = normalizedStatus === 'running' || normalizedStatus === 'thinking' || normalizedStatus === 'tool_executing';
-  const bellShake = isBell && !brandColor;
+  // waiting_input is the one status that overrides the logo: it needs to grab
+  // attention, so it swaps to a shaking bell.
+  const bellShake = isBell;
   return (
     <span className={`tool-icon ${animated ? 'tool-icon-pulse' : ''} ${bellShake ? 'tool-icon-bell' : ''}`} data-status={normalizedStatus} style={{
       ...(color ? { color } : {}),

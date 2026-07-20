@@ -42,7 +42,7 @@ interface HeadlessBuffer {
   length: number;
   viewportY: number;
   baseY: number;
-  getLine(y: number): { translateToString(trimRight?: boolean): string } | undefined;
+  getLine(y: number): { translateToString(trimRight?: boolean): string; isWrapped?: boolean } | undefined;
 }
 
 /**
@@ -162,7 +162,16 @@ export class HeadlessScreen {
       const out: string[] = [];
       for (let i = top; i < bottom; i++) {
         const line = buf.getLine(i);
-        out.push(line ? line.translateToString(true) : '');
+        const text = line ? line.translateToString(true) : '';
+        // A row the terminal wrapped is a continuation of the row above, not a
+        // new line. Detection regexes use '.', which never matches '\n', so a
+        // status line like "Working… (23s · esc to interrupt)" would stop
+        // matching purely because the terminal was narrow. Rejoin it.
+        if (line?.isWrapped && out.length > 0) {
+          out[out.length - 1] += text;
+        } else {
+          out.push(text);
+        }
       }
       return out.join('\n');
     } catch {

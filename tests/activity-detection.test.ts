@@ -164,7 +164,7 @@ describe('activity detection', () => {
     // sequences around their redraws. They must be stripped, or their literal
     // tails ([>1u, [<u, [>4;2m) wedge between prompt words and break the
     // ".{0,10}"-gap matching, so the session never reaches waiting_input.
-    adapter.feed('\x1b[>1u\x1b[>4;2mDo \x1b[<uyou \x1b[>1uwant \x1b[>4;2mto proceed?\x1b[<u');
+    adapter.feed('\x1b[>1u\x1b[>4;2m1. \x1b[<uYes, \x1b[>1uproceed\x1b[>4;2m\x1b[<u');
 
     expect(adapter.status).toBe('waiting_input');
   });
@@ -174,8 +174,8 @@ describe('activity detection', () => {
 
     // The ESC lands at the tail of one chunk; the "[>1u" fragment arrives in
     // the next. CSI_FRAGMENT_RE must cover the private-prefix form too.
-    adapter.feed('Do you want \x1b');
-    adapter.feed('[>1u\x1b[>4;2mto proceed?');
+    adapter.feed('1. Yes\x1b');
+    adapter.feed('[>1u\x1b[>4;2m, proceed');
 
     expect(adapter.status).toBe('waiting_input');
   });
@@ -221,7 +221,7 @@ describe('activity detection', () => {
     adapter.feed('──────────────────────────────\n❯ 写进 instruction.md\n? for shortcuts');
     expect(adapter.status).toBe('idle');
 
-    adapter.feed('\x1b[1;1HGerminating…\n──────────────────────────────\n❯ 写进 instruction.md\n? for shortcuts');
+    adapter.feed('\x1b[1;1HGerminating… (5s · esc to interrupt)\n──────────────────────────────\n❯ 写进 instruction.md\n? for shortcuts');
 
     expect(adapter.status).toBe('running');
   });
