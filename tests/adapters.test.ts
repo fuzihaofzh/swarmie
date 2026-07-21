@@ -43,12 +43,25 @@ describe('adapter registry', () => {
   });
 
   it('detects generic tools after batched input containing Enter', () => {
-    const adapter = createAdapter('cld', { sessionId: 'generic-batch', toolArgs: [] });
+    const adapter = createAdapter('mytool', { sessionId: 'generic-batch', toolArgs: [] });
     adapter.write('codex\r');
-    (adapter as unknown as { detectTool: (chunk: string) => void }).detectTool('Welcome to Codex');
+    (adapter as unknown as { detectTool: (chunk: string) => void }).detectTool(
+      '│ >_ OpenAI Codex (v0.144.6)                      │',
+    );
 
     expect(adapter.info.name).toBe('codex');
     expect(adapter.info.displayName).toBe('Codex');
+  });
+
+  it('does not detect a tool from a bare directory/path mention', () => {
+    const adapter = createAdapter('mytool', { sessionId: 'generic-nofalse', toolArgs: [] });
+    adapter.write('ls ~/claude\r');
+    (adapter as unknown as { detectTool: (chunk: string) => void }).detectTool(
+      'drwxr-xr-x  claude  codex  gemini',
+    );
+
+    expect(adapter.info.name).toBe('mytool');
+    expect(adapter.info.displayName).toBe('mytool');
   });
 
   it('settles remote startup output to idle', () => {

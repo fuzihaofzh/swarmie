@@ -10,10 +10,17 @@ import type {
 import { ESC_CHAR, BEL_CHAR, OSC_ANY_RE, CSI_RE, ESC_OTHER_RE, CONTROL_CHARS_RE } from './ansi.js';
 import * as PROF from '../server/profile.js';
 
+// Match each tool by its startup *banner*, not a bare mention. A bare /claude/i
+// or /codex/i also fires on a directory named "claude", an OSC title carrying the
+// cwd, or an icon label — so detection has to key off text only the real CLI
+// prints on launch:
+//   Claude Code — "Claude Code v2.0.1" (product name + version)
+//   Codex      — "OpenAI Codex (v0.144.6)" inside its startup box
+//   Gemini CLI — the "Gemini CLI" footer/banner
 const TOOL_SIGNATURES: { pattern: RegExp; tool: string; displayName: string }[] = [
-  { pattern: /claude/i, tool: 'claude', displayName: 'Claude Code' },
-  { pattern: /codex/i, tool: 'codex', displayName: 'Codex' },
-  { pattern: /gemini/i, tool: 'gemini', displayName: 'Gemini' },
+  { pattern: /Claude Code\s+v\d/i, tool: 'claude', displayName: 'Claude Code' },
+  { pattern: /OpenAI Codex\s*\(v/i, tool: 'codex', displayName: 'Codex' },
+  { pattern: /Gemini CLI/i, tool: 'gemini', displayName: 'Gemini' },
 ];
 
 const OSC_PAYLOAD_RE = new RegExp(
