@@ -18,7 +18,11 @@ import * as PROF from '../server/profile.js';
 //   Codex      — "OpenAI Codex (v0.144.6)" inside its startup box
 //   Gemini CLI — the "Gemini CLI" footer/banner
 const TOOL_SIGNATURES: { pattern: RegExp; tool: string; displayName: string }[] = [
-  { pattern: /Claude Code\s+v\d/i, tool: 'claude', displayName: 'Claude Code' },
+  // \s* between every word: Claude's UI positions each word with a cursor-move
+  // escape (\e[NG) rather than spaces, so once CSI is stripped the words fuse —
+  // "Claude Code v2.1.212" arrives as "ClaudeCodev2.1.212". Verified against a
+  // live PTY capture of the startup banner.
+  { pattern: /Claude\s*Code\s*v\d/i, tool: 'claude', displayName: 'Claude Code' },
   { pattern: /OpenAI Codex\s*\(v/i, tool: 'codex', displayName: 'Codex' },
   { pattern: /Gemini CLI/i, tool: 'gemini', displayName: 'Gemini' },
 ];

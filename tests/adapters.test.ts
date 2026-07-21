@@ -75,6 +75,18 @@ describe('adapter registry', () => {
     expect(adapter.info.displayName).toBe('Claude Code');
   });
 
+  it('detects Claude through cursor-move word positioning in the raw banner', () => {
+    const adapter = createAdapter('mytool', { sessionId: 'generic-nospace', toolArgs: [] });
+    // Claude aligns words with \e[NG cursor moves, not spaces (verified against a
+    // live PTY capture). detectTool strips CSI, fusing the words: "ClaudeCodev2.1.212".
+    (adapter as unknown as { detectTool: (chunk: string) => void }).detectTool(
+      ' ▐▛███▜▌   \x1b[2GClaude\x1b[9GCode\x1b[14Gv2.1.212',
+    );
+
+    expect(adapter.info.name).toBe('claude');
+    expect(adapter.info.displayName).toBe('Claude Code');
+  });
+
   it('locks the tool identity and ignores later mentions of another tool', () => {
     const adapter = createAdapter('mytool', { sessionId: 'generic-lock', toolArgs: [] });
     const detect = (adapter as unknown as { detectTool: (chunk: string) => void }).detectTool.bind(
