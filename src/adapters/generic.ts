@@ -45,9 +45,16 @@ export class GenericAdapter extends BaseAdapter {
   private ptyProcess: pty.IPty | null = null;
   private command: string;
   private _detectedTool: string | null = null;
-  /** Rolling buffer of stripped text for tool detection after Enter */
+  /** Rolling buffer of stripped text scanned for a tool's startup banner. */
   private _detectBuf = '';
-  private _detectActive = false;
+  /**
+   * Whether we're still scanning output for a startup banner. Active from launch
+   * (a wrapper that boots straight into the tool prints its banner before any
+   * keystroke) and re-armed on each Enter (a shell wrapper only launches the tool
+   * after the user types its name). Latches off for good once a tool is detected,
+   * so a Claude session that later prints "OpenAI Codex" can't flip its identity.
+   */
+  private _detectActive = true;
 
   constructor(command: string, options: ConstructorParameters<typeof BaseAdapter>[0]) {
     super(options);
@@ -128,8 +135,9 @@ export class GenericAdapter extends BaseAdapter {
   write(data: string): void {
     this.ptyProcess?.write(data);
     this.handleUserInput(data);
-    // On Enter, start scanning output for tool signatures
-    if (data.includes('\r') || data.includes('\n')) {
+    // On Enter, re-arm banner scanning for the command about to run — but never
+    // after a tool is already locked in, so its own output can't re-trigger detection.
+    if (!this._detectedTool && (data.includes('\r') || data.includes('\n'))) {
       this._detectActive = true;
       this._detectBuf = '';
     }
@@ -151,8 +159,9 @@ export class GenericAdapter extends BaseAdapter {
     this.ptyProcess?.kill(signal);
   }
 
-  /** Scan stripped PTY output for tool names after user presses Enter */
+  /** Scan stripped PTY output for a tool's startup banner (see _detectActive). */
   private detectTool(chunk: string): void {
+    if (this._detectedTool) return;
     if (!this._detectActive) return;
 
     // Extract ALL text: OSC content + visible text

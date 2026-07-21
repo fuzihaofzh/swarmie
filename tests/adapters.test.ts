@@ -64,6 +64,32 @@ describe('adapter registry', () => {
     expect(adapter.info.displayName).toBe('mytool');
   });
 
+  it('detects the startup banner printed before any keystroke', () => {
+    const adapter = createAdapter('mytool', { sessionId: 'generic-launch', toolArgs: [] });
+    // A wrapper that boots straight into Claude prints its banner with no Enter first.
+    (adapter as unknown as { detectTool: (chunk: string) => void }).detectTool(
+      ' ▐▛███▜▌   Claude Code v2.1.212\n▝▜█████▛▘  Opus 4.8 (1M context) · Claude Max',
+    );
+
+    expect(adapter.info.name).toBe('claude');
+    expect(adapter.info.displayName).toBe('Claude Code');
+  });
+
+  it('locks the tool identity and ignores later mentions of another tool', () => {
+    const adapter = createAdapter('mytool', { sessionId: 'generic-lock', toolArgs: [] });
+    const detect = (adapter as unknown as { detectTool: (chunk: string) => void }).detectTool.bind(
+      adapter,
+    );
+    detect('Claude Code v2.1.212');
+    expect(adapter.info.name).toBe('claude');
+
+    // Claude later prints Codex's banner text (e.g. discussing codex); must not flip.
+    adapter.write('tell me about codex\r');
+    detect('│ >_ OpenAI Codex (v0.144.6)            │');
+
+    expect(adapter.info.name).toBe('claude');
+  });
+
   it('settles remote startup output to idle', () => {
     const adapter = new RemoteAdapter(
       { sessionId: 'remote-ready', toolArgs: [] },
