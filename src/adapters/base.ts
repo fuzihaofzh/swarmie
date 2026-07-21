@@ -41,6 +41,18 @@ const WAITING_INPUT_PATTERNS = [
   // unanchored because redraw artifacts (spinner glyphs, box edges) can share
   // the row; the "N. Yes/No" shape is the signal.
   /\d+\.[^\S\n]+(?:Yes|No)\b/i,
+  // Interactive selection menus whose options are not Yes/No — e.g. Claude
+  // Code's "Additional safety checks" notice (1. Retry with a faster model /
+  // 2. Keep waiting / 3. Learn more). These block just like an approval box
+  // but never carry a busy interrupt hint, so without this they read as
+  // "still running" forever. The selection cursor sitting on a numbered item
+  // ("❯ 2. Keep waiting") is the structural tell; ordinary prose lists and the
+  // idle "❯ " input prompt have no digit right after the cursor.
+  /[›❯][^\S\n]{0,4}\d+\.[^\S\n]/,
+  // Belt-and-suspenders anchor for the safety-checks notice specifically, in
+  // case a redraw lands with the cursor mid-transition: the wording is unique
+  // to this blocking prompt and appears nowhere in ordinary agent output.
+  /\bAdditional safety checks\b/i,
   /\bEsc\b[^\n]{0,40}\bto\b[^\n]{0,40}\bcancel\b/i,
   /\bTab\b[^\n]{0,40}\bto\b[^\n]{0,40}\bamend\b/i,
   /\bPress\b[^\n]{0,40}\benter\b[^\n]{0,40}\bto\b[^\n]{0,40}\bconfirm\b/i,

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BaseAdapter, matchesAgentIdleScreen, matchesBusyScreen } from '../src/adapters/base.js';
+import { BaseAdapter, matchesAgentIdleScreen, matchesBusyScreen, matchesWaitingPrompt } from '../src/adapters/base.js';
 import type { AdapterInfo } from '../src/adapters/types.js';
 
 class ActivityDetectionAdapter extends BaseAdapter {
@@ -593,5 +593,40 @@ describe('codex idle screen', () => {
   it('lets a busy codex screen win over the idle prompt', () => {
     const busy = `${CODEX_IDLE}\n• Running (12s • esc to interrupt)`;
     expect(matchesBusyScreen(busy)).toBe(true);
+  });
+});
+
+describe('non-yes/no selection menus', () => {
+  // Claude Code's "Additional safety checks" notice is a blocking selection
+  // menu with no busy interrupt hint, so before it was detected it read as
+  // "still running" forever. The user must pick an option (press 2 to keep
+  // waiting) — it should ring the waiting-input bell like an approval box.
+  const SAFETY_CHECKS = [
+    'Additional safety checks',
+    '',
+    'This request requires additional safety checks, which can take extra time.',
+    'Hang tight or retry with a faster model for a quicker response, though it',
+    'may be less capable of handling complex requests.',
+    '',
+    '  1. Retry with a faster model',
+    '❯ 2. Keep waiting',
+    '  3. Learn more',
+  ].join('\n');
+
+  it('detects the safety-checks menu as waiting for input', () => {
+    expect(matchesWaitingPrompt(SAFETY_CHECKS)).toBe(true);
+    // and it is not mistaken for a busy screen
+    expect(matchesBusyScreen(SAFETY_CHECKS)).toBe(false);
+  });
+
+  it('detects a generic cursor-on-numbered-option menu', () => {
+    const menu = 'Pick a branch\n❯ 1. main\n  2. develop\n  3. release';
+    expect(matchesWaitingPrompt(menu)).toBe(true);
+  });
+
+  it('does not fire on prose numbered lists or the idle prompt', () => {
+    expect(matchesWaitingPrompt('Steps:\n1. Do X\n2. Do Y\n3. Do Z')).toBe(false);
+    expect(matchesWaitingPrompt('❯ Explain this codebase')).toBe(false);
+    expect(matchesWaitingPrompt('❯ ')).toBe(false);
   });
 });
