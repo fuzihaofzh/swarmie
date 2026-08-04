@@ -1169,6 +1169,16 @@ body,
   font-family: inherit;
 }
 
+.setting-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.55;
+  text-transform: none;
+  font-weight: normal;
+  letter-spacing: 0;
+}
+
 .font-size-row {
   display: flex;
   align-items: center;

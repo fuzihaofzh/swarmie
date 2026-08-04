@@ -34,6 +34,34 @@ export function stripDeviceQueries(binary: string): string {
     .replace(OSC_COLOR_QUERY, '');
 }
 
+// Alternate-screen switch sequences. Full-screen programs (tmux, vim, less,
+// htop, man, …) enter the "alternate screen" buffer, which in xterm.js has NO
+// scrollback — lines that scroll off its top are discarded, so the mouse wheel
+// has nothing to reveal there (and xterm turns the wheel into arrow keys, which
+// inside tmux cycles the shell's command history). Stripping these switches
+// keeps such programs drawing in the NORMAL buffer instead, where scrolled-off
+// lines fall into the 100k-line scrollback and the wheel scrolls back through
+// them — the same effect as iTerm's "Save lines to scrollback in alternate
+// screen mode". We CANNOT tell which program it is: it may be tmux on a remote
+// host reached over ssh, and the byte stream only carries the generic switch,
+// never the program identity. So — exactly like iTerm's option — this applies
+// to EVERY full-screen app alike, not just tmux.
+//
+// Covers the three DECSET variants: 1049 (save-cursor + switch + clear), 1047
+// (switch + clear), and the bare 47 (switch). Their matching reset (…l) forms
+// are stripped too so a program's exit doesn't try to restore/clear the alt
+// buffer — its final screen simply stays in the normal buffer's scrollback.
+const ALT_SCREEN_TOGGLE = /\x1b\[\?(?:1049|1047|47)[hl]/g;
+
+/**
+ * Remove alternate-screen switches so full-screen apps render into the normal
+ * buffer and their scrolled-off lines land in xterm's scrollback (see above).
+ */
+export function stripAlternateScreen(binary: string): string {
+  if (binary.indexOf('\x1b') === -1) return binary;
+  return binary.replace(ALT_SCREEN_TOGGLE, '');
+}
+
 function visibleByteLength(binary: string): number {
   return binary
     .replace(ANSI_CONTROL, '')

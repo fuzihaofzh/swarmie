@@ -505,11 +505,13 @@ function DrawerSettings() {
   const fontFamily = useUIStore((s) => s.fontFamily);
   const bellSound = useUIStore((s) => s.bellSound);
   const mathRender = useUIStore((s) => s.mathRender);
+  const keepAltScreenInScrollback = useUIStore((s) => s.keepAltScreenInScrollback);
   const setTheme = useUIStore((s) => s.setTheme);
   const setFontSize = useUIStore((s) => s.setFontSize);
   const setFontFamily = useUIStore((s) => s.setFontFamily);
   const setBellSound = useUIStore((s) => s.setBellSound);
   const setMathRender = useUIStore((s) => s.setMathRender);
+  const setKeepAltScreenInScrollback = useUIStore((s) => s.setKeepAltScreenInScrollback);
 
   return (
     <div className="settings-section">
@@ -571,6 +573,24 @@ function DrawerSettings() {
             <span className="toggle-knob" />
           </button>
         </label>
+      </div>
+      <div className="setting-group">
+        <label className="toggle-label">
+          <span>Keep full-screen output in scrollback</span>
+          <button
+            className={`toggle-switch ${keepAltScreenInScrollback ? 'on' : ''}`}
+            onClick={() => setKeepAltScreenInScrollback(!keepAltScreenInScrollback)}
+            aria-label="Toggle keeping full-screen (tmux/vim/less) output in scrollback"
+          >
+            <span className="toggle-knob" />
+          </button>
+        </label>
+        <p className="setting-hint">
+          Strips the alternate-screen switch so tmux/vim/less draw in the normal
+          buffer and the wheel scrolls back through their history (like iTerm).
+          Takes effect on new sessions or after a redraw. Applies to every
+          full-screen app, not just tmux.
+        </p>
       </div>
     </div>
   );

@@ -6,6 +6,7 @@ interface UIState {
   fontFamily: string;
   bellSound: boolean;
   mathRender: boolean;
+  keepAltScreenInScrollback: boolean;
   showNewSession: boolean;
   settingsOpen: boolean;
   agentOverlayMode: 'overview' | 'switcher' | null;
@@ -24,6 +25,7 @@ interface UIState {
   setFontFamily: (family: string) => void;
   setBellSound: (enabled: boolean) => void;
   setMathRender: (enabled: boolean) => void;
+  setKeepAltScreenInScrollback: (enabled: boolean) => void;
   setShowNewSession: (show: boolean) => void;
   setAutoCompactMinutes: (minutes: number) => void;
   _setAutoCompactMinutesLocal: (minutes: number) => void;
@@ -40,6 +42,10 @@ const savedFontSize = parseInt(localStorage.getItem('swarmie-font-size') || '20'
 const savedFontFamily = localStorage.getItem('swarmie-font-family') || "'SF Mono', Monaco, Menlo, monospace";
 const savedBellSound = localStorage.getItem('swarmie-bell-sound') !== 'false'; // default on
 const savedMathRender = localStorage.getItem('swarmie-math-render') === 'true'; // default off
+// Keep full-screen apps' (tmux/vim/less) output in scrollback by stripping the
+// alternate-screen switch, so the wheel scrolls back through history like iTerm.
+const savedKeepAltScreenInScrollback =
+  localStorage.getItem('swarmie-keep-alt-scrollback') !== 'false'; // default on
 const savedAutoCompactMinutes = parseInt(localStorage.getItem('swarmie-auto-compact-minutes') || '60', 10);
 const savedTileLayoutEnabled = localStorage.getItem('swarmie-tile-layout-enabled') === 'true';
 const savedTileColumns = parseInt(localStorage.getItem('swarmie-tile-columns') || '2', 10);
@@ -81,6 +87,7 @@ export const useUIStore = create<UIState>((set) => ({
   fontFamily: savedFontFamily,
   bellSound: savedBellSound,
   mathRender: savedMathRender,
+  keepAltScreenInScrollback: savedKeepAltScreenInScrollback,
   showNewSession: false,
   settingsOpen: false,
   agentOverlayMode: null,
@@ -117,6 +124,10 @@ export const useUIStore = create<UIState>((set) => ({
   setMathRender: (mathRender) => {
     localStorage.setItem('swarmie-math-render', String(mathRender));
     set({ mathRender });
+  },
+  setKeepAltScreenInScrollback: (keepAltScreenInScrollback) => {
+    localStorage.setItem('swarmie-keep-alt-scrollback', String(keepAltScreenInScrollback));
+    set({ keepAltScreenInScrollback });
   },
   setShowNewSession: (showNewSession) => set({ showNewSession }),
   setAutoCompactMinutes: (minutes) => {

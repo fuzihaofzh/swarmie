@@ -31,7 +31,7 @@ import {
   shouldShowMobileToolbar,
 } from '../focusPolicy';
 import { binaryStringToBytes } from '../base64';
-import { protectStatusLineRedraws, stripDeviceQueries } from '../terminalQueries';
+import { protectStatusLineRedraws, stripDeviceQueries, stripAlternateScreen } from '../terminalQueries';
 import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
 
 interface TerminalViewProps {
@@ -132,7 +132,16 @@ function readFileBase64(file: File): Promise<string> {
 // pass and the final bytes handed to xterm.
 function decodeTerminalBytes(chunks: string[], term: Terminal): Uint8Array {
   const binary = chunks.length === 1 ? chunks[0] : chunks.join('');
-  return binaryStringToBytes(protectStatusLineRedraws(binary, term.cols, term.rows));
+  // When enabled (default on), strip alternate-screen switches so full-screen
+  // apps (tmux/vim/less) render into the normal buffer and their scrolled-off
+  // lines land in xterm's scrollback — the wheel then scrolls history instead of
+  // xterm faking arrow keys (which cycles the shell's command history in tmux).
+  // Applied here so EVERY write path — live flush, captured-during-load replay,
+  // and history rebuild — is covered by the single choke point.
+  const source = useUIStore.getState().keepAltScreenInScrollback
+    ? stripAlternateScreen(binary)
+    : binary;
+  return binaryStringToBytes(protectStatusLineRedraws(source, term.cols, term.rows));
 }
 
 // Dev inspector for client-side freezes: run `__swarmieTerm()` in the browser
@@ -296,6 +305,23 @@ export function TerminalView({
       const searchAddon = new SearchAddon();
       term.loadAddon(searchAddon);
       searchRef.current = searchAddon;
+
+      // Match iTerm's default (Advanced pref `AlternateMouseScroll` = NO). In the
+      // alternate-screen buffer (which tmux/vim/less use) xterm's built-in wheel
+      // handling converts the mouse wheel into cursor-key presses — a convenience
+      // for pagers, but inside tmux those ↑/↓ land in the shell and cycle its
+      // command history, which is not what a scroll should do. Returning false
+      // here cancels that conversion so a wheel scroll no longer fakes arrows.
+      // Guard on mouseTrackingMode: when the app IS reporting mouse (e.g. tmux
+      // with `set -g mouse on`) we return true so xterm forwards the wheel as a
+      // mouse event and tmux copy-mode scrolling keeps working. In the normal
+      // buffer we always return true so ordinary scrollback scrolling is intact.
+      term.attachCustomWheelEventHandler((_ev) => {
+        if (term.buffer.active.type === 'alternate' && term.modes.mouseTrackingMode === 'none') {
+          return false;
+        }
+        return true;
+      });
 
       term.attachCustomKeyEventHandler((e) => {
         // During history rebuild we lock input — swallow keys so they don't
