@@ -8,11 +8,14 @@ export interface SessionSummary {
   name: string;
   tool: string;
   status: string;
+  seen?: boolean;
+  stateChangeSeq?: number;
   startTime: number;
   endTime?: number;
   displayName: string;
   icon: string;
   cwd: string;
+  workspaceCwd?: string;
   hostname: string;
   initialHostname: string;
   autoApprove?: boolean;
@@ -311,9 +314,19 @@ export const useSessionStore = create<SessionState>((set) => ({
 
       let sessions = state.sessions;
       if (event.type === 'status:change') {
-        const newStatus = (event.data as { to: string }).to;
+        const statusData = event.data as { to: string; seen?: boolean; stateChangeSeq?: number };
+        const newStatus = statusData.to;
         sessions = sessions.map((s) =>
-          s.id === event.sessionId ? { ...s, status: newStatus } : s,
+          s.id === event.sessionId
+            ? {
+                ...s,
+                status: newStatus,
+                ...(statusData.seen !== undefined ? { seen: statusData.seen } : {}),
+                ...(statusData.stateChangeSeq !== undefined
+                  ? { stateChangeSeq: statusData.stateChangeSeq }
+                  : {}),
+              }
+            : s,
         );
         if (newStatus === 'waiting_input') {
           const sess = sessions.find((s) => s.id === event.sessionId);
@@ -321,6 +334,12 @@ export const useSessionStore = create<SessionState>((set) => ({
           if (!sess?.autoApprove && useUIStore.getState().bellSound) {
             playBellSound();
           }
+        }
+        if (newStatus === 'done' && useUIStore.getState().bellSound) {
+          const activelyVisible = typeof document !== 'undefined'
+            && !document.hidden
+            && state.activeSessionId === event.sessionId;
+          if (!activelyVisible) playBellSound();
         }
       }
       if (event.type === 'tool:detect') {
@@ -359,9 +378,19 @@ export const useSessionStore = create<SessionState>((set) => ({
       let sessions = state.sessions;
       const statusEvt = newEvents.findLast((e) => e.type === 'status:change');
       if (statusEvt) {
-        const newStatus = (statusEvt.data as { to: string }).to;
+        const statusData = statusEvt.data as { to: string; seen?: boolean; stateChangeSeq?: number };
+        const newStatus = statusData.to;
         sessions = sessions.map((s) =>
-          s.id === sessionId ? { ...s, status: newStatus } : s,
+          s.id === sessionId
+            ? {
+                ...s,
+                status: newStatus,
+                ...(statusData.seen !== undefined ? { seen: statusData.seen } : {}),
+                ...(statusData.stateChangeSeq !== undefined
+                  ? { stateChangeSeq: statusData.stateChangeSeq }
+                  : {}),
+              }
+            : s,
         );
       }
       const detectEvt = newEvents.findLast((e) => e.type === 'tool:detect');

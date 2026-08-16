@@ -1,12 +1,17 @@
 import { EventEmitter } from 'node:events';
-import { hostname as osHostname } from 'node:os';
-import { type BaseAdapter } from '../adapters/base.js';
-import type { NormalizedEvent, MetadataData, RawOutputData, SessionStatus } from '../adapters/types.js';
+import { type BaseAdapter, waitingPromptFingerprint } from '../adapters/base.js';
+import type {
+  NormalizedEvent,
+  MetadataData,
+  RawOutputData,
+  SessionStatus,
+  AutomationActionData,
+} from '../adapters/types.js';
 import type { SessionInfo, SessionSummary } from './types.js';
 import * as PROF from '../server/profile.js';
-import { getDefaultHostTag } from './host.js';
+import { getDefaultHostTag, getSystemDisplayHostname } from './host.js';
 
-const _hostname = osHostname();
+const _hostname = getSystemDisplayHostname();
 
 /**
  * Exact decoded byte length of a base64 string.
@@ -136,11 +141,11 @@ function hasRepeatCommand(command: string): boolean {
 }
 
 function isRepeatReadyStatus(status: SessionStatus): boolean {
-  return status === 'idle' || status === 'waiting_input';
+  return status === 'idle' || status === 'done' || status === 'waiting_input';
 }
 
 function isAutoCompactReadyStatus(status: SessionStatus): boolean {
-  return status === 'idle';
+  return status === 'idle' || status === 'done';
 }
 
 function isAutoCompactBusyStatus(status: SessionStatus): boolean {
@@ -190,6 +195,7 @@ export class Session extends EventEmitter {
   private _metadata: SessionInfo['metadata'] = {};
   private _command: string[] = [];
   private _cwd: string;
+  private _workspaceCwd: string;
   private _hostname: string;
   private _initialHostname: string;
   private _autoCompactMinutes = DEFAULT_AUTO_COMPACT_MINUTES;
@@ -213,6 +219,9 @@ export class Session extends EventEmitter {
   private _autoApprovePromptLastSeenAt: number | null = null;
   private _autoApproveLastPressAt = 0;
   private _autoApprovePressCount = 0;
+  private _autoApprovePromptFingerprint: string | null = null;
+  private _autoApproveEligibility: 'no_prompt' | 'unverified_prompt' | 'eligible' = 'no_prompt';
+  private _autoApproveRuleId: string | null = null;
   private _autoCompactTimer: ReturnType<typeof setTimeout> | null = null;
   private _repeatTimer: ReturnType<typeof setTimeout> | null = null;
   private _repeatClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -221,6 +230,16 @@ export class Session extends EventEmitter {
   private _nextRepeatAt: number | undefined;
   private _autoCompactBlockedUntilBusy = false;
   private _autoCompactWaitingForRunToIdle = false;
+  /** User-facing status. The adapter keeps its lower-level lifecycle separately. */
+  private _publishedStatus: SessionStatus = 'starting';
+  private _seen = true;
+  /** Set after a real post-start work cycle and consumed by its next idle. */
+  private _workCyclePending = false;
+  private _workCycleShouldPublishDone = true;
+  private _suppressNextWorkCycleDone = false;
+  private _nextWorkCycleIsUserWork = false;
+  private _acknowledgingDone = false;
+  private _stateChangeSeq = 0;
 
   constructor(id: string, name: string, adapter: BaseAdapter, opts?: { cwd?: string; hostname?: string }) {
     super();
@@ -228,6 +247,7 @@ export class Session extends EventEmitter {
     this.name = name;
     this.adapter = adapter;
     this._cwd = opts?.cwd ?? process.cwd();
+    this._workspaceCwd = this._cwd;
     this._hostname = opts?.hostname ?? _hostname;
     this._initialHostname = this._hostname;
     this.tags = defaultTagsForHostname(this._hostname);
@@ -243,10 +263,13 @@ export class Session extends EventEmitter {
       name: this.name,
       tool: this.adapter.info.name,
       adapterInfo: this.adapter.info,
-      status: this.adapter.status,
+      status: this._publishedStatus,
+      seen: this._seen,
+      stateChangeSeq: this._stateChangeSeq,
       startTime: this.adapter.startTime,
       endTime: this._endTime,
       cwd: this._cwd,
+      workspaceCwd: this._workspaceCwd,
       command: this._command,
       recentEvents: this.events.slice(-MAX_RECENT_EVENTS),
       metadata: { ...this._metadata },
@@ -258,7 +281,9 @@ export class Session extends EventEmitter {
       id: this.id,
       name: this.name,
       tool: this.adapter.info.name,
-      status: this.adapter.status,
+      status: this._publishedStatus,
+      seen: this._seen,
+      stateChangeSeq: this._stateChangeSeq,
       startTime: this.adapter.startTime,
       endTime: this._endTime,
       displayName: this.adapter.info.displayName,
@@ -281,7 +306,15 @@ export class Session extends EventEmitter {
   }
 
   get status() {
-    return this.adapter.status;
+    return this._publishedStatus;
+  }
+
+  get seen(): boolean {
+    return this._seen;
+  }
+
+  get stateChangeSeq(): number {
+    return this._stateChangeSeq;
   }
 
   start(): void {
@@ -289,7 +322,31 @@ export class Session extends EventEmitter {
   }
 
   write(data: string): void {
+    this.markSeen();
     this.adapter.write(data);
+  }
+
+  /**
+   * A visible client acknowledges the current result. `done` is sticky until
+   * this acknowledgement, then folds back to the adapter's ordinary idle.
+   */
+  markSeen(): void {
+    if (this._seen && this._publishedStatus !== 'done') return;
+    this._seen = true;
+    this._acknowledgingDone = this._publishedStatus === 'done';
+    try {
+      this.handleEvent({
+        type: 'status:change',
+        sessionId: this.id,
+        timestamp: Date.now(),
+        data: {
+          from: this._publishedStatus,
+          to: this._publishedStatus === 'done' ? 'idle' : this._publishedStatus,
+        },
+      });
+    } finally {
+      this._acknowledgingDone = false;
+    }
   }
 
   resize(cols: number, rows: number): void {
@@ -523,7 +580,52 @@ export class Session extends EventEmitter {
     return out;
   }
 
-  private handleEvent(event: NormalizedEvent): void {
+  private handleEvent(inputEvent: NormalizedEvent): void {
+    let event = inputEvent;
+    if (event.type === 'status:change') {
+      const raw = event.data as { from: SessionStatus; to: SessionStatus };
+      const previous = this._publishedStatus;
+      let next = raw.to;
+
+      if (isAutoCompactBusyStatus(raw.to)) {
+        // The initial starting -> busy -> idle handshake is readiness, not a
+        // completed user task. Later transitions into busy open a work cycle.
+        if (!isAutoCompactBusyStatus(previous) && previous !== 'starting' && !this._workCyclePending) {
+          this._workCyclePending = true;
+          this._workCycleShouldPublishDone = this._nextWorkCycleIsUserWork
+            && !this._suppressNextWorkCycleDone;
+          this._nextWorkCycleIsUserWork = false;
+          this._suppressNextWorkCycleDone = false;
+        }
+      } else if (raw.to === 'idle' && this._workCyclePending) {
+        next = this._workCycleShouldPublishDone ? 'done' : 'idle';
+        this._workCyclePending = false;
+        if (next === 'done') this._seen = false;
+      } else if (raw.to === 'idle' && previous === 'done' && !this._acknowledgingDone) {
+        // Renderers may publish the same idle frame repeatedly. `done` is an
+        // acknowledgement state, so only markSeen() is allowed to fold it.
+        next = 'done';
+      }
+
+      if (next !== previous) {
+        this._stateChangeSeq++;
+        if (next === 'waiting_input' || next === 'done' || next === 'completed' || next === 'error') {
+          this._seen = false;
+        }
+      }
+      this._publishedStatus = next;
+      event = {
+        ...event,
+        data: {
+          ...raw,
+          from: previous,
+          to: next,
+          stateChangeSeq: this._stateChangeSeq,
+          seen: this._seen,
+        },
+      };
+    }
+
     if (event.type === 'raw:output') {
       const tRing = PROF.profiling ? PROF.nowNs() : 0n;
       const rawData = event.data as RawOutputData;
@@ -579,12 +681,25 @@ export class Session extends EventEmitter {
         if (data.hostname) this._hostname = data.hostname;
         break;
       }
+      case 'user:input': {
+        this._nextWorkCycleIsUserWork = true;
+        this._seen = true;
+        break;
+      }
       case 'status:change': {
         const data = event.data as { from: SessionStatus; to: SessionStatus };
         // Auto-approve no longer reacts to status transitions; the ticker
         // started in setSettings polls the screen directly. That avoids a
         // class of bugs where sub-agent output flicked status:change → running
         // mid-prompt and cancelled the pending Enter.
+        // A fresh waiting transition is still a useful prompt-generation
+        // boundary: queued sub-agent approvals can replace one card with the
+        // next before the screen ever becomes prompt-free. Clear the dwell
+        // and retry budget here; the ticker will arm itself against the new
+        // card on its next poll.
+        if (data.to === 'waiting_input' && data.from !== 'waiting_input' && this.autoApprove) {
+          this.resetAutoApproveState();
+        }
         if (isAutoCompactBusyStatus(data.to) && this._autoCompactBlockedUntilBusy && !this._autoCompactWaitingForRunToIdle) {
           this._autoCompactBlockedUntilBusy = false;
         }
@@ -641,21 +756,15 @@ export class Session extends EventEmitter {
     this._autoApprovePromptLastSeenAt = null;
     this._autoApproveLastPressAt = 0;
     this._autoApprovePressCount = 0;
+    this._autoApprovePromptFingerprint = null;
+    this._autoApproveEligibility = 'no_prompt';
+    this._autoApproveRuleId = null;
   }
 
   /**
-   * One tick: ask "is a prompt visible right now?" and decide whether to
-   * press Enter. The two signals are:
-   *
-   *   1. Adapter status is `waiting_input` (the detection layer set it from
-   *      either local screen scan or a remote status forward).
-   *   2. The headless screen text matches a waiting-input pattern.
-   *
-   * Either one is enough. (1) covers cases where the prompt text scrolled
-   * out of the screen window we sample but the detection layer still
-   * believes we're at a prompt; (2) covers cases where the status got
-   * spuriously flipped to running by some other path but the prompt is
-   * clearly still on screen.
+   * One tick: require a currently visible, structurally verified approval
+   * whose selected default is explicitly safe for Enter. A waiting status by
+   * itself is enough to notify the user, but never enough to authorize input.
    */
   private tickAutoApprove(): void {
     if (!this.autoApprove) return;
@@ -671,6 +780,8 @@ export class Session extends EventEmitter {
     const promptVisible = status === 'waiting_input' || screen.promptVisible;
 
     if (!promptVisible) {
+      this._autoApproveEligibility = 'no_prompt';
+      this._autoApproveRuleId = null;
       // Reset only after the prompt has been gone for a while, so a single
       // frame of mid-redraw blank doesn't lose our press counter.
       if (this._autoApprovePromptLastSeenAt
@@ -679,6 +790,38 @@ export class Session extends EventEmitter {
       }
       return;
     }
+
+    const detection = screen.detection;
+    const fingerprint = waitingPromptFingerprint(screen.recent);
+    const verifiedPrompt = detection?.rawState === 'blocked'
+      && detection.visibleBlocker
+      && detection.automationSafe
+      && Boolean(detection.matchedRuleId)
+      && Boolean(fingerprint);
+
+    if (!verifiedPrompt) {
+      // A blocking menu can be perfectly valid without being safe to approve
+      // automatically (for example, a model picker or a cursor on "No").
+      // Drop any retry budget from the preceding card immediately so it can
+      // never spill into this one.
+      this.resetAutoApproveState();
+      this._autoApproveEligibility = 'unverified_prompt';
+      this._autoApproveRuleId = detection?.matchedRuleId ?? null;
+      return;
+    }
+
+    // A group of sub-agents can queue several approval cards back-to-back.
+    // Claude replaces the old card with the next in the same render frame, so
+    // there is no prompt-free 2s gap to reset the retry counter. Treat changed
+    // card content as a new prompt immediately. A redraw of unchanged content
+    // keeps the existing counter and therefore retains the anti-spam backoff.
+    if (fingerprint && this._autoApprovePromptFingerprint
+        && fingerprint !== this._autoApprovePromptFingerprint) {
+      this.resetAutoApproveState();
+    }
+    if (fingerprint) this._autoApprovePromptFingerprint = fingerprint;
+    this._autoApproveEligibility = 'eligible';
+    this._autoApproveRuleId = detection.matchedRuleId ?? null;
 
     this._autoApprovePromptLastSeenAt = now;
     if (this._autoApprovePromptFirstSeenAt == null) {
@@ -708,7 +851,25 @@ export class Session extends EventEmitter {
     // forwardKeys (not write) so a remote session's status stays
     // waiting_input until the remote actually moves past the prompt —
     // otherwise the local input state machine flips us to "running".
-    this.adapter.forwardKeys('\r');
+    // Most PTYs report Enter as CR, but a few SSH/Ink combinations leave the
+    // approval widget listening for LF instead. Keep the first two fast
+    // retries identical to a real xterm Enter (preserving normal behavior),
+    // then try LF during the slower recovery phase so a stuck prompt can
+    // recover without sending two Enter events back-to-back.
+    const enter = this._autoApprovePressCount % 3 === 2 ? '\n' : '\r';
+    this.adapter.forwardKeys(enter);
+    this.handleEvent({
+      type: 'automation:action',
+      sessionId: this.id,
+      timestamp: now,
+      data: {
+        action: 'press_enter',
+        policy: 'verified_prompt',
+        ruleId: detection.matchedRuleId!,
+        key: enter === '\r' ? 'cr' : 'lf',
+        attempt: this._autoApprovePressCount + 1,
+      } satisfies AutomationActionData,
+    });
     this._autoApproveLastPressAt = now;
     this._autoApprovePressCount++;
   }
@@ -721,6 +882,8 @@ export class Session extends EventEmitter {
     promptLastSeenAt: number | null;
     lastPressAt: number;
     pressCount: number;
+    eligibility: 'no_prompt' | 'unverified_prompt' | 'eligible';
+    ruleId: string | null;
     sinceFirstSeenMs: number | null;
     sinceLastPressMs: number | null;
   } {
@@ -732,6 +895,8 @@ export class Session extends EventEmitter {
       promptLastSeenAt: this._autoApprovePromptLastSeenAt,
       lastPressAt: this._autoApproveLastPressAt,
       pressCount: this._autoApprovePressCount,
+      eligibility: this._autoApproveEligibility,
+      ruleId: this._autoApproveRuleId,
       sinceFirstSeenMs: this._autoApprovePromptFirstSeenAt
         ? now - this._autoApprovePromptFirstSeenAt
         : null,
@@ -758,6 +923,9 @@ export class Session extends EventEmitter {
     this._nextAutoCompactAt = undefined;
     if (!this.autoCompact || !isAutoCompactReadyStatus(this.adapter.status)) return;
 
+    // Context maintenance is not a user task completion and should not create
+    // an unread `done` notification when its command returns to idle.
+    this._suppressNextWorkCycleDone = true;
     this.submitSlashCommand(AUTO_COMPACT_COMMAND);
     this._autoCompactBlockedUntilBusy = true;
     this._autoCompactWaitingForRunToIdle = isAutoCompactBusyStatus(this.adapter.status);

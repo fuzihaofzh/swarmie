@@ -15,6 +15,8 @@ interface UIState {
   tileColumns: number;
   tileHeight: number;
   tagFilter: string[];
+  workspacePanelOpen: boolean;
+  workspacePanelWidth: number;
   openSettings: () => void;
   closeSettings: () => void;
   openAgentOverview: () => void;
@@ -35,6 +37,8 @@ interface UIState {
   toggleTagFilter: (tag: string) => void;
   clearTagFilter: () => void;
   setTagFilter: (tags: string[]) => void;
+  toggleWorkspacePanel: () => void;
+  setWorkspacePanelWidth: (width: number) => void;
 }
 
 const savedTheme = localStorage.getItem('swarmie-theme') || 'solarized-light';
@@ -50,6 +54,8 @@ const savedAutoCompactMinutes = parseInt(localStorage.getItem('swarmie-auto-comp
 const savedTileLayoutEnabled = localStorage.getItem('swarmie-tile-layout-enabled') === 'true';
 const savedTileColumns = parseInt(localStorage.getItem('swarmie-tile-columns') || '2', 10);
 const savedTileHeight = parseInt(localStorage.getItem('swarmie-tile-height') || '360', 10);
+const savedWorkspacePanelOpen = localStorage.getItem('swarmie-workspace-panel') !== 'false';
+const savedWorkspacePanelWidth = parseInt(localStorage.getItem('swarmie-workspace-panel-width') || '286', 10);
 
 function loadTagFilter(): string[] {
   try {
@@ -81,6 +87,12 @@ function clampTileHeight(height: number): number {
   return Math.min(1200, Math.max(180, Math.floor(value)));
 }
 
+function clampWorkspacePanelWidth(width: number): number {
+  const value = Number(width);
+  if (!Number.isFinite(value)) return 286;
+  return Math.min(480, Math.max(220, Math.floor(value)));
+}
+
 export const useUIStore = create<UIState>((set) => ({
   theme: savedTheme,
   fontSize: savedFontSize,
@@ -98,6 +110,10 @@ export const useUIStore = create<UIState>((set) => ({
   tileColumns: Number.isFinite(savedTileColumns) ? clampTileColumns(savedTileColumns) : 2,
   tileHeight: Number.isFinite(savedTileHeight) ? clampTileHeight(savedTileHeight) : 360,
   tagFilter: loadTagFilter(),
+  workspacePanelOpen: savedWorkspacePanelOpen,
+  workspacePanelWidth: Number.isFinite(savedWorkspacePanelWidth)
+    ? clampWorkspacePanelWidth(savedWorkspacePanelWidth)
+    : 286,
 
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
@@ -176,5 +192,15 @@ export const useUIStore = create<UIState>((set) => ({
     );
     localStorage.setItem('swarmie-tag-filter', JSON.stringify(normalized));
     set({ tagFilter: normalized });
+  },
+  toggleWorkspacePanel: () => set((state) => {
+    const workspacePanelOpen = !state.workspacePanelOpen;
+    localStorage.setItem('swarmie-workspace-panel', String(workspacePanelOpen));
+    return { workspacePanelOpen };
+  }),
+  setWorkspacePanelWidth: (width) => {
+    const value = clampWorkspacePanelWidth(width);
+    localStorage.setItem('swarmie-workspace-panel-width', String(value));
+    set({ workspacePanelWidth: value });
   },
 }));

@@ -1,8 +1,35 @@
 import { describe, it, expect } from 'vitest';
 import { createAdapter, getAdapterNames } from '../src/adapters/registry.js';
 import { RemoteAdapter } from '../src/adapters/remote.js';
+import { buildSpawnEnv } from '../src/adapters/base.js';
 
 describe('adapter registry', () => {
+  it('keeps interactive PTYs colored even when the outer runner disables color', () => {
+    const previousNoColor = process.env.NO_COLOR;
+    const previousColorTerm = process.env.COLORTERM;
+    const previousSwarmieNoColor = process.env.SWARMIE_NO_COLOR;
+    try {
+      process.env.NO_COLOR = '1';
+      delete process.env.COLORTERM;
+      delete process.env.SWARMIE_NO_COLOR;
+
+      const colored = buildSpawnEnv();
+      expect(colored.NO_COLOR).toBeUndefined();
+      expect(colored.COLORTERM).toBe('truecolor');
+
+      process.env.SWARMIE_NO_COLOR = '1';
+      const monochrome = buildSpawnEnv();
+      expect(monochrome.NO_COLOR).toBe('1');
+    } finally {
+      if (previousNoColor === undefined) delete process.env.NO_COLOR;
+      else process.env.NO_COLOR = previousNoColor;
+      if (previousColorTerm === undefined) delete process.env.COLORTERM;
+      else process.env.COLORTERM = previousColorTerm;
+      if (previousSwarmieNoColor === undefined) delete process.env.SWARMIE_NO_COLOR;
+      else process.env.SWARMIE_NO_COLOR = previousSwarmieNoColor;
+    }
+  });
+
   it('registers claude, codex, gemini', () => {
     const names = getAdapterNames();
     expect(names).toContain('claude');

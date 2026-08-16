@@ -59,6 +59,7 @@ const STATUS_COLORS: Record<string, string> = {
   tool_executing: '#f59e0b',
   waiting_input: '#f59e0b',
   idle: '#8b949e',
+  done: '#58a6ff',
   completed: 'rgba(34,197,94,0.5)',
   error: '#ef4444',
 };

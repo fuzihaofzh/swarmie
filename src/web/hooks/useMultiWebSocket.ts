@@ -40,18 +40,39 @@ export function useMultiWebSocket() {
       }
     });
 
+    let lastSeenKey = '';
+    const markActiveSeen = (force = false) => {
+      if (document.hidden) return;
+      const state = useSessionStore.getState();
+      const session = state.sessions.find((item) => item.id === state.activeSessionId);
+      if (!session || session.seen !== false) return;
+      const key = `${session.id}:${session.status}:${session.stateChangeSeq ?? 0}`;
+      if (!force && key === lastSeenKey) return;
+      lastSeenKey = key;
+      getConnectionForSession(session.id)?.sendSessionSeen(session.id);
+    };
+    const unsubscribeSessions = useSessionStore.subscribe((state, previous) => {
+      if (state.activeSessionId !== previous.activeSessionId || state.sessions !== previous.sessions) {
+        markActiveSeen();
+      }
+    });
+    markActiveSeen();
+
     // Reconnect all connections when page becomes visible again
     const onVisibility = () => {
       if (!document.hidden) {
         for (const conn of connectionsRef.current.values()) {
           conn.reconnectIfNeeded();
         }
+        lastSeenKey = '';
+        markActiveSeen(true);
       }
     };
     document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
+      unsubscribeSessions();
       registerAutoApproveSync(null);
       registerSessionSettingsSync(null);
       registerAutoCompactMinutesSync(null);

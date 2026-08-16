@@ -128,6 +128,10 @@ bash scripts/ci-test-gate.sh
 
 See `docs/test-gate-ci.md` for reusable test-agent evidence workflow.
 
+Agent status rules are active by default, with legacy and shadow modes available for diagnostics. See
+[`docs/agent-state-detection.md`](docs/agent-state-detection.md) for detection
+modes, rule authoring, and the state Explain API.
+
 ## License
 
 MIT

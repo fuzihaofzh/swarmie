@@ -15,7 +15,7 @@ import { useDockviewSync } from './hooks/useDockviewSync';
 import { useMRU } from './hooks/useMRU';
 import { TabSwitcher } from './components/TabSwitcher';
 import { TagSwitcher } from './components/TagSwitcher';
-import { AgentOverview } from './components/AgentOverview';
+import { WorkspaceAgentPanel } from './components/WorkspaceAgentPanel';
 import { sessionMatchesTagFilter } from './tagFilter';
 
 const components = {
@@ -178,17 +178,19 @@ function NewTabButton(_props: IDockviewHeaderActionsProps) {
 
 function HeaderActions(_props: IDockviewHeaderActionsProps) {
   const openSettings = useUIStore((s) => s.openSettings);
-  const openAgentOverview = useUIStore((s) => s.openAgentOverview);
+  const workspacePanelOpen = useUIStore((s) => s.workspacePanelOpen);
+  const toggleWorkspacePanel = useUIStore((s) => s.toggleWorkspacePanel);
   const sessions = useSessionStore((s) => s.sessions);
   const archivedSessionIds = useSessionStore((s) => s.archivedSessionIds);
   const archived = new Set(archivedSessionIds);
   const attentionCount = sessions.filter((session) =>
     !archived.has(session.id) &&
-    (session.status === 'waiting_input' || session.status === 'error' || session.status === 'completed')
+    session.seen !== true &&
+    (session.status === 'waiting_input' || session.status === 'done' || session.status === 'error' || session.status === 'completed')
   ).length;
   return (
     <div className="dv-header-actions">
-      <button className="dv-agents-btn" onClick={openAgentOverview} title="Agents">
+      <button className={`dv-agents-btn ${workspacePanelOpen ? 'active' : ''}`} onClick={toggleWorkspacePanel} title="Toggle workspace and agents">
         <span className="dv-agents-icon">▦</span>
         {attentionCount > 0 && <span className="dv-agents-count">{attentionCount}</span>}
       </button>
@@ -232,6 +234,7 @@ export function App() {
   const sessions = useSessionStore((s) => s.sessions);
   const archivedSessionIds = useSessionStore((s) => s.archivedSessionIds);
   const currentTheme = themes[themeName] ?? themes['github-dark'];
+  const workspacePanelOpen = useUIStore((s) => s.workspacePanelOpen);
 
   const tiledSessions = useMemo(
     () => visibleWorkspaceSessions(sessions, archivedSessionIds, tagFilter),
@@ -377,11 +380,11 @@ export function App() {
       if (matchesAction(e, 'agent-overview')) {
         e.preventDefault();
         e.stopPropagation();
-        useUIStore.getState().openAgentOverview();
+        useUIStore.getState().toggleWorkspacePanel();
       } else if (matchesAction(e, 'agent-switcher')) {
         e.preventDefault();
         e.stopPropagation();
-        useUIStore.getState().openAgentSwitcher();
+        useUIStore.getState().toggleWorkspacePanel();
       }
     };
     window.addEventListener('keydown', handler, true);
@@ -409,6 +412,7 @@ export function App() {
   return (
     <WsContext value={wsContext}>
       <div className="app-layout">
+        {workspacePanelOpen && <WorkspaceAgentPanel />}
         {/* Main area */}
         <div className={`app-main ${tileLayoutEnabled ? 'tile-layout-scroll' : ''}`}>
           <div
@@ -435,7 +439,6 @@ export function App() {
       )}
       <TabSwitcher mruRef={mruRef} />
       <TagSwitcher />
-      <AgentOverview />
     </WsContext>
   );
 }

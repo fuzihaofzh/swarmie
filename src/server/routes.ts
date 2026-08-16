@@ -10,6 +10,37 @@ import { createAdapter, getAdapterNames } from '../adapters/registry.js';
 import { nanoid } from 'nanoid';
 import { logObservabilityEvent, resolveRequestId } from './observability.js';
 import { stripAnsiToText } from '../adapters/ansi.js';
+import type { Session } from '../session/session.js';
+
+const WAITABLE_STATES = new Set([
+  'starting',
+  'running',
+  'thinking',
+  'tool_executing',
+  'waiting_input',
+  'idle',
+  'done',
+  'completed',
+  'error',
+  'working',
+  'blocked',
+  'unknown',
+]);
+const WAIT_MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+function matchWaitState(session: Session, requested: Set<string>, afterSeq?: number): string | null {
+  if (afterSeq !== undefined && session.stateChangeSeq <= afterSeq) return null;
+  const status = session.status;
+  if (requested.has(status)) return status;
+  const detectionState = session.adapter.getDetectionExplanation().state;
+  if (requested.has(detectionState)) return detectionState;
+  if (requested.has('blocked') && status === 'waiting_input') return 'blocked';
+  if (requested.has('working')
+      && (status === 'running' || status === 'thinking' || status === 'tool_executing')) {
+    return 'working';
+  }
+  return null;
+}
 
 function resolveRecordingFilePath(recordDir: string, rawFilename: string): string | null {
   if (!rawFilename || rawFilename.includes('\0')) {
@@ -64,6 +95,159 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
       });
     }
     return session.info;
+  });
+
+  // Explain the agent state classifier's latest decision. Terminal text is
+  // excluded unless explicitly requested because prompts can contain secrets.
+  app.get<{ Params: { id: string }; Querystring: { includeText?: string } }>(
+    '/api/sessions/:id/detection',
+    async (request, reply) => {
+      const requestId = resolveRequestId(request);
+      const session = manager.getSession(request.params.id);
+      if (!session) {
+        return reply.status(404).send({
+          error: 'Session not found',
+          request_id: requestId,
+          session_id: request.params.id,
+          error_code: 'SESSION_NOT_FOUND',
+        });
+      }
+      return session.adapter.getDetectionExplanation(request.query.includeText === '1');
+    },
+  );
+
+  // Wait until either the published session status or the internal lifecycle
+  // classifier reaches one of the requested states.
+  app.get<{
+    Params: { id: string };
+    Querystring: { state?: string; timeoutMs?: string; afterSeq?: string };
+  }>('/api/sessions/:id/wait', async (request, reply) => {
+    const requestId = resolveRequestId(request);
+    const session = manager.getSession(request.params.id);
+    if (!session) {
+      return reply.status(404).send({
+        error: 'Session not found',
+        request_id: requestId,
+        session_id: request.params.id,
+        error_code: 'SESSION_NOT_FOUND',
+      });
+    }
+
+    const states = (request.query.state ?? 'idle,done,blocked,completed,error')
+      .split(',')
+      .map((state) => state.trim())
+      .filter(Boolean);
+    if (states.length === 0 || states.some((state) => !WAITABLE_STATES.has(state))) {
+      return reply.status(400).send({
+        error: 'Invalid wait state',
+        request_id: requestId,
+        session_id: request.params.id,
+        error_code: 'INVALID_WAIT_STATE',
+        allowed: Array.from(WAITABLE_STATES),
+      });
+    }
+
+    const parsedTimeout = Number(request.query.timeoutMs ?? '30000');
+    if (!Number.isFinite(parsedTimeout) || parsedTimeout < 0) {
+      return reply.status(400).send({
+        error: 'Invalid timeoutMs',
+        request_id: requestId,
+        session_id: request.params.id,
+        error_code: 'INVALID_WAIT_TIMEOUT',
+      });
+    }
+    const timeoutMs = Math.min(WAIT_MAX_TIMEOUT_MS, Math.floor(parsedTimeout));
+    const parsedAfterSeq = request.query.afterSeq === undefined
+      ? undefined
+      : Number(request.query.afterSeq);
+    if (parsedAfterSeq !== undefined
+        && (!Number.isSafeInteger(parsedAfterSeq) || parsedAfterSeq < 0)) {
+      return reply.status(400).send({
+        error: 'Invalid afterSeq',
+        request_id: requestId,
+        session_id: request.params.id,
+        error_code: 'INVALID_WAIT_SEQUENCE',
+      });
+    }
+    const requested = new Set(states);
+    const startedAt = Date.now();
+
+    const immediate = matchWaitState(session, requested, parsedAfterSeq);
+    if (immediate) {
+      return {
+        reached: true,
+        matched: immediate,
+        status: session.status,
+        stateChangeSeq: session.stateChangeSeq,
+        detectionState: session.adapter.getDetectionExplanation().state,
+        elapsedMs: 0,
+      };
+    }
+
+    const outcome = await new Promise<{ reached: boolean; matched: string | null; reason: string }>((resolveWait) => {
+      let settled = false;
+      const finish = (reached: boolean, matched: string | null, reason: string): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        session.off('event', onEvent);
+        manager.off('session:removed', onSessionRemoved);
+        request.raw.off('aborted', onAborted);
+        resolveWait({ reached, matched, reason });
+      };
+      const onEvent = (event?: { type?: string }): void => {
+        const matched = matchWaitState(session, requested, parsedAfterSeq);
+        if (matched) {
+          finish(true, matched, 'state_reached');
+        } else if (event?.type === 'session:end') {
+          finish(false, null, 'session_ended');
+        }
+      };
+      const onSessionRemoved = (removedId: string): void => {
+        if (removedId === session.id) finish(false, null, 'session_removed');
+      };
+      const onAborted = (): void => finish(false, null, 'request_aborted');
+
+      session.on('event', onEvent);
+      manager.on('session:removed', onSessionRemoved);
+      request.raw.once('aborted', onAborted);
+      const timer = setTimeout(() => finish(false, null, 'timeout'), timeoutMs);
+      (timer as { unref?: () => void }).unref?.();
+
+      // Close the check/listener race: the state may have changed between the
+      // immediate check above and listener registration.
+      onEvent();
+    });
+
+    return {
+      ...outcome,
+      status: session.status,
+      stateChangeSeq: session.stateChangeSeq,
+      detectionState: session.adapter.getDetectionExplanation().state,
+      elapsedMs: Date.now() - startedAt,
+    };
+  });
+
+  // A visible dashboard acknowledges attention-worthy states. Completion is
+  // sticky (`done`) until seen, then returns to ordinary idle.
+  app.post<{ Params: { id: string } }>('/api/sessions/:id/seen', async (request, reply) => {
+    const requestId = resolveRequestId(request);
+    const session = manager.getSession(request.params.id);
+    if (!session) {
+      return reply.status(404).send({
+        error: 'Session not found',
+        request_id: requestId,
+        session_id: request.params.id,
+        error_code: 'SESSION_NOT_FOUND',
+      });
+    }
+    session.markSeen();
+    return {
+      ok: true,
+      status: session.status,
+      seen: session.seen,
+      stateChangeSeq: session.stateChangeSeq,
+    };
   });
 
   // Get session events

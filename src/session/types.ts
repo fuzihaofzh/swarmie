@@ -6,9 +6,15 @@ export interface SessionInfo {
   tool: string;
   adapterInfo: AdapterInfo;
   status: SessionStatus;
+  /** Whether the latest attention-worthy transition has been viewed. */
+  seen: boolean;
+  /** Monotonic user-visible lifecycle sequence. */
+  stateChangeSeq: number;
   startTime: number;
   endTime?: number;
   cwd: string;
+  /** Folder that established this session's workspace; remains stable if the shell later cd's. */
+  workspaceCwd?: string;
   command: string[];
   /** Recent events kept in memory for late-joining clients */
   recentEvents: NormalizedEvent[];
@@ -26,11 +32,14 @@ export interface SessionSummary {
   name: string;
   tool: string;
   status: SessionStatus;
+  seen: boolean;
+  stateChangeSeq: number;
   startTime: number;
   endTime?: number;
   displayName: string;
   icon: string;
   cwd: string;
+  workspaceCwd?: string;
   hostname: string;
   initialHostname: string;
   autoApprove?: boolean;

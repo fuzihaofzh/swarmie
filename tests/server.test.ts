@@ -136,6 +136,126 @@ describe('REST API', () => {
     expect(body.tool).toBe('claude');
   });
 
+  it('GET /api/sessions/:id/detection explains state without screen text by default', async () => {
+    const res = await fetch(`${baseUrl}/api/sessions/test-sess/detection`, { headers: authHeaders() });
+    const body = await res.json() as {
+      agent: string;
+      mode: string;
+      state: string;
+      evaluatedRules: Array<{ regionPreview?: string }>;
+    };
+    expect(res.status).toBe(200);
+    expect(body.agent).toBe('claude');
+    expect(body.mode).toBe('active');
+    expect(body.state).toBe('unknown');
+    expect(body.evaluatedRules.length).toBeGreaterThan(0);
+    expect(body.evaluatedRules.every((rule) => rule.regionPreview === undefined)).toBe(true);
+  });
+
+  it('GET /api/sessions/:id/wait returns immediately for a reached lifecycle state', async () => {
+    const res = await fetch(`${baseUrl}/api/sessions/test-sess/wait?state=working&timeoutMs=100`, {
+      headers: authHeaders(),
+    });
+    const body = await res.json() as { reached: boolean; matched: string; status: string };
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ reached: true, matched: 'working', status: 'running' });
+  });
+
+  it('GET /api/sessions/:id/wait times out cleanly', async () => {
+    const res = await fetch(`${baseUrl}/api/sessions/test-sess/wait?state=blocked&timeoutMs=5`, {
+      headers: authHeaders(),
+    });
+    const body = await res.json() as { reached: boolean; reason: string };
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ reached: false, reason: 'timeout' });
+  });
+
+  it('GET /api/sessions/:id/wait validates requested states', async () => {
+    const res = await fetch(`${baseUrl}/api/sessions/test-sess/wait?state=banana`, {
+      headers: authHeaders(),
+    });
+    const body = await res.json() as { error_code: string };
+    expect(res.status).toBe(400);
+    expect(body.error_code).toBe('INVALID_WAIT_STATE');
+  });
+
+  it('waits for a lifecycle change after the supplied sequence and acknowledges done', async () => {
+    const id = 'wait-sequence-session';
+    const adapter = new RemoteAdapter(
+      { sessionId: id, toolArgs: [] },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: '',
+        command: 'codex',
+        supportsStructured: true,
+      },
+    );
+    const session = manager.addSession(id, 'Wait Sequence', adapter);
+    session.start();
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: id,
+      timestamp: Date.now(),
+      data: { from: 'running', to: 'idle' },
+    });
+    const afterSeq = session.stateChangeSeq;
+
+    try {
+      const waiting = fetch(
+        `${baseUrl}/api/sessions/${id}/wait?state=done&afterSeq=${afterSeq}&timeoutMs=1000`,
+        { headers: authHeaders() },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      adapter.pushEvent({
+        type: 'user:input',
+        sessionId: id,
+        timestamp: Date.now(),
+        data: { text: '' },
+      });
+      adapter.pushEvent({
+        type: 'status:change',
+        sessionId: id,
+        timestamp: Date.now() + 1,
+        data: { from: 'idle', to: 'running' },
+      });
+      adapter.pushEvent({
+        type: 'status:change',
+        sessionId: id,
+        timestamp: Date.now() + 2,
+        data: { from: 'running', to: 'idle' },
+      });
+
+      const waitResponse = await waiting;
+      const waitBody = await waitResponse.json() as {
+        reached: boolean;
+        matched: string;
+        status: string;
+        stateChangeSeq: number;
+      };
+      expect(waitBody).toMatchObject({ reached: true, matched: 'done', status: 'done' });
+      expect(waitBody.stateChangeSeq).toBeGreaterThan(afterSeq);
+
+      const seenResponse = await fetch(`${baseUrl}/api/sessions/${id}/seen`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      const seenBody = await seenResponse.json() as { status: string; seen: boolean };
+      expect(seenBody).toMatchObject({ status: 'idle', seen: true });
+    } finally {
+      manager.removeSession(id);
+    }
+  });
+
+  it('validates afterSeq for waits', async () => {
+    const res = await fetch(`${baseUrl}/api/sessions/test-sess/wait?afterSeq=-1`, {
+      headers: authHeaders(),
+    });
+    const body = await res.json() as { error_code: string };
+    expect(res.status).toBe(400);
+    expect(body.error_code).toBe('INVALID_WAIT_SEQUENCE');
+  });
+
   it('GET /api/sessions/:id returns 404 for unknown session', async () => {
     const res = await fetch(`${baseUrl}/api/sessions/nonexistent`, { headers: authHeaders() });
     const body = await res.json() as {

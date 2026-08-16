@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BaseAdapter, matchesAgentIdleScreen, matchesBusyScreen, matchesWaitingPrompt } from '../src/adapters/base.js';
+import {
+  BaseAdapter,
+  matchesAgentIdleScreen,
+  matchesBusyScreen,
+  matchesWaitingPrompt,
+  waitingPromptFingerprint,
+} from '../src/adapters/base.js';
 import type { AdapterInfo } from '../src/adapters/types.js';
+import { getSystemDisplayHostname } from '../src/session/host.js';
 
 class ActivityDetectionAdapter extends BaseAdapter {
   // These cases assert the classifier's verdict on a screen, not when the
@@ -44,6 +51,10 @@ class ActivityDetectionAdapter extends BaseAdapter {
 
   feed(chunk: string): void {
     this.handleActivityDetection(chunk);
+  }
+
+  feedOsc(chunk: string): void {
+    this.parseOSC(chunk);
   }
 
   protected shouldDetectWaitingPrompt(): boolean {
@@ -110,6 +121,46 @@ function createAgentMovementAdapter(): AgentMovementDetectionAdapter {
 }
 
 describe('activity detection', () => {
+  it('does not mistake local OSC hostname aliases for SSH', () => {
+    const adapter = createAdapter();
+    const cwdChanges: Array<{ cwd: string; hostname?: string }> = [];
+    adapter.on('event', (event) => {
+      if (event.type === 'cwd:change') cwdChanges.push(event.data as { cwd: string; hostname?: string });
+    });
+
+    adapter.feedOsc('\x1b]7;file://localhost/tmp/local-project\x07');
+    expect(cwdChanges.at(-1)).toEqual({
+      cwd: '/tmp/local-project',
+      hostname: getSystemDisplayHostname(),
+    });
+
+    adapter.feedOsc('\x1b]7;file://gpu-worker.invalid/work/remote-project\x07');
+    expect(cwdChanges.at(-1)).toEqual({
+      cwd: '/work/remote-project',
+      hostname: 'gpu-worker.invalid',
+    });
+  });
+
+  it('fingerprints changed approval cards but ignores the selection cursor', () => {
+    const first = [
+      'Bash command · from the general-purpose agent',
+      '  pdflatex paper.tex',
+      '  Compile the paper',
+      '',
+      'Do you want to proceed?',
+      '❯ 1. Yes',
+      '  2. No',
+      'Esc to cancel · Tab to amend',
+    ].join('\n');
+    const movedSelection = first
+      .replace('❯ 1. Yes', '  1. Yes')
+      .replace('  2. No', '❯ 2. No');
+    const nextCommand = first.replace('pdflatex paper.tex', 'grep -n error paper.log');
+
+    expect(waitingPromptFingerprint(first)).toBe(waitingPromptFingerprint(movedSelection));
+    expect(waitingPromptFingerprint(first)).not.toBe(waitingPromptFingerprint(nextCommand));
+  });
+
   it('does not mark generic shell output as waiting_input', () => {
     const adapter = createShellAdapter();
 

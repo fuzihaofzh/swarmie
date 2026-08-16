@@ -3,11 +3,13 @@ import { useSessionStore, type SessionSummary } from '../hooks/useSessions';
 import { useUIStore } from '../hooks/useUI';
 import { useWsContext } from '../contexts/WsContext';
 import { ToolIcon } from './ToolIcon';
+import { sessionHostLabel } from '../serverHost';
 
 type AgentView = 'attention' | 'active' | 'archived';
 
 const BUSY_STATUSES = new Set(['starting', 'running', 'thinking', 'tool_executing']);
-const DONE_STATUSES = new Set(['completed', 'error']);
+const FINISHED_STATUSES = new Set(['done', 'completed', 'error']);
+const ARCHIVABLE_STATUSES = new Set(['completed', 'error']);
 
 function shortPath(path: string): string {
   return path
@@ -20,16 +22,8 @@ function basename(path: string): string {
   return cleaned.split('/').pop() || cleaned || '~';
 }
 
-function hostLabel(session: SessionSummary): string {
-  if (session.serverUrl) {
-    try {
-      return new URL(session.serverUrl).hostname;
-    } catch {
-      return session.serverUrl;
-    }
-  }
-  if (session.hostname && session.hostname !== session.initialHostname) return session.hostname;
-  return session.initialHostname || session.hostname || 'local';
+function hostLabel(session: SessionSummary, allSessions: readonly SessionSummary[]): string {
+  return sessionHostLabel(session, allSessions) ?? 'local';
 }
 
 function statusLabel(status: string): string {
@@ -43,20 +37,25 @@ function statusLabel(status: string): string {
 function attentionRank(session: SessionSummary): number {
   if (session.status === 'waiting_input') return 0;
   if (session.status === 'error') return 1;
-  if (session.status === 'completed') return 2;
-  if (BUSY_STATUSES.has(session.status)) return 3;
-  return 4;
+  if (session.status === 'done') return 2;
+  if (session.status === 'completed') return 3;
+  if (BUSY_STATUSES.has(session.status)) return 4;
+  return 5;
 }
 
 function isAttention(session: SessionSummary): boolean {
-  return session.status === 'waiting_input' || session.status === 'error' || session.status === 'completed';
+  const attentionStatus = session.status === 'waiting_input'
+    || session.status === 'done'
+    || session.status === 'error'
+    || session.status === 'completed';
+  return attentionStatus && session.seen !== true;
 }
 
 function isArchivable(session: SessionSummary): boolean {
-  return DONE_STATUSES.has(session.status);
+  return ARCHIVABLE_STATUSES.has(session.status);
 }
 
-function matchesQuery(session: SessionSummary, query: string): boolean {
+function matchesQuery(session: SessionSummary, query: string, allSessions: readonly SessionSummary[]): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
   return [
@@ -65,7 +64,7 @@ function matchesQuery(session: SessionSummary, query: string): boolean {
     session.displayName,
     session.status,
     session.cwd,
-    hostLabel(session),
+    hostLabel(session, allSessions),
     session.serverUrl,
     ...(session.tags ?? []),
   ]
@@ -122,7 +121,7 @@ export function AgentOverview() {
     waiting: activeSessions.filter((s) => s.status === 'waiting_input').length,
     busy: activeSessions.filter((s) => BUSY_STATUSES.has(s.status)).length,
     idle: activeSessions.filter((s) => s.status === 'idle').length,
-    done: activeSessions.filter((s) => DONE_STATUSES.has(s.status)).length,
+    done: activeSessions.filter((s) => FINISHED_STATUSES.has(s.status)).length,
   }), [activeSessions]);
 
   const rows = useMemo(() => {
@@ -134,7 +133,7 @@ export function AgentOverview() {
           ? attentionSessions
           : activeSessions;
     return source
-      .filter((session) => matchesQuery(session, query))
+      .filter((session) => matchesQuery(session, query, sessions))
       .sort((a, b) => {
         const rank = attentionRank(a) - attentionRank(b);
         if (rank !== 0) return rank;
@@ -357,7 +356,7 @@ export function AgentOverview() {
                     <span className={`agent-status-chip status-${session.status}`}>{statusLabel(session.status)}</span>
                   </div>
                   <div className="agent-row-meta">
-                    <span>{hostLabel(session)}</span>
+                    <span>{hostLabel(session, sessions)}</span>
                     <span>{shortPath(session.cwd)}</span>
                     <span>{formatAge(lastActivityAt(session, events), now)} ago</span>
                   </div>

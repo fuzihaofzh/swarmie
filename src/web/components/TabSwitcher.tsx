@@ -4,6 +4,7 @@ import { ToolIcon } from './ToolIcon';
 import { useKeybindingStore, matchesAction } from '../hooks/useKeybindings';
 import { useUIStore } from '../hooks/useUI';
 import { sessionMatchesTagFilter } from '../tagFilter';
+import { sessionHostLabel } from '../serverHost';
 
 interface TabSwitcherProps {
   mruRef: React.RefObject<string[]>;
@@ -87,8 +88,12 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
         }
         // Apply the bell-first sort exactly once, here, then freeze it.
         const ordered = filtered.sort((a, b) => {
-          const aBell = visibleById.get(a)?.status === 'waiting_input' ? 0 : 1;
-          const bBell = visibleById.get(b)?.status === 'waiting_input' ? 0 : 1;
+          const aSession = visibleById.get(a);
+          const bSession = visibleById.get(b);
+          const aBell = aSession?.seen === false
+            && (aSession.status === 'waiting_input' || aSession.status === 'done') ? 0 : 1;
+          const bBell = bSession?.seen === false
+            && (bSession.status === 'waiting_input' || bSession.status === 'done') ? 0 : 1;
           return aBell - bBell;
         });
         mruListRef.current = ordered;
@@ -140,6 +145,7 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
         {orderIds.map((id, i) => {
           const s = sessionById.get(id);
           if (!s || archived.has(id)) return null;
+          const host = sessionHostLabel(s, sessions);
           const short = s.cwd
             .replace(/^\/Users\/[^/]+/, '~')
             .replace(/^\/home\/[^/]+/, '~');
@@ -156,8 +162,8 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
               <span className="tab-switcher-name">
                 {short || '~'}
               </span>
-              {s.hostname && s.hostname !== 'local' && (
-                <span className="tab-switcher-host">{s.hostname}</span>
+              {host && (
+                <span className="tab-switcher-host">{host}</span>
               )}
               <span
                 className="tab-switcher-toggle"

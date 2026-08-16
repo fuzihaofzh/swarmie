@@ -7,6 +7,7 @@ import { useWsContext } from '../contexts/WsContext';
 import { ToolIcon } from './ToolIcon';
 import { sessionMatchesTagFilter } from '../tagFilter';
 import { shouldShowMobileToolbar } from '../focusPolicy';
+import { sessionHostLabel } from '../serverHost';
 
 function getFocusPolicyEnv() {
   return {
@@ -202,7 +203,7 @@ function isBusyForRepeat(status: string): boolean {
 }
 
 function isBusyForAutoCompact(status: string): boolean {
-  return status !== 'idle' && status !== 'completed' && status !== 'error';
+  return status !== 'idle' && status !== 'done' && status !== 'completed' && status !== 'error';
 }
 
 export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
@@ -282,23 +283,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
   const filteredOut = tagFilter.length > 0 && !sessionMatchesTagFilter(session, tagFilter);
 
   const active = !!session.autoApprove;
-  const isRemote = !!session.serverUrl;
-  // Extract short hostname from server URL (e.g. "http://seis10:3200" → "seis10")
-  const remoteHost = isRemote
-    ? (() => {
-        try {
-          const h = new URL(session.serverUrl).hostname;
-          return h;
-        } catch {
-          return session.serverUrl;
-        }
-      })()
-    : null;
-  // If SSH detected via OSC sequences, show the SSH hostname
-  const sshHost = !isRemote && session.hostname && session.hostname !== session.initialHostname
-    ? session.hostname
-    : null;
-  const displayHost = remoteHost || sshHost;
+  const displayHost = sessionHostLabel(session, allSessions);
 
   const handleToolsClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -367,7 +352,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
   return (
     <div
       ref={tabRef}
-      className={`dv-custom-tab${filteredOut ? ' dv-custom-tab-hidden' : ''}`}
+      className={`dv-custom-tab dv-custom-tab-status-${session.status}${filteredOut ? ' dv-custom-tab-hidden' : ''}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >

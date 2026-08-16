@@ -2,11 +2,25 @@ import { EventEmitter } from 'node:events';
 import { readlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { hostname as osHostname } from 'node:os';
-import type { NormalizedEvent, NormalizedEventType, EventData, AdapterInfo, SessionStatus, CwdChangeData } from './types.js';
+import type {
+  NormalizedEvent,
+  NormalizedEventType,
+  EventData,
+  AdapterInfo,
+  SessionStatus,
+  CwdChangeData,
+  AgentStateData,
+} from './types.js';
 import { ESC_CHAR, BEL_CHAR } from './ansi.js';
 import { HeadlessScreen } from './screen.js';
 import * as PROF from '../server/profile.js';
+import { getSystemDisplayHostname, isLocalHostname } from '../session/host.js';
+import { chooseStateSignal, defaultAgentStateDetector, DetectionStabilizer } from '../detection/index.js';
+import type {
+  AgentLifecycleState,
+  DetectionExplanation,
+  DetectionMode,
+} from '../detection/index.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -107,6 +121,12 @@ const OSC_TITLE_RE = new RegExp(
   `${ESC_CHAR}\\][02];([^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
   'g',
 );
+// OSC 9;4: terminal progress state/value. Some agent CLIs use this instead of
+// repainting a visible spinner, so retain its payload as a separate signal.
+const OSC_PROGRESS_RE = new RegExp(
+  `${ESC_CHAR}\\]9;4;([^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
+  'g',
+);
 const SGR_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[<\\d+;\\d+;\\d+[mM]`);
 const X10_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[M[\\s\\S]{3}`);
 const URXVT_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[\\d+;\\d+;\\d+M`);
@@ -123,12 +143,17 @@ const URXVT_MOUSE_INPUT_RE = new RegExp(`^${ESC_CHAR}\\[\\d+;\\d+;\\d+M`);
  */
 const DETECT_SAMPLE_INTERVAL_MS = Number(process.env.SWARMIE_DETECT_INTERVAL_MS ?? '80');
 
+function readDetectionMode(value: string | undefined): DetectionMode {
+  if (value === 'legacy' || value === 'active' || value === 'shadow') return value;
+  return 'active';
+}
+
 function isSubmittedInput(data: string): boolean {
   return data.includes('\r') || data.includes('\n');
 }
 
 function isInactiveStatus(status: SessionStatus): boolean {
-  return status === 'idle' || status === 'waiting_input' || status === 'completed' || status === 'error';
+  return status === 'idle' || status === 'done' || status === 'waiting_input' || status === 'completed' || status === 'error';
 }
 
 function isBusyStatus(status: SessionStatus): boolean {
@@ -168,20 +193,28 @@ export interface AdapterOptions {
 }
 
 /**
- * Build a spawn env that strips COLUMNS/LINES so children query the PTY
- * via ioctl (TIOCGWINSZ) instead of reading a stale value inherited from
- * the swarmie process's own launch terminal. Python's
+ * Build an environment for an interactive PTY. COLUMNS/LINES are stripped so
+ * children query the PTY via ioctl (TIOCGWINSZ) instead of reading stale
+ * dimensions inherited from Swarmie's launch terminal. NO_COLOR is also not
+ * inherited by default: the browser terminal supports true color, and an
+ * outer automation runner often sets NO_COLOR for its own logs even though
+ * the nested interactive terminal should remain colored. Python's
  * shutil.get_terminal_size() — and therefore tqdm — prefers $COLUMNS when
  * set, so without this scrub a narrowed PTY still produces wide progress
  * bars and viewers re-wrap them.
  */
 export function buildSpawnEnv(extraExclude: string[] = []): Record<string, string> {
-  const exclude = new Set(['COLUMNS', 'LINES', ...extraExclude]);
+  const exclude = new Set(['COLUMNS', 'LINES', 'NO_COLOR', 'NODE_DISABLE_COLORS', ...extraExclude]);
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined) continue;
     if (exclude.has(k)) continue;
     env[k] = v;
+  }
+  if (process.env.SWARMIE_NO_COLOR === '1') {
+    env.NO_COLOR = '1';
+  } else if (!env.COLORTERM) {
+    env.COLORTERM = 'truecolor';
   }
   return env;
 }
@@ -194,6 +227,8 @@ export interface ScreenSnapshot {
   recent: string;
   /** Whether any waiting-input pattern matches recent screen text right now. */
   promptVisible: boolean;
+  /** Latest rule-engine result. Screen text is omitted from its rule trace. */
+  detection: DetectionExplanation | null;
 }
 
 export abstract class BaseAdapter extends EventEmitter {
@@ -230,6 +265,12 @@ export abstract class BaseAdapter extends EventEmitter {
   private _detectTrailingTimer: ReturnType<typeof setTimeout> | null = null;
   /** True when cwd is being tracked via OSC sequences (e.g. SSH session) */
   private _oscCwdActive: boolean = false;
+  private _oscTitle = '';
+  private _oscProgress = '';
+  private readonly _detectionMode: DetectionMode;
+  private _detectionStabilizer: DetectionStabilizer;
+  private _latestDetection: DetectionExplanation | null = null;
+  private _lastDetectionAgent = '';
 
   abstract get info(): AdapterInfo;
 
@@ -238,11 +279,13 @@ export abstract class BaseAdapter extends EventEmitter {
     this.sessionId = options.sessionId;
     this.toolArgs = options.toolArgs;
     this.cwd = options.cwd ?? process.cwd();
-    this.hostname = osHostname();
+    this.hostname = getSystemDisplayHostname();
     this._initialHostname = this.hostname;
     this.cols = options.cols ?? (process.stdout.columns || 80);
     this.rows = options.rows ?? (process.stdout.rows || 24);
     this._screen = new HeadlessScreen(this.cols, this.rows);
+    this._detectionMode = readDetectionMode(process.env.SWARMIE_DETECTION_MODE);
+    this._detectionStabilizer = new DetectionStabilizer(this._startTime);
   }
 
   get status(): SessionStatus {
@@ -260,8 +303,19 @@ export abstract class BaseAdapter extends EventEmitter {
   getScreenSnapshot(): ScreenSnapshot {
     const recent = this._screen.getRecentText(20);
     const viewport = this._screen.getViewportText();
-    const promptVisible = this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(recent);
-    return { viewport, recent, promptVisible };
+    const legacyPromptVisible = this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(recent);
+    const promptVisible = legacyPromptVisible
+      || (this._detectionMode === 'active' && this._latestDetection?.visibleBlocker === true);
+    return { viewport, recent, promptVisible, detection: this._latestDetection };
+  }
+
+  /** Explain the latest state decision without exposing terminal text by default. */
+  getDetectionExplanation(includeText = false): DetectionExplanation {
+    if (this._latestDetection && !includeText) return this._latestDetection;
+    const recent = this._screen.getRecentText(20);
+    const viewport = this._screen.getViewportText();
+    const legacyState = this.classifyLegacyScreen(recent);
+    return this.runAgentDetection(viewport, recent, legacyState, includeText, false);
   }
 
   /**
@@ -296,6 +350,11 @@ export abstract class BaseAdapter extends EventEmitter {
   /** Whether repeated visible screen changes should count as agent activity. */
   protected shouldTreatScreenMovementAsBusy(_screenText: string): boolean {
     return WAITING_PROMPT_TOOL_NAMES.has(this.info.name);
+  }
+
+  /** Remote sessions forward the owning server's state events instead. */
+  protected shouldEmitDetectionEvents(): boolean {
+    return true;
   }
 
   /** Start the underlying tool process */
@@ -397,6 +456,7 @@ export abstract class BaseAdapter extends EventEmitter {
    * read it.
    */
   protected handleActivityDetection(chunk: string): void {
+    this.captureDetectionSignals(chunk);
     // Apply ANSI / cursor moves / alt-buffer toggles to the virtual screen.
     // Never throttled: skipping a write would desync the screen from the PTY.
     const tScreen = PROF.profiling ? PROF.nowNs() : 0n;
@@ -443,14 +503,45 @@ export abstract class BaseAdapter extends EventEmitter {
     const tEval = PROF.profiling ? PROF.nowNs() : 0n;
     const tRead = PROF.profiling ? PROF.nowNs() : 0n;
     const screen = this._screen.getRecentText(20);
+    const viewport = this._screen.getViewportText();
     if (PROF.profiling) PROF.mark('act.getRecentText', tRead, screen.length, this.sessionId);
-    const screenMoved = this.noteMeaningfulScreenMovement();
+    const screenMoved = this.noteMeaningfulScreenMovement(viewport);
     const tRe = PROF.profiling ? PROF.nowNs() : 0n;
     const promptVisible = this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(screen);
     const busyVisible = this.shouldTreatScreenAsBusy(screen);
+    const idleVisible = matchesAgentIdleScreen(screen);
+    const legacyState: AgentLifecycleState = promptVisible
+      ? 'blocked'
+      : busyVisible
+        ? 'working'
+        : idleVisible
+          ? 'idle'
+          : 'unknown';
+    const detection = this.runAgentDetection(viewport, screen, legacyState, false, true);
+    const movementBusy = screenMoved && this.shouldTreatScreenMovementAsBusy(screen);
     if (PROF.profiling) {
       PROF.mark('act.promptRegex', tRe, screen.length, this.sessionId);
       PROF.mark('act.evaluateTotal', tEval, screen.length, this.sessionId);
+    }
+
+    // Active mode publishes explicit rule evidence and uses the established
+    // activity classifier only when the rule engine has no stronger signal.
+    if (this._detectionMode === 'active') {
+      if (detection.skipStateUpdate) return;
+      if (detection.state === 'blocked' && detection.visibleBlocker) {
+        if (this._status !== 'waiting_input') this.setStatus('waiting_input');
+        return;
+      }
+      if (detection.state === 'working' && detection.visibleWorking) {
+        this._lastActivity = Date.now();
+        if (!isBusyStatus(this._status)) this.setStatus('running');
+        return;
+      }
+      if (detection.state === 'idle' && detection.visibleIdle
+          && !this._commandExecuting && !this._userInputActive && !movementBusy) {
+        if (this._status !== 'idle') this.setStatus('idle');
+        return;
+      }
     }
 
     if (promptVisible) {
@@ -468,7 +559,7 @@ export abstract class BaseAdapter extends EventEmitter {
       return;
     }
 
-    if (screenMoved && this.shouldTreatScreenMovementAsBusy(screen)) {
+    if (movementBusy) {
       this._lastActivity = Date.now();
       this.markScreenMovementBusy();
       return;
@@ -512,7 +603,13 @@ export abstract class BaseAdapter extends EventEmitter {
     // OSC 7: authoritative cwd + hostname
     OSC7_RE.lastIndex = 0;
     while ((match = OSC7_RE.exec(chunk)) !== null) {
-      const host = match[1] || this.hostname;
+      const reportedHost = match[1];
+      // A local shell may report this box by its short name, `.local` name, or
+      // an interface IP. Keep one canonical local identity; only a genuinely
+      // different host should make the UI label the tab as SSH/remote.
+      const host = !reportedHost || isLocalHostname(reportedHost)
+        ? this._initialHostname
+        : reportedHost;
       const newCwd = decodeURIComponent(match[2]);
       const changed = (newCwd && newCwd !== this.cwd) || (host !== this.hostname);
       if (changed) {
@@ -540,6 +637,119 @@ export abstract class BaseAdapter extends EventEmitter {
         this.emitEvent('cwd:change', { cwd: this.cwd, hostname: this.hostname } satisfies CwdChangeData);
       }
     }
+  }
+
+  /** Capture OSC values used by state rules independently from cwd parsing. */
+  private captureDetectionSignals(chunk: string): void {
+    let match: RegExpExecArray | null;
+    OSC_TITLE_RE.lastIndex = 0;
+    while ((match = OSC_TITLE_RE.exec(chunk)) !== null) {
+      this._oscTitle = match[1].trim().slice(0, 512);
+    }
+    OSC_PROGRESS_RE.lastIndex = 0;
+    while ((match = OSC_PROGRESS_RE.exec(chunk)) !== null) {
+      this._oscProgress = match[1].trim().slice(0, 512);
+    }
+  }
+
+  private classifyLegacyScreen(screen: string): AgentLifecycleState {
+    if (this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(screen)) return 'blocked';
+    if (this.shouldTreatScreenAsBusy(screen)) return 'working';
+    if (matchesAgentIdleScreen(screen)) return 'idle';
+    return 'unknown';
+  }
+
+  private runAgentDetection(
+    viewport: string,
+    recent: string,
+    legacyState: AgentLifecycleState,
+    includeText: boolean,
+    updateStableState: boolean,
+  ): DetectionExplanation {
+    const agent = this.info.name;
+    if (updateStableState && agent !== this._lastDetectionAgent) {
+      this._detectionStabilizer.reset();
+      this._lastDetectionAgent = agent;
+    }
+
+    const raw = defaultAgentStateDetector.detect(agent, {
+      viewport,
+      recent,
+      oscTitle: this._oscTitle,
+      oscProgress: this._oscProgress,
+    }, { includeText });
+
+    const stabilized = updateStableState
+      ? this._detectionStabilizer.observe(raw.result)
+      : this._latestDetection
+        ? {
+            state: this._latestDetection.state,
+            decision: this._latestDetection.stabilization,
+            reason: this._latestDetection.stabilizationReason,
+          } as const
+        : { state: raw.result.state, decision: 'accepted' as const };
+
+    const screenSignal = stabilized.state === 'unknown'
+      ? undefined
+      : {
+          state: stabilized.state,
+          source: 'screen' as const,
+          observedAt: raw.result.observedAt,
+          authoritative: raw.result.visibleIdle || raw.result.visibleWorking || raw.result.visibleBlocker,
+          visibleBlocker: raw.result.visibleBlocker,
+        };
+    const fallbackSignal = legacyState === 'unknown'
+      ? undefined
+      : {
+          state: legacyState,
+          source: 'activity' as const,
+          observedAt: raw.result.observedAt,
+        };
+    const resolved = chooseStateSignal(
+      [screenSignal, fallbackSignal].filter((signal) => signal !== undefined),
+      { now: raw.result.observedAt },
+    );
+    const finalState = this._detectionMode === 'legacy'
+      ? legacyState
+      : this._detectionMode === 'active'
+        ? (resolved?.state ?? stabilized.state)
+        : stabilized.state;
+
+    const explanation: DetectionExplanation = {
+      ...raw.result,
+      state: finalState,
+      mode: this._detectionMode,
+      evaluatedRules: raw.evaluatedRules,
+      rawState: raw.result.state,
+      ...(resolved ? { resolvedSource: resolved.source } : {}),
+      stabilization: stabilized.decision,
+      ...(stabilized.reason ? { stabilizationReason: stabilized.reason } : {}),
+      legacyState,
+      agreesWithLegacy: stabilized.state === legacyState,
+    };
+    if (updateStableState) {
+      const previous = this._latestDetection;
+      this._latestDetection = explanation;
+      const changed = previous?.state !== explanation.state
+        || previous?.matchedRuleId !== explanation.matchedRuleId
+        || previous?.automationSafe !== explanation.automationSafe;
+      const hasDetectionContext = previous?.matchedRuleId !== undefined
+        || explanation.matchedRuleId !== undefined;
+      if (changed && hasDetectionContext && this.shouldEmitDetectionEvents()) {
+        this.emitEvent('agent:state', {
+          agent: explanation.agent,
+          state: explanation.state,
+          source: explanation.resolvedSource ?? 'screen',
+          ruleId: explanation.matchedRuleId,
+          manifestVersion: explanation.manifestVersion,
+          visibleIdle: explanation.visibleIdle,
+          visibleWorking: explanation.visibleWorking,
+          visibleBlocker: explanation.visibleBlocker,
+          automationSafe: explanation.automationSafe,
+        } satisfies AgentStateData);
+      }
+    }
+    return explanation;
   }
 
   /** Start polling the cwd of a child process by PID */
@@ -608,6 +818,9 @@ export abstract class BaseAdapter extends EventEmitter {
     this.stopUserInputTracking();
     this._commandExecuting = true;
     this._lastActivity = Date.now();
+    // Deliberately omit submitted text: lifecycle consumers only need the
+    // task boundary, and commands/prompts may contain secrets.
+    this.emitEvent('user:input', { text: '' });
     this.setStatus('running');
     this.startCommandTimeout();
   }
@@ -728,9 +941,9 @@ export abstract class BaseAdapter extends EventEmitter {
     }
   }
 
-  private noteMeaningfulScreenMovement(): boolean {
+  private noteMeaningfulScreenMovement(viewportText?: string): boolean {
     const now = Date.now();
-    const frame = normalizeScreenForMovement(this._screen.getViewportText());
+    const frame = normalizeScreenForMovement(viewportText ?? this._screen.getViewportText());
     if (frame === this._lastScreenFrame) return false;
 
     // Keep tracking frames through a self-inflicted repaint so the baseline
@@ -760,6 +973,51 @@ export function matchesWaitingPrompt(screenText: string): boolean {
     if (pattern.test(region)) return true;
   }
   return false;
+}
+
+/**
+ * Return a stable identity for the approval card currently on screen.
+ *
+ * Agent CLIs can replace one approval card with the next without ever showing
+ * a blank frame. Auto-approve uses this identity to distinguish that case
+ * from a stubborn redraw of the same card. The latter must keep its retry
+ * backoff; the former gets a fresh fast-press budget.
+ *
+ * The identity is deliberately derived only from the bottom status region and
+ * normalizes the selection cursor. Moving the highlight between choices or
+ * repainting whitespace therefore does not make one card look new, while the
+ * command / explanation immediately above the choices still does.
+ */
+export function waitingPromptFingerprint(screenText: string): string | null {
+  const region = statusRegion(screenText);
+  if (!WAITING_INPUT_PATTERNS.some((pattern) => pattern.test(region))) return null;
+
+  const lines = region.split('\n');
+  const numberedChoice = /^[^\S\n]*(?:[›❯][^\S\n]{0,4})?\d+\.[^\S\n]+/;
+  const firstChoice = lines.findIndex((line) => numberedChoice.test(line));
+
+  // Keep enough context above the options to include the tool name, command,
+  // and explanation. Excluding older transcript rows makes the identity
+  // insensitive to unrelated background-agent progress elsewhere on screen.
+  let start: number;
+  if (firstChoice >= 0) {
+    start = Math.max(0, firstChoice - 10);
+  } else {
+    const signal = lines.findIndex((line) => WAITING_INPUT_PATTERNS.some((pattern) => pattern.test(line)));
+    start = Math.max(0, (signal >= 0 ? signal : lines.length - 1) - 8);
+  }
+
+  const normalized = lines
+    .slice(start)
+    .map((line) => line
+      // The highlight can move without the prompt itself changing.
+      .replace(/^[^\S\n]*[›❯][^\S\n]*/, '')
+      .trim()
+      .replace(/\s+/g, ' '))
+    .filter(Boolean)
+    .join('\n');
+
+  return normalized || null;
 }
 
 export function matchesBusyScreen(screenText: string): boolean {

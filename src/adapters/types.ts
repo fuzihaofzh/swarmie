@@ -6,6 +6,8 @@ export type NormalizedEventType =
   | 'tool:use'
   | 'tool:result'
   | 'tool:detect'
+  | 'agent:state'
+  | 'automation:action'
   | 'cwd:change'
   | 'user:input'
   | 'error'
@@ -13,7 +15,7 @@ export type NormalizedEventType =
   | 'status:change'
   | 'metadata';
 
-export type SessionStatus = 'starting' | 'running' | 'thinking' | 'tool_executing' | 'waiting_input' | 'idle' | 'completed' | 'error';
+export type SessionStatus = 'starting' | 'running' | 'thinking' | 'tool_executing' | 'waiting_input' | 'idle' | 'done' | 'completed' | 'error';
 
 export interface NormalizedEvent {
   type: NormalizedEventType;
@@ -30,6 +32,8 @@ export type EventData =
   | ToolUseData
   | ToolResultData
   | ToolDetectData
+  | AgentStateData
+  | AutomationActionData
   | CwdChangeData
   | UserInputData
   | ErrorData
@@ -93,11 +97,34 @@ export interface RawOutputData {
 export interface StatusChangeData {
   from: SessionStatus;
   to: SessionStatus;
+  /** Monotonic sequence for user-visible lifecycle transitions. */
+  stateChangeSeq?: number;
+  seen?: boolean;
 }
 
 export interface ToolDetectData {
   tool: string;
   displayName: string;
+}
+
+export interface AgentStateData {
+  agent: string;
+  state: 'unknown' | 'idle' | 'working' | 'blocked';
+  source: 'screen' | 'structured' | 'hook' | 'process' | 'activity';
+  ruleId?: string;
+  manifestVersion?: number;
+  visibleIdle?: boolean;
+  visibleWorking?: boolean;
+  visibleBlocker?: boolean;
+  automationSafe?: boolean;
+}
+
+export interface AutomationActionData {
+  action: 'press_enter';
+  policy: 'verified_prompt';
+  ruleId: string;
+  key: 'cr' | 'lf';
+  attempt: number;
 }
 
 export interface CwdChangeData {

@@ -23,6 +23,7 @@ export class ServerConnection {
   private reconnectAttempts = 0;
   private pendingSessionSettings = new Map<string, SessionSettingsPatch>();
   private pendingAutoCompactMinutes: number | null = null;
+  private pendingSeenSessions = new Set<string>();
   constructor(serverUrl: string, token?: string) {
     this.serverUrl = serverUrl;
     this.token = token;
@@ -76,6 +77,10 @@ export class ServerConnection {
       this.reconnectAttempts = 0;
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'connected');
       ws.send(JSON.stringify({ type: 'subscribe:all' }));
+      // Reconcile once over REST as well as the websocket replay. This covers
+      // agents created just before a reconnect, where an incremental
+      // session:added event may have been missed by the browser.
+      void this.refreshSessionList();
       this.flushPendingSettings();
       // Heartbeat to keep connection alive in background tabs
       clearInterval(this.pingTimer);
@@ -129,6 +134,20 @@ export class ServerConnection {
       useServerStore.getState().setConnectionStatus(this.serverUrl, 'error');
       ws.close();
     };
+  }
+
+  private async refreshSessionList(): Promise<void> {
+    try {
+      const res = await fetch(`${this.apiBase()}/api/sessions`, { headers: this.authHeaders() });
+      if (!res.ok) return;
+      const sessions = (await res.json() as SessionSummary[]).map((session) => ({
+        ...session,
+        serverUrl: this.serverUrl,
+      }));
+      useSessionStore.getState().setServerSessions(this.serverUrl, sessions);
+    } catch {
+      // The websocket remains the live source; REST reconciliation is best effort.
+    }
   }
 
   /**
@@ -209,6 +228,15 @@ export class ServerConnection {
     }
   }
 
+  sendSessionSeen(sessionId: string): void {
+    if (this.send({ type: 'mark:seen', sessionId })) {
+      this.pendingSeenSessions.delete(sessionId);
+      return;
+    }
+    this.pendingSeenSessions.add(sessionId);
+    this.reconnectIfNeeded();
+  }
+
   private queueSessionSettings(sessionId: string, patch: SessionSettingsPatch): void {
     this.pendingSessionSettings.set(sessionId, {
       ...(this.pendingSessionSettings.get(sessionId) ?? {}),
@@ -233,6 +261,12 @@ export class ServerConnection {
         this.queueSessionSettings(sessionId, patch);
         return;
       }
+    }
+
+    const pendingSeen = [...this.pendingSeenSessions];
+    for (const sessionId of pendingSeen) {
+      if (!this.send({ type: 'mark:seen', sessionId })) return;
+      this.pendingSeenSessions.delete(sessionId);
     }
   }
 

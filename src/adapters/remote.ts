@@ -90,6 +90,10 @@ export class RemoteAdapter extends BaseAdapter {
     this.onResize?.(cols, rows);
   }
 
+  protected shouldEmitDetectionEvents(): boolean {
+    return false;
+  }
+
   kill(signal?: string): void {
     this.onKill?.(signal);
   }

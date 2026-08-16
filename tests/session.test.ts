@@ -1,9 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
+import { networkInterfaces } from 'node:os';
 import { Session } from '../src/session/session.js';
 import { SessionManager } from '../src/session/manager.js';
 import { RemoteAdapter } from '../src/adapters/remote.js';
 import type { NormalizedEvent } from '../src/adapters/types.js';
-import { isAddressLikeHostname } from '../src/session/host.js';
+import {
+  getSystemDisplayHostname,
+  isAddressLikeHostname,
+  isLocalHostname,
+  normalizeHostnameIdentity,
+} from '../src/session/host.js';
 
 function createMockAdapter(sessionId: string, tool = 'claude') {
   return new RemoteAdapter(
@@ -23,6 +29,15 @@ describe('Session', () => {
     expect(isAddressLikeHostname('192.168.124.20')).toBe(true);
     expect(isAddressLikeHostname('192')).toBe(true);
     expect(isAddressLikeHostname('MacBook-M4-Pro')).toBe(false);
+  });
+
+  it('normalizes harmless local hostname spelling variants', () => {
+    expect(normalizeHostnameIdentity('MacBook-M4-Pro.local')).toBe('macbook-m4-pro');
+    expect(normalizeHostnameIdentity('MACBOOK-M4-PRO.')).toBe('macbook-m4-pro');
+    expect(isLocalHostname('localhost')).toBe(true);
+    expect(isLocalHostname(`${getSystemDisplayHostname()}.local`)).toBe(true);
+    const interfaceAddress = Object.values(networkInterfaces()).flat().find((entry) => entry?.address)?.address;
+    expect(interfaceAddress && isLocalHostname(interfaceAddress)).toBe(true);
   });
 
   it('wraps an adapter and exposes info', () => {
@@ -57,6 +72,99 @@ describe('Session', () => {
 
     expect(events.map((event) => event.type)).toEqual(['status:change', 'raw:output']);
     expect(session.getRecentEvents()).toHaveLength(2);
+  });
+
+  it('publishes an unread done state after a real work cycle until it is seen', () => {
+    const adapter = createMockAdapter('sess-done');
+    const session = new Session('sess-done', 'test', adapter);
+    session.start();
+
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: session.id,
+      timestamp: Date.now(),
+      data: { from: 'running', to: 'idle' },
+    });
+    expect(session.summary).toMatchObject({ status: 'idle', seen: true });
+    const readySeq = session.stateChangeSeq;
+
+    adapter.pushEvent({
+      type: 'user:input',
+      sessionId: session.id,
+      timestamp: Date.now(),
+      data: { text: '' },
+    });
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: session.id,
+      timestamp: Date.now() + 1,
+      data: { from: 'idle', to: 'running' },
+    });
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: session.id,
+      timestamp: Date.now() + 2,
+      data: { from: 'running', to: 'idle' },
+    });
+
+    expect(session.summary).toMatchObject({ status: 'done', seen: false });
+    expect(session.stateChangeSeq).toBeGreaterThan(readySeq);
+
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: session.id,
+      timestamp: Date.now() + 3,
+      data: { from: 'idle', to: 'idle' },
+    });
+    expect(session.summary).toMatchObject({ status: 'done', seen: false });
+
+    session.markSeen();
+    expect(session.summary).toMatchObject({ status: 'idle', seen: true });
+  });
+
+  it('does not report background startup work as a completed user task', () => {
+    const adapter = createMockAdapter('sess-background-startup');
+    const session = new Session('sess-background-startup', 'test', adapter);
+    session.start();
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: session.id,
+      timestamp: Date.now(),
+      data: { from: 'running', to: 'idle' },
+    });
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: session.id,
+      timestamp: Date.now() + 1,
+      data: { from: 'idle', to: 'running' },
+    });
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: session.id,
+      timestamp: Date.now() + 2,
+      data: { from: 'running', to: 'idle' },
+    });
+
+    expect(session.summary).toMatchObject({ status: 'idle', seen: true });
+  });
+
+  it('tracks seen state for a blocker without changing its lifecycle state', () => {
+    const adapter = createMockAdapter('sess-seen-blocker');
+    const session = new Session('sess-seen-blocker', 'test', adapter);
+    session.start();
+
+    adapter.pushEvent({
+      type: 'status:change',
+      sessionId: session.id,
+      timestamp: Date.now(),
+      data: { from: 'running', to: 'waiting_input' },
+    });
+    expect(session.summary).toMatchObject({ status: 'waiting_input', seen: false });
+    const blockedSeq = session.stateChangeSeq;
+
+    session.markSeen();
+    expect(session.summary).toMatchObject({ status: 'waiting_input', seen: true });
+    expect(session.stateChangeSeq).toBe(blockedSeq);
   });
 
   it('returns all retained raw events after an offset', () => {
@@ -254,7 +362,7 @@ describe('Session', () => {
     expect(session.info.metadata.durationMs).toBe(2000);
   });
 
-  it('auto-approves immediately when enabled during waiting_input', async () => {
+  it('does not trust waiting_input without a visible verified prompt', async () => {
     vi.useFakeTimers();
     try {
       const adapter = createMockAdapter('sess-4');
@@ -273,7 +381,8 @@ describe('Session', () => {
       // Initial dwell (750ms) + a tick to fire.
       await vi.advanceTimersByTimeAsync(1000);
 
-      expect(onWrite).toHaveBeenCalledWith('\r');
+      expect(onWrite).not.toHaveBeenCalled();
+      expect(session.getAutoApproveDebug().eligibility).toBe('unverified_prompt');
     } finally {
       vi.useRealTimers();
     }
@@ -294,7 +403,7 @@ describe('Session', () => {
         type: 'raw:output',
         sessionId: 'sess-livelock',
         timestamp: Date.now(),
-        data: { data: Buffer.from('Do you want to proceed?\r\n  1. Yes\r\n  2. No\r\n').toString('base64') },
+        data: { data: Buffer.from('Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No\r\nEsc to cancel · Tab to amend\r\n').toString('base64') },
       });
       // Local detection should have set waiting_input from screen scan.
       expect(adapter.status).toBe('waiting_input');
@@ -336,7 +445,7 @@ describe('Session', () => {
         type: 'raw:output',
         sessionId: 'sess-bound',
         timestamp: Date.now(),
-        data: { data: Buffer.from('Do you want to proceed?\r\n  1. Yes\r\n  2. No\r\n').toString('base64') },
+        data: { data: Buffer.from('Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No\r\nEsc to cancel · Tab to amend\r\n').toString('base64') },
       });
       expect(adapter.status).toBe('waiting_input');
 
@@ -364,6 +473,120 @@ describe('Session', () => {
     }
   });
 
+  it('alternates CR and LF when a remote approval prompt does not clear', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-enter-encoding');
+      const session = new Session('sess-enter-encoding', 'test', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-enter-encoding',
+        timestamp: Date.now(),
+        data: { data: Buffer.from('Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No\r\nEsc to cancel · Tab to amend\r\n').toString('base64') },
+      });
+      session.setSettings({ autoApprove: true });
+
+      await vi.advanceTimersByTimeAsync(35_000);
+
+      expect(onWrite.mock.calls.filter(c => c[0] === '\r' || c[0] === '\n').map(c => c[0]))
+        .toEqual(['\r', '\r', '\n']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives back-to-back sub-agent approval cards a fresh fast-press budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-approval-queue');
+      const session = new Session('sess-approval-queue', 'test', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+
+      const approval = (command: string) => [
+        '\x1b[2J\x1b[H',
+        'Bash command · from the general-purpose agent\r\n',
+        `  ${command}\r\n`,
+        '  Run the requested check\r\n\r\n',
+        'Contains shell syntax that cannot be statically analyzed\r\n\r\n',
+        'Do you want to proceed?\r\n',
+        '❯ 1. Yes\r\n',
+        '  2. No\r\n',
+        'Esc to cancel · Tab to amend\r\n',
+      ].join('');
+      const pushApproval = (command: string) => adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-approval-queue',
+        timestamp: Date.now(),
+        data: { data: Buffer.from(approval(command)).toString('base64') },
+      });
+
+      pushApproval('pdflatex paper.tex');
+      session.setSettings({ autoApprove: true });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(onWrite.mock.calls.filter(c => c[0] === '\r')).toHaveLength(1);
+
+      // The next agent's card replaces the first without an intervening blank
+      // frame. It should be approved after the normal dwell, not the 30s
+      // recovery cooldown assigned to repeated presses on one stuck card.
+      pushApproval('grep -n error paper.log');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(onWrite.mock.calls.filter(c => c[0] === '\r')).toHaveLength(2);
+
+      pushApproval('pdftotext paper.pdf -');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(onWrite.mock.calls.filter(c => c[0] === '\r')).toHaveLength(3);
+      const actions = session.getRecentEvents().filter((event) => event.type === 'automation:action');
+      expect(actions).toHaveLength(3);
+      expect(actions[0].data).toMatchObject({
+        policy: 'verified_prompt',
+        ruleId: 'selected-approval',
+        key: 'cr',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not reset auto-approve backoff for a redraw of the same card', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-approval-redraw');
+      const session = new Session('sess-approval-redraw', 'test', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+      const card = [
+        '\x1b[2J\x1b[H',
+        'Bash command\r\n',
+        '  npm test\r\n\r\n',
+        'Do you want to proceed?\r\n',
+        '❯ 1. Yes\r\n',
+        '  2. No\r\n',
+        'Esc to cancel · Tab to amend\r\n',
+      ].join('');
+      const redraw = () => adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-approval-redraw',
+        timestamp: Date.now(),
+        data: { data: Buffer.from(card).toString('base64') },
+      });
+
+      redraw();
+      session.setSettings({ autoApprove: true });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(onWrite.mock.calls.filter(c => c[0] === '\r')).toHaveLength(2);
+
+      redraw();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(onWrite.mock.calls.filter(c => c[0] === '\r')).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not press Enter when auto-approve is enabled but no prompt is on screen', async () => {
     vi.useFakeTimers();
     try {
@@ -382,6 +605,40 @@ describe('Session', () => {
       await vi.advanceTimersByTimeAsync(5000);
 
       expect(onWrite.mock.calls.find(c => c[0] === '\r')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not auto-approve when the current selection is No', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-selected-no');
+      const session = new Session('sess-selected-no', 'test', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-selected-no',
+        timestamp: Date.now(),
+        data: {
+          data: Buffer.from([
+            'Do you want to proceed?',
+            '  1. Yes',
+            '❯ 2. No',
+            'Esc to cancel · Tab to amend',
+          ].join('\r\n')).toString('base64'),
+        },
+      });
+      session.setSettings({ autoApprove: true });
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(onWrite).not.toHaveBeenCalled();
+      expect(session.getAutoApproveDebug()).toMatchObject({
+        eligibility: 'unverified_prompt',
+        ruleId: 'numbered-approval',
+      });
     } finally {
       vi.useRealTimers();
     }

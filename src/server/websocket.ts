@@ -35,6 +35,7 @@ const BROWSER_MESSAGE_TYPES = new Set([
   'set:repeat',
   'set:tags',
   'set:autoCompactMinutes',
+  'mark:seen',
 ]);
 
 /** Tracks a CLI client connected via WebSocket for remote session registration */
@@ -768,6 +769,11 @@ function handleMessage(
           lastInputAtNs.set(sessionId, PROF.nowNs());
         }
       }
+      break;
+    }
+    case 'mark:seen': {
+      const sessionId = msg.sessionId as string;
+      if (sessionId) manager.getSession(sessionId)?.markSeen();
       break;
     }
     case 'resize': {

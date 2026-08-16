@@ -45,6 +45,286 @@ body,
   overflow: hidden;
 }
 
+/* Persistent workspace/agent navigator. It is part of the app layout rather
+ * than an overlay, so selecting an agent never hides the navigator. */
+.workspace-agent-panel {
+  width: 286px;
+  min-width: 230px;
+  max-width: 34vw;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--header-bg, #161b22);
+  border-right: 1px solid var(--border, #30363d);
+  color: var(--fg, #c9d1d9);
+  flex: 0 0 auto;
+  position: relative;
+}
+
+.workspace-panel-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  z-index: 20;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.workspace-panel-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background .15s;
+}
+
+.workspace-panel-resizer:hover::after,
+.workspace-panel-resizer.active::after {
+  background: var(--accent, #58a6ff);
+}
+
+.workspace-panel-resizing,
+.workspace-panel-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.workspace-panel-header {
+  min-height: 64px;
+  padding: 13px 14px 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+
+.workspace-panel-kicker {
+  color: var(--text-secondary, #8b949e);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .16em;
+}
+
+.workspace-panel-header h2 {
+  margin-top: 3px;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.workspace-panel-new {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 18px;
+}
+
+.workspace-panel-new:hover {
+  color: var(--accent, #58a6ff);
+  border-color: var(--accent, #58a6ff);
+}
+
+.workspace-list {
+  padding: 8px 8px 10px;
+  border-bottom: 1px solid var(--border, #30363d);
+  overflow-y: auto;
+  max-height: 34%;
+}
+
+.workspace-item {
+  width: 100%;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.workspace-item:hover,
+.workspace-item.selected {
+  background: rgba(88, 166, 255, .13);
+  color: var(--fg, #c9d1d9);
+}
+
+.workspace-item.selected .workspace-item-mark {
+  color: var(--accent, #58a6ff);
+}
+
+.workspace-item-mark {
+  width: 16px;
+  color: var(--text-secondary, #8b949e);
+  text-align: center;
+}
+
+.workspace-item-count,
+.workspace-agents-heading > span:last-child {
+  margin-left: auto;
+  color: var(--text-secondary, #8b949e);
+  font-size: 10px;
+}
+
+.workspace-agents-heading {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px 7px;
+  color: var(--fg, #c9d1d9);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .03em;
+}
+
+.workspace-state-summary {
+  display: flex;
+  gap: 9px;
+  padding: 0 14px 8px;
+  color: var(--text-secondary, #8b949e);
+  font-size: 10px;
+}
+
+.workspace-state-summary .working { color: var(--success, #3fb950); }
+.workspace-state-summary .blocked { color: var(--warning, #d29922); }
+.workspace-state-summary .done { color: var(--accent, #58a6ff); }
+.workspace-state-summary .idle { color: var(--text-secondary, #8b949e); }
+
+.workspace-agent-search {
+  padding: 0 10px 9px;
+}
+
+.workspace-agent-search input {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 5px;
+  background: var(--bg, #0d1117);
+  color: var(--fg, #c9d1d9);
+  outline: none;
+  font: inherit;
+  font-size: 11px;
+}
+
+.workspace-agent-search input:focus {
+  border-color: var(--accent, #58a6ff);
+}
+
+.workspace-agent-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 12px;
+}
+
+.workspace-agent-row {
+  width: 100%;
+  min-height: 50px;
+  display: grid;
+  grid-template-columns: 7px 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 7px 7px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.workspace-agent-row:hover,
+.workspace-agent-row.selected {
+  background: rgba(128, 128, 128, .14);
+}
+
+.workspace-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-secondary, #8b949e);
+}
+
+.workspace-status-dot.working { background: var(--success, #3fb950); }
+.workspace-status-dot.waiting { background: var(--warning, #d29922); }
+.workspace-status-dot.blocked { background: var(--warning, #d29922); }
+.workspace-status-dot.done { background: var(--accent, #58a6ff); }
+.workspace-status-dot.error { background: var(--error, #f85149); }
+
+.workspace-agent-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: .9;
+}
+
+.workspace-agent-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.workspace-agent-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workspace-agent-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary, #8b949e);
+  font-size: 10px;
+}
+
+/* Agent-aware Dockview tabs: a tab remains recognizable at a glance even
+ * when it is not the active tab. */
+.dv-custom-tab-status-running,
+.dv-custom-tab-status-thinking,
+.dv-custom-tab-status-tool_executing {
+  box-shadow: inset 0 -2px 0 var(--success, #3fb950);
+}
+
+.dv-custom-tab-status-waiting_input,
+.dv-custom-tab-status-blocked {
+  box-shadow: inset 0 -2px 0 var(--warning, #d29922);
+  background: color-mix(in srgb, var(--warning, #d29922) 8%, transparent);
+}
+
+.dv-custom-tab-status-done,
+.dv-custom-tab-status-completed {
+  box-shadow: inset 0 -2px 0 var(--accent, #58a6ff);
+}
+
+.dv-custom-tab-status-error {
+  box-shadow: inset 0 -2px 0 var(--error, #f85149);
+}
+
+.workspace-agent-empty {
+  padding: 22px 10px;
+  color: var(--text-secondary, #8b949e);
+  font-size: 11px;
+  text-align: center;
+}
+
 .app-main.tile-layout-scroll {
   overflow: auto;
 }
@@ -258,6 +538,11 @@ body,
 
 .dv-agents-btn:hover {
   color: var(--accent, #58a6ff);
+}
+
+.dv-agents-btn.active {
+  color: var(--accent, #58a6ff);
+  background: rgba(88, 166, 255, .1);
 }
 
 .dv-agents-icon {
@@ -942,6 +1227,9 @@ body,
 }
 .status-dot.idle {
   background: #8b949e;
+}
+.status-dot.done {
+  background: #58a6ff;
 }
 .status-dot.completed {
   background: #22c55e;
@@ -2326,6 +2614,7 @@ body,
   border-color: rgba(248, 81, 73, 0.5);
 }
 
+.agent-status-chip.status-done,
 .agent-status-chip.status-completed {
   color: var(--accent, #58a6ff);
   border-color: rgba(88, 166, 255, 0.45);
@@ -2491,6 +2780,29 @@ body,
 .terminal-load-earlier-btn:disabled {
   cursor: progress;
   opacity: 0.6;
+}
+
+.terminal-new-output-btn {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-family: inherit;
+  background: var(--accent, #58a6ff);
+  color: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  opacity: 0.92;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: opacity 0.15s ease;
+}
+
+.terminal-new-output-btn:hover {
+  opacity: 1;
 }
 
 .terminal-history-overlay {

@@ -209,6 +209,12 @@ export function TerminalView({
    *  Used to gate the "Load earlier" button so it only appears as an
    *  affordance once the user has actually scrolled all the way up. */
   const [atTop, setAtTop] = useState(false);
+  /** True while the user is scrolled up reading scrollback, so live output is
+   *  parked (not written) instead of scrolling the view out from under them.
+   *  Drives the "new output ↓" pill. `followingRef` is the imperative twin read
+   *  by the writer/flush paths where React state would race the render cycle. */
+  const [pausedOutput, setPausedOutput] = useState(false);
+  const followingRef = useRef(true);
   const historyLoadingRef = useRef(false);
   const historyLoadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyLoadAttemptsRef = useRef(0);
@@ -566,6 +572,18 @@ export function TerminalView({
       hasTouchStart: 'ontouchstart' in window,
       maxTouchPoints: navigator.maxTouchPoints,
     };
+  }, []);
+
+  // Snap back to the live edge and resume writing parked output. Called by the
+  // "new output ↓" pill and by the scroll handler when the user reaches bottom.
+  const jumpToLiveEdge = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    followingRef.current = true;
+    setPausedOutput(false);
+    try { term.scrollToBottom(); } catch { /* ignore */ }
+    // Drain whatever accumulated while paused; the flush snaps to bottom itself.
+    scheduleFlushRef.current?.();
   }, []);
 
   // Cleanup on unmount
@@ -1217,7 +1235,24 @@ export function TerminalView({
     const isAtScrollbackTop = () =>
       term.buffer.active.viewportY === 0 && term.buffer.active.baseY > 0;
 
+    // Follow the live edge only while the viewport is at the bottom. Leaving the
+    // bottom parks output (writer/flush read followingRef); returning to it
+    // resumes and drains the parked bytes. This is what stops new output from
+    // yanking a scrolled-up reader around.
+    const updateFollowing = () => {
+      const b = term.buffer.active;
+      const atBottom = b.viewportY >= b.baseY;
+      if (atBottom && !followingRef.current) {
+        followingRef.current = true;
+        setPausedOutput(false);
+        scheduleFlushRef.current?.();
+      } else if (!atBottom && followingRef.current) {
+        followingRef.current = false;
+      }
+    };
+
     const onScroll = () => {
+      updateFollowing();
       const isTop = isAtScrollbackTop();
       setAtTop(isTop);
       if (!isTop) return;
@@ -1235,7 +1270,10 @@ export function TerminalView({
     // term.onScroll fires on output-driven and programmatic scroll where the
     // DOM 'scroll' event may not — keep the button's atTop state accurate, but
     // don't auto-load here (no user gesture drove it).
-    const scrollDisposable = term.onScroll(() => setAtTop(isAtScrollbackTop()));
+    const scrollDisposable = term.onScroll(() => {
+      updateFollowing();
+      setAtTop(isAtScrollbackTop());
+    });
 
     return () => {
       root.removeEventListener('wheel', onWheel);
@@ -1371,6 +1409,15 @@ export function TerminalView({
         if (!isActiveRef.current) return;
         if (writeInFlight) return;
         if (pendingChunks.length === 0) return;
+        // User is reading scrollback: hold live output at the live edge instead
+        // of writing it (which would scroll their view). Bytes stay parked in
+        // pendingChunks until jumpToLiveEdge() resumes. Surface the pill so they
+        // know output is waiting. (A scroll-up can race an already-scheduled
+        // flush, so this guard mirrors the one in writer().)
+        if (!followingRef.current) {
+          setPausedOutput(true);
+          return;
+        }
 
         // Count how many leading chunks fit this frame's byte budget, then
         // remove them in a single splice. Repeated shift() on a queue that has
@@ -1501,7 +1548,16 @@ export function TerminalView({
         }
         pendingChunks.unshift('\x1b[0m');
       }
-      scheduleFlush();
+      // Only push to the terminal while following the live edge. If the user
+      // has scrolled up to read history, park the bytes (they stay in
+      // pendingChunks) and flip the pill on — jumpToLiveEdge() drains them when
+      // the user returns to the bottom. Prevents new output from scrolling the
+      // view out from under a reader.
+      if (followingRef.current) {
+        scheduleFlush();
+      } else {
+        setPausedOutput(true);
+      }
     };
     registerTerminalWriter(sessionId, writer);
 
@@ -1705,6 +1761,16 @@ export function TerminalView({
           title="Load earlier history"
         >
           {historyLoading ? 'Loading…' : '↑ Load earlier'}
+        </button>
+      )}
+      {pausedOutput && (
+        <button
+          type="button"
+          className="terminal-new-output-btn"
+          onClick={jumpToLiveEdge}
+          title="Jump to the latest output"
+        >
+          ↓ New output
         </button>
       )}
       {historyLoading && (
