@@ -256,8 +256,8 @@ export function App() {
     [archivedSessionIds, sessions, tagFilter],
   );
   const tileRowCount = Math.ceil(tiledSessions.length / Math.max(1, tileColumns));
-  const tileContainerHeight = tileLayoutEnabled && tileRowCount > 0
-    ? Math.max(tileHeight, tileRowCount * tileHeight)
+  const tileContainerHeight = tileLayoutEnabled
+    ? Math.max(tileHeight, Math.max(1, tileRowCount) * tileHeight)
     : undefined;
   const tiledSessionKey = useMemo(
     () => tiledSessions.map((session) => session.id).join('|'),
@@ -277,17 +277,32 @@ export function App() {
       useSessionStore.getState().archivedSessionIds,
       useUIStore.getState().tagFilter,
     ).map((session) => session.id);
-    const layout = buildTileLayout(api, panelIds, useUIStore.getState().tileColumns, useUIStore.getState().tileHeight);
-    if (!layout) return false;
-    const activeSessionId = useSessionStore.getState().activeSessionId;
     const wanted = new Set(panelIds);
+    // The workspace/session store can hydrate before Dockview's sync effect
+    // has created its panels. Ensure the filtered sessions exist before
+    // taking the layout snapshot; otherwise the first tile pass sees an
+    // empty `current.panels` object and leaves a blank shell permanently.
+    for (const sessionId of panelIds) {
+      if (!api.getPanel(sessionId)) {
+        api.addPanel({
+          id: sessionId,
+          component: 'terminal',
+          tabComponent: 'sessionTab',
+          params: { sessionId },
+          renderer: 'always',
+        });
+      }
+    }
     // Dockview's reuseExistingPanels option intentionally preserves panels
     // that are absent from the incoming JSON. That is useful for tab restore,
     // but wrong for a filtered tile view: stale panes would remain visible
     // after switching workspaces.
     for (const panel of api.panels) {
-      if (!wanted.has(panel.id)) panel.api.close();
+      if (!wanted.has(panel.id)) api.removePanel(panel);
     }
+    const layout = buildTileLayout(api, panelIds, useUIStore.getState().tileColumns, useUIStore.getState().tileHeight);
+    if (!layout) return false;
+    const activeSessionId = useSessionStore.getState().activeSessionId;
     api.fromJSON(layout, { reuseExistingPanels: true });
     if (activeSessionId && panelIds.includes(activeSessionId)) {
       api.getPanel(activeSessionId)?.api.setActive();
@@ -301,13 +316,13 @@ export function App() {
       useSessionStore.getState().sessions,
       useSessionStore.getState().archivedSessionIds,
     ).map((session) => session.id);
+    const wanted = new Set(panelIds);
+    for (const panel of api.panels) {
+      if (!wanted.has(panel.id)) api.removePanel(panel);
+    }
     const layout = buildTabbedLayout(api, panelIds);
     if (!layout) return false;
     const activeSessionId = useSessionStore.getState().activeSessionId;
-    const wanted = new Set(panelIds);
-    for (const panel of api.panels) {
-      if (!wanted.has(panel.id)) panel.api.close();
-    }
     api.fromJSON(layout, { reuseExistingPanels: true });
     if (activeSessionId && panelIds.includes(activeSessionId)) {
       api.getPanel(activeSessionId)?.api.setActive();
@@ -445,7 +460,11 @@ export function App() {
           {tileLayoutEnabled && <TileLayoutTopBar />}
           <div
             className={`dockview-shell ${tileLayoutEnabled ? 'tile-layout-active' : ''}`}
-            style={tileContainerHeight ? { height: `${tileContainerHeight}px` } : undefined}
+            style={tileContainerHeight ? {
+              height: `${tileContainerHeight}px`,
+              minHeight: `${tileContainerHeight}px`,
+              maxHeight: `${tileContainerHeight}px`,
+            } : undefined}
           >
             <DockviewReact
               className={`dockview-container ${currentTheme.isDark ? 'dockview-theme-dark' : 'dockview-theme-light'}`}

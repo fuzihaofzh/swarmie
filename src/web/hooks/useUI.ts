@@ -53,7 +53,12 @@ const savedKeepAltScreenInScrollback =
 const savedAutoCompactMinutes = parseInt(localStorage.getItem('swarmie-auto-compact-minutes') || '60', 10);
 const savedTileLayoutEnabled = localStorage.getItem('swarmie-tile-layout-enabled') === 'true';
 const savedTileColumns = parseInt(localStorage.getItem('swarmie-tile-columns') || '2', 10);
-const savedTileHeight = parseInt(localStorage.getItem('swarmie-tile-height') || '360', 10);
+const savedTileHeightRaw = localStorage.getItem('swarmie-tile-height');
+const parsedTileHeight = parseInt(savedTileHeightRaw || '300', 10);
+// 360px was the old default and makes 3-column layouts unnecessarily tall;
+// 300px keeps the panes compact while leaving enough room for agent output.
+// Migrate the previous compact default while preserving other custom values.
+const savedTileHeight = parsedTileHeight === 360 || parsedTileHeight === 260 ? 300 : parsedTileHeight;
 const savedWorkspacePanelOpen = localStorage.getItem('swarmie-workspace-panel') !== 'false';
 const savedWorkspacePanelWidth = parseInt(localStorage.getItem('swarmie-workspace-panel-width') || '286', 10);
 
@@ -83,7 +88,7 @@ function clampTileColumns(columns: number): number {
 
 function clampTileHeight(height: number): number {
   const value = Number(height);
-  if (!Number.isFinite(value)) return 360;
+  if (!Number.isFinite(value)) return 300;
   return Math.min(1200, Math.max(180, Math.floor(value)));
 }
 
@@ -108,7 +113,7 @@ export const useUIStore = create<UIState>((set) => ({
     : 60,
   tileLayoutEnabled: savedTileLayoutEnabled,
   tileColumns: Number.isFinite(savedTileColumns) ? clampTileColumns(savedTileColumns) : 2,
-  tileHeight: Number.isFinite(savedTileHeight) ? clampTileHeight(savedTileHeight) : 360,
+  tileHeight: Number.isFinite(savedTileHeight) ? clampTileHeight(savedTileHeight) : 300,
   tagFilter: loadTagFilter(),
   workspacePanelOpen: savedWorkspacePanelOpen,
   workspacePanelWidth: Number.isFinite(savedWorkspacePanelWidth)

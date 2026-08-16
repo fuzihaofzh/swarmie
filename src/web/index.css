@@ -411,6 +411,7 @@ body,
 
 .app-main.tile-layout-scroll {
   overflow: auto;
+  align-items: flex-start;
 }
 
 .tile-layout-topbar {
@@ -453,6 +454,41 @@ body,
 
 .dockview-shell.tile-layout-active {
   flex: 0 0 auto;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.dockview-shell.tile-layout-active .dockview-container {
+  flex: 0 0 auto;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+/* Dockview positions its grid and groups absolutely. Constrain every layer
+   to the explicit tile shell height so a one-row layout cannot expand to the
+   height of the application viewport. */
+.tile-layout-active .dv-grid-view,
+.tile-layout-active .dv-groupview,
+.tile-layout-active .dv-root-wrapper,
+.tile-layout-active .dv-view-container,
+.tile-layout-active .dv-content-container,
+.tile-layout-active .dv-pane,
+.tile-layout-active .dv-pane-body,
+.tile-layout-active .dv-split-view-container {
+  height: 100% !important;
+  max-height: 100% !important;
+}
+
+.tile-layout-active .dv-groupview,
+.tile-layout-active .dv-pane {
+  border: 1px solid var(--border, #30363d);
+}
+
+.tile-layout-active .view-container .view {
+  border-right: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border, #30363d);
 }
 
 /* Overlay */

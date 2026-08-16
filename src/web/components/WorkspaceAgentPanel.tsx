@@ -27,15 +27,15 @@ function workspaceName(tag: string): string {
 
 function workspaceKey(session: SessionSummary): string | null {
   const cwd = (session.workspaceCwd ?? session.cwd)?.trim();
-  return cwd && cwd !== '~' ? `cwd:${cwd}` : (session.tags?.[0] ?? null);
+  return cwd && cwd !== '~' ? `workspace:cwd:${cwd}` : (session.tags?.[0] ? `workspace:tag:${session.tags[0]}` : null);
 }
 
 function workspaceLabel(key: string): string {
-  if (key.startsWith('cwd:')) {
-    const path = key.slice(4).replace(/\/$/, '');
+  if (key.startsWith('workspace:cwd:')) {
+    const path = key.slice('workspace:cwd:'.length).replace(/\/$/, '');
     return path.split('/').pop() || path || 'Workspace';
   }
-  return workspaceName(key);
+  return workspaceName(key.replace('workspace:tag:', ''));
 }
 
 function agentMatches(session: SessionSummary, query: string): boolean {
@@ -102,10 +102,20 @@ export function WorkspaceAgentPanel() {
     }
     return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [activeSessions]);
-  const selectedWorkspace = tagFilter.length === 1 ? tagFilter[0] : null;
+  const rawWorkspace = tagFilter.length === 1 ? tagFilter[0] : null;
+  const selectedWorkspace = rawWorkspace && workspaces.some(([key]) => key === rawWorkspace)
+    ? rawWorkspace
+    : rawWorkspace && workspaces.some(([key]) => key === `workspace:tag:${rawWorkspace}`)
+      ? `workspace:tag:${rawWorkspace}`
+      : null;
+  useEffect(() => {
+    if (rawWorkspace && selectedWorkspace && rawWorkspace !== selectedWorkspace) {
+      setTagFilter([selectedWorkspace]);
+    }
+  }, [rawWorkspace, selectedWorkspace, setTagFilter]);
   const visibleAgents = useMemo(() => {
     const workspaceAgents = selectedWorkspace
-      ? activeSessions.filter((session) => workspaceKey(session) === selectedWorkspace || session.tags?.includes(selectedWorkspace))
+      ? activeSessions.filter((session) => workspaceKey(session) === selectedWorkspace)
       : activeSessions;
     return workspaceAgents
       .filter((session) => agentMatches(session, query))
