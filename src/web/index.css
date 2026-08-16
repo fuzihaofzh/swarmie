@@ -181,6 +181,21 @@ body,
   font-size: 10px;
 }
 
+.workspace-item-states {
+  display: inline-flex;
+  gap: 4px;
+  min-width: 52px;
+  justify-content: flex-end;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: -.04em;
+}
+
+.workspace-item-states .working { color: var(--success, #3fb950); }
+.workspace-item-states .blocked { color: var(--warning, #d29922); }
+.workspace-item-states .done { color: var(--accent, #58a6ff); }
+.workspace-item-states .idle { color: var(--text-secondary, #8b949e); }
+
 .workspace-layout-controls {
   display: flex;
   align-items: center;

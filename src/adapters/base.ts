@@ -620,19 +620,24 @@ export abstract class BaseAdapter extends EventEmitter {
       }
     }
 
-    // OSC 0/2: fallback — only extract cwd path, not hostname
-    // (hostname in title can be unreliable, e.g. conda sets it to arch name)
+    // OSC 0/2: fallback for shells that do not emit OSC 7 after SSH. A title
+    // such as "user@remote:~" is the common signal in that case. Only accept
+    // the host when the title has the strict host:path shape, and normalize
+    // known local aliases so ordinary local titles do not look remote.
     OSC_TITLE_RE.lastIndex = 0;
     while ((match = OSC_TITLE_RE.exec(chunk)) !== null) {
       const title = match[1].trim();
       // Match "user@host:path" or "host:path"
       const titleMatch = title.match(/^(?:[^@]+@)?([^:]+):(.+)$/);
       if (!titleMatch) continue;
+      const reportedHost = titleMatch[1].trim();
       const path = titleMatch[2].trim();
       // Only use if path looks absolute
       if (!path.startsWith('/') && !path.startsWith('~')) continue;
-      if (path !== this.cwd) {
+      const host = isLocalHostname(reportedHost) ? this._initialHostname : reportedHost;
+      if (path !== this.cwd || host !== this.hostname) {
         if (path !== '~') this.cwd = path;
+        this.hostname = host;
         this._oscCwdActive = true;
         this.emitEvent('cwd:change', { cwd: this.cwd, hostname: this.hostname } satisfies CwdChangeData);
       }
@@ -809,6 +814,17 @@ export abstract class BaseAdapter extends EventEmitter {
     const meaningfulInput = stripPassiveTerminalInput(data);
     if (!meaningfulInput) return;
     if (this._status === 'completed' || this._status === 'error') return;
+
+    // Some remote shells emit neither OSC 7 nor a title update. Recognize a
+    // submitted ssh command as an immediate host transition; a later OSC 7
+    // or prompt update will replace the cwd with the authoritative remote cwd.
+    if (/\r|\n/.test(data)) {
+      const sshTarget = meaningfulInput.match(/(?:^|\s)ssh\s+(?:-[^\s]+\s+)*(?:[^@\s]+@)?([A-Za-z0-9][A-Za-z0-9_.-]*)/);
+      if (sshTarget?.[1] && !isLocalHostname(sshTarget[1])) {
+        this.hostname = sshTarget[1];
+        this.emitEvent('cwd:change', { cwd: this.cwd, hostname: this.hostname } satisfies CwdChangeData);
+      }
+    }
 
     if (!isSubmittedInput(meaningfulInput)) {
       this.markUserInputActive();

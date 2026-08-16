@@ -649,9 +649,21 @@ function DrawerSettings() {
 function AutomationSettings() {
   const autoCompactMinutes = useUIStore((s) => s.autoCompactMinutes);
   const setAutoCompactMinutes = useUIStore((s) => s.setAutoCompactMinutes);
+  const defaultAgentTool = useUIStore((s) => s.defaultAgentTool);
+  const setDefaultAgentTool = useUIStore((s) => s.setDefaultAgentTool);
 
   return (
     <div className="settings-section">
+      <div className="setting-group">
+        <label>New Agent Tool</label>
+        <select value={defaultAgentTool} onChange={(e) => setDefaultAgentTool(e.target.value)}>
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+          <option value="gemini">Gemini</option>
+          <option value="bash">Shell (bash)</option>
+        </select>
+        <p className="setting-hint">The Workspace + button uses this tool for new agents.</p>
+      </div>
       <div className="setting-group">
         <label>Auto Compact Time</label>
         <div className="number-row">

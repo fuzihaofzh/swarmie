@@ -5,12 +5,14 @@
 // how filtered tabs and arrow-switching drifted out of sync before.
 
 export function sessionMatchesTagFilter(
-  session: { tags?: string[] | null; cwd?: string | null; workspaceCwd?: string | null },
+  session: { tags?: string[] | null; cwd?: string | null; workspaceCwd?: string | null; hostname?: string | null },
   tagFilter: string[],
 ): boolean {
   if (tagFilter.length === 0) return true;
   return tagFilter.some((filter) =>
-    filter.startsWith('workspace:cwd:')
+    filter.startsWith('workspace:hostcwd:')
+      ? `${session.hostname ?? ''}:${session.cwd ?? session.workspaceCwd ?? ''}` === filter.slice('workspace:hostcwd:'.length)
+      : filter.startsWith('workspace:cwd:')
       ? (session.workspaceCwd ?? session.cwd) === filter.slice('workspace:cwd:'.length)
       : filter.startsWith('workspace:tag:')
         ? (session.tags ?? []).includes(filter.slice('workspace:tag:'.length))

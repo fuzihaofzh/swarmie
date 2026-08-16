@@ -26,8 +26,20 @@ function workspaceName(tag: string): string {
 }
 
 function workspaceKey(session: SessionSummary): string | null {
-  const cwd = (session.workspaceCwd ?? session.cwd)?.trim();
-  return cwd && cwd !== '~' ? `workspace:cwd:${cwd}` : (session.tags?.[0] ? `workspace:tag:${session.tags[0]}` : null);
+  // Hostname changes arrive as cwd:change events. Compare against the
+  // session's initial host directly so a remote workspace appears even when
+  // the browser has not yet learned the local host aliases.
+  const remoteHost = session.hostname && session.initialHostname
+    && session.hostname.toLowerCase() !== session.initialHostname.toLowerCase()
+    ? session.hostname
+    : sessionHostLabel(session, [session]);
+  // A remote shell's cwd is the actual workspace location. For local
+  // sessions keep the original workspace cwd stable while agents cd around.
+  const cwd = (remoteHost ? session.cwd : (session.workspaceCwd ?? session.cwd))?.trim();
+  if (!cwd || cwd === '~') return session.tags?.[0] ? `workspace:tag:${session.tags[0]}` : null;
+  return remoteHost
+    ? `workspace:hostcwd:${remoteHost}:${cwd}`
+    : `workspace:cwd:${cwd}`;
 }
 
 function workspaceLabel(key: string): string {
@@ -35,7 +47,25 @@ function workspaceLabel(key: string): string {
     const path = key.slice('workspace:cwd:'.length).replace(/\/$/, '');
     return path.split('/').pop() || path || 'Workspace';
   }
+  if (key.startsWith('workspace:hostcwd:')) {
+    const value = key.slice('workspace:hostcwd:'.length);
+    const separator = value.indexOf(':');
+    const host = separator >= 0 ? value.slice(0, separator) : value;
+    const path = separator >= 0 ? value.slice(separator + 1).replace(/\/$/, '') : '';
+    return `${host} · ${path.split('/').pop() || path || 'Workspace'}`;
+  }
   return workspaceName(key.replace('workspace:tag:', ''));
+}
+
+function workspacePath(key: string | null): string | undefined {
+  if (!key) return undefined;
+  if (key.startsWith('workspace:cwd:')) return key.slice('workspace:cwd:'.length);
+  if (key.startsWith('workspace:hostcwd:')) {
+    const value = key.slice('workspace:hostcwd:'.length);
+    const separator = value.indexOf(':');
+    return separator >= 0 ? value.slice(separator + 1) : undefined;
+  }
+  return undefined;
 }
 
 function agentMatches(session: SessionSummary, query: string): boolean {
@@ -53,6 +83,17 @@ function elapsedLabel(startTime: number, now: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+type WorkspaceCounts = { total: number; working: number; blocked: number; done: number; idle: number };
+
+function countStates(sessions: SessionSummary[]): WorkspaceCounts {
+  const counts: WorkspaceCounts = { total: sessions.length, working: 0, blocked: 0, done: 0, idle: 0 };
+  for (const session of sessions) {
+    const state = statusClass(session.status);
+    counts[state === 'error' ? 'blocked' : state]++;
+  }
+  return counts;
+}
+
 export function WorkspaceAgentPanel() {
   const sessions = useSessionStore((state) => state.sessions);
   const archivedIds = useSessionStore((state) => state.archivedSessionIds);
@@ -61,6 +102,7 @@ export function WorkspaceAgentPanel() {
   const setShowNewSession = useUIStore((state) => state.setShowNewSession);
   const tagFilter = useUIStore((state) => state.tagFilter);
   const setTagFilter = useUIStore((state) => state.setTagFilter);
+  const defaultAgentTool = useUIStore((state) => state.defaultAgentTool);
   const workspacePanelWidth = useUIStore((state) => state.workspacePanelWidth);
   const setWorkspacePanelWidth = useUIStore((state) => state.setWorkspacePanelWidth);
   const { createSession, getConnection } = useWsContext();
@@ -95,12 +137,14 @@ export function WorkspaceAgentPanel() {
     [archivedIds, sessions],
   );
   const workspaces = useMemo(() => {
-    const counts = new Map<string, number>();
+    const groups = new Map<string, SessionSummary[]>();
     for (const session of activeSessions) {
       const key = workspaceKey(session);
-      if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (key) groups.set(key, [...(groups.get(key) ?? []), session]);
     }
-    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    return [...groups.entries()]
+      .map(([key, grouped]) => [key, countStates(grouped)] as const)
+      .sort((a, b) => a[0].localeCompare(b[0]));
   }, [activeSessions]);
   const rawWorkspace = tagFilter.length === 1 ? tagFilter[0] : null;
   const selectedWorkspace = rawWorkspace && workspaces.some(([key]) => key === rawWorkspace)
@@ -108,6 +152,7 @@ export function WorkspaceAgentPanel() {
     : rawWorkspace && workspaces.some(([key]) => key === `workspace:tag:${rawWorkspace}`)
       ? `workspace:tag:${rawWorkspace}`
       : null;
+  const allWorkspaceSummary = useMemo(() => countStates(activeSessions), [activeSessions]);
   useEffect(() => {
     if (rawWorkspace && selectedWorkspace && rawWorkspace !== selectedWorkspace) {
       setTagFilter([selectedWorkspace]);
@@ -175,11 +220,26 @@ export function WorkspaceAgentPanel() {
   };
 
   const createAgent = async () => {
-    const result = await createSession({ tool: 'claude' });
+    const workspaceSession = selectedWorkspace
+      ? activeSessions.find((session) => workspaceKey(session) === selectedWorkspace)
+      : undefined;
+    const cwd = workspacePath(selectedWorkspace) ?? workspaceSession?.cwd ?? workspaceSession?.workspaceCwd;
+    const result = await createSession({
+      tool: defaultAgentTool,
+      ...(cwd && cwd !== '~' ? { cwd } : {}),
+    });
     if (result) setActiveSession(result.id);
   };
 
   const filterOptions = ['all', 'working', 'blocked', 'done', 'idle'];
+  const stateCounts = (counts: WorkspaceCounts) => (
+    <span className="workspace-item-states" aria-label={`running ${counts.working}, blocked ${counts.blocked}, done ${counts.done}, idle ${counts.idle}`}>
+      {counts.working > 0 && <span className="working">{counts.working}</span>}
+      {counts.blocked > 0 && <span className="blocked">{counts.blocked}</span>}
+      {counts.done > 0 && <span className="done">{counts.done}</span>}
+      {counts.idle > 0 && <span className="idle">{counts.idle}</span>}
+    </span>
+  );
 
   return (
     <aside className="workspace-agent-panel" style={{ width: `${workspacePanelWidth}px` }} aria-label="Workspace and agents">
@@ -188,16 +248,17 @@ export function WorkspaceAgentPanel() {
           <div className="workspace-panel-kicker">WORKSPACE</div>
           <h2>Agents</h2>
         </div>
-        <button className="workspace-panel-new" onClick={() => void createAgent()} title="New Claude agent">+</button>
+        <button className="workspace-panel-new" onClick={() => void createAgent()} title={`New ${defaultAgentTool} agent`}>+</button>
       </div>
 
       <div className="workspace-list" role="listbox" aria-label="Workspaces">
         <button className={`workspace-item ${selectedWorkspace === null ? 'selected' : ''}`} onClick={() => selectWorkspace(null)}>
           <span className="workspace-item-mark">⌂</span>
           <span>All workspaces</span>
-          <span className="workspace-item-count">{activeSessions.length}</span>
+          <span className="workspace-item-count">{allWorkspaceSummary.total}</span>
+          {stateCounts(allWorkspaceSummary)}
         </button>
-        {workspaces.map(([workspace, count]) => (
+        {workspaces.map(([workspace, counts]) => (
           <button
             className={`workspace-item ${selectedWorkspace === workspace ? 'selected' : ''}`}
             key={workspace}
@@ -205,7 +266,8 @@ export function WorkspaceAgentPanel() {
           >
             <span className="workspace-item-mark">◈</span>
             <span>{workspaceLabel(workspace)}</span>
-            <span className="workspace-item-count">{count}</span>
+            <span className="workspace-item-count">{counts.total}</span>
+            {stateCounts(counts)}
           </button>
         ))}
       </div>

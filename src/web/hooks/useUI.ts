@@ -11,6 +11,7 @@ interface UIState {
   settingsOpen: boolean;
   agentOverlayMode: 'overview' | 'switcher' | null;
   autoCompactMinutes: number;
+  defaultAgentTool: string;
   tileLayoutEnabled: boolean;
   tileColumns: number;
   tileHeight: number;
@@ -30,6 +31,7 @@ interface UIState {
   setKeepAltScreenInScrollback: (enabled: boolean) => void;
   setShowNewSession: (show: boolean) => void;
   setAutoCompactMinutes: (minutes: number) => void;
+  setDefaultAgentTool: (tool: string) => void;
   _setAutoCompactMinutesLocal: (minutes: number) => void;
   setTileLayoutEnabled: (enabled: boolean) => void;
   setTileColumns: (columns: number) => void;
@@ -51,6 +53,7 @@ const savedMathRender = localStorage.getItem('swarmie-math-render') === 'true'; 
 const savedKeepAltScreenInScrollback =
   localStorage.getItem('swarmie-keep-alt-scrollback') !== 'false'; // default on
 const savedAutoCompactMinutes = parseInt(localStorage.getItem('swarmie-auto-compact-minutes') || '60', 10);
+const savedDefaultAgentTool = localStorage.getItem('swarmie-default-agent-tool') || 'claude';
 const savedTileLayoutEnabled = localStorage.getItem('swarmie-tile-layout-enabled') === 'true';
 const savedTileColumns = parseInt(localStorage.getItem('swarmie-tile-columns') || '2', 10);
 const savedTileHeightRaw = localStorage.getItem('swarmie-tile-height');
@@ -111,6 +114,7 @@ export const useUIStore = create<UIState>((set) => ({
   autoCompactMinutes: Number.isFinite(savedAutoCompactMinutes)
     ? clampAutoCompactMinutes(savedAutoCompactMinutes)
     : 60,
+  defaultAgentTool: savedDefaultAgentTool,
   tileLayoutEnabled: savedTileLayoutEnabled,
   tileColumns: Number.isFinite(savedTileColumns) ? clampTileColumns(savedTileColumns) : 2,
   tileHeight: Number.isFinite(savedTileHeight) ? clampTileHeight(savedTileHeight) : 300,
@@ -161,6 +165,11 @@ export const useUIStore = create<UIState>((set) => ({
     const value = clampAutoCompactMinutes(minutes);
     localStorage.setItem('swarmie-auto-compact-minutes', String(value));
     set({ autoCompactMinutes: value });
+  },
+  setDefaultAgentTool: (tool) => {
+    const value = tool.trim() || 'claude';
+    localStorage.setItem('swarmie-default-agent-tool', value);
+    set({ defaultAgentTool: value });
   },
   setTileLayoutEnabled: (tileLayoutEnabled) => {
     localStorage.setItem('swarmie-tile-layout-enabled', String(tileLayoutEnabled));

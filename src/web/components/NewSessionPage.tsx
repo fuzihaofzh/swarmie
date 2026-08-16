@@ -9,9 +9,10 @@ interface NewSessionPageProps {
     cwd?: string;
   }) => Promise<{ id: string } | null>;
   onCancel?: () => void;
+  initialCwd?: string;
 }
 
-export function NewSessionPage({ onCreateSession, onCancel }: NewSessionPageProps) {
+export function NewSessionPage({ onCreateSession, onCancel, initialCwd }: NewSessionPageProps) {
   const [creating, setCreating] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [selectedServer, setSelectedServer] = useState(LOCAL_SERVER);
@@ -22,11 +23,12 @@ export function NewSessionPage({ onCreateSession, onCancel }: NewSessionPageProp
 
   const handleStart = async (cwd?: string, hostname?: string) => {
     if (creating) return;
-    if (cwd) saveRecentDir({ dir: cwd, hostname });
+    const targetCwd = cwd ?? initialCwd;
+    if (targetCwd) saveRecentDir({ dir: targetCwd, hostname });
     setCreating(true);
     await onCreateSession({
       serverUrl: selectedServer || undefined,
-      cwd,
+      cwd: targetCwd,
     });
     setCreating(false);
   };
