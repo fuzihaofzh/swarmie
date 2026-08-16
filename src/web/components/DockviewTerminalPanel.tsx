@@ -12,10 +12,13 @@ export interface TerminalPanelParams {
 export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<TerminalPanelParams>) {
   const sessionId = params.sessionId;
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const tileLayoutEnabled = useUIStore((s) => s.tileLayoutEnabled);
   const [dockActive, setDockActive] = useState(api.isActive);
   // Zustand is the cross-component source of truth; fall back to dockview
   // only before the initial session selection has been established.
-  const active = activeSessionId ? activeSessionId === sessionId : dockActive;
+  // In tiled mode every pane must stay mounted and visible. The normal
+  // tabbed mode still keeps a single focused terminal for keyboard input.
+  const active = tileLayoutEnabled || (activeSessionId ? activeSessionId === sessionId : dockActive);
   const { sendInput, sendResize, sendRedraw, sendLoadHistory, sendClipboardImage } = useTerminalWebSocket(sessionId, active);
 
   // Track active state from dockview

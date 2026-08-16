@@ -181,6 +181,42 @@ body,
   font-size: 10px;
 }
 
+.workspace-layout-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #30363d);
+  color: var(--text-secondary, #8b949e);
+  font-size: 10px;
+}
+
+.workspace-layout-controls > span {
+  margin-right: auto;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.workspace-layout-controls button {
+  min-width: 25px;
+  height: 23px;
+  padding: 0 5px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+}
+
+.workspace-layout-controls button:hover,
+.workspace-layout-controls button.active {
+  border-color: var(--accent, #58a6ff);
+  background: rgba(88, 166, 255, .13);
+  color: var(--accent, #58a6ff);
+}
+
 .workspace-agents-heading {
   display: flex;
   align-items: center;
@@ -206,6 +242,9 @@ body,
 
 .workspace-agent-search {
   padding: 0 10px 9px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 5px;
 }
 
 .workspace-agent-search input {
@@ -218,6 +257,18 @@ body,
   outline: none;
   font: inherit;
   font-size: 11px;
+}
+
+.workspace-agent-search select {
+  min-width: 0;
+  max-width: 86px;
+  padding: 5px 4px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 5px;
+  background: var(--bg, #0d1117);
+  color: var(--text-secondary, #8b949e);
+  font: inherit;
+  font-size: 10px;
 }
 
 .workspace-agent-search input:focus {
@@ -234,7 +285,7 @@ body,
   width: 100%;
   min-height: 50px;
   display: grid;
-  grid-template-columns: 7px 22px minmax(0, 1fr);
+  grid-template-columns: 7px 22px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 7px 7px;
@@ -295,6 +346,39 @@ body,
   font-size: 10px;
 }
 
+.workspace-agent-explanation {
+  display: block;
+  overflow: hidden;
+  color: var(--text-secondary, #8b949e);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-agent-actions {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.workspace-agent-actions button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.workspace-agent-actions button:hover {
+  border-color: var(--accent, #58a6ff);
+  color: var(--accent, #58a6ff);
+}
+
 /* Agent-aware Dockview tabs: a tab remains recognizable at a glance even
  * when it is not the active tab. */
 .dv-custom-tab-status-running,
@@ -327,6 +411,37 @@ body,
 
 .app-main.tile-layout-scroll {
   overflow: auto;
+}
+
+.tile-layout-topbar {
+  flex: 0 0 42px;
+  display: flex;
+  align-items: stretch;
+  background: var(--header-bg, #161b22);
+  border-bottom: 1px solid var(--border, #30363d);
+}
+
+.tile-layout-topbar .dv-header-actions {
+  height: 42px;
+}
+
+.tile-layout-active-tab {
+  min-width: 180px;
+  max-width: 360px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  border-right: 1px solid var(--border, #30363d);
+  color: var(--fg, #c9d1d9);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tile panes are terminal-only; the single top row owns the global actions. */
+.tile-layout-active .tabs-and-actions-container {
+  display: none !important;
 }
 
 .dockview-shell {

@@ -164,7 +164,7 @@ function buildTabbedLayout(api: DockviewApi, panelIds: string[]): DockviewLayout
   };
 }
 
-function NewTabButton(_props: IDockviewHeaderActionsProps) {
+function NewTabButton(_props?: IDockviewHeaderActionsProps) {
   return (
     <button
       className="dv-new-tab-btn"
@@ -176,7 +176,22 @@ function NewTabButton(_props: IDockviewHeaderActionsProps) {
   );
 }
 
-function HeaderActions(_props: IDockviewHeaderActionsProps) {
+function TileLayoutTopBar() {
+  const activeSessionId = useSessionStore((state) => state.activeSessionId);
+  const sessions = useSessionStore((state) => state.sessions);
+  const active = sessions.find((session) => session.id === activeSessionId);
+  return (
+    <div className="tile-layout-topbar">
+      <HeaderActions />
+      <div className="tile-layout-active-tab">
+        {active?.displayName || active?.name || 'Workspace'}
+      </div>
+      <NewTabButton />
+    </div>
+  );
+}
+
+function HeaderActions(_props?: IDockviewHeaderActionsProps) {
   const openSettings = useUIStore((s) => s.openSettings);
   const workspacePanelOpen = useUIStore((s) => s.workspacePanelOpen);
   const toggleWorkspacePanel = useUIStore((s) => s.toggleWorkspacePanel);
@@ -265,6 +280,14 @@ export function App() {
     const layout = buildTileLayout(api, panelIds, useUIStore.getState().tileColumns, useUIStore.getState().tileHeight);
     if (!layout) return false;
     const activeSessionId = useSessionStore.getState().activeSessionId;
+    const wanted = new Set(panelIds);
+    // Dockview's reuseExistingPanels option intentionally preserves panels
+    // that are absent from the incoming JSON. That is useful for tab restore,
+    // but wrong for a filtered tile view: stale panes would remain visible
+    // after switching workspaces.
+    for (const panel of api.panels) {
+      if (!wanted.has(panel.id)) panel.api.close();
+    }
     api.fromJSON(layout, { reuseExistingPanels: true });
     if (activeSessionId && panelIds.includes(activeSessionId)) {
       api.getPanel(activeSessionId)?.api.setActive();
@@ -281,6 +304,10 @@ export function App() {
     const layout = buildTabbedLayout(api, panelIds);
     if (!layout) return false;
     const activeSessionId = useSessionStore.getState().activeSessionId;
+    const wanted = new Set(panelIds);
+    for (const panel of api.panels) {
+      if (!wanted.has(panel.id)) panel.api.close();
+    }
     api.fromJSON(layout, { reuseExistingPanels: true });
     if (activeSessionId && panelIds.includes(activeSessionId)) {
       api.getPanel(activeSessionId)?.api.setActive();
@@ -415,6 +442,7 @@ export function App() {
         {workspacePanelOpen && <WorkspaceAgentPanel />}
         {/* Main area */}
         <div className={`app-main ${tileLayoutEnabled ? 'tile-layout-scroll' : ''}`}>
+          {tileLayoutEnabled && <TileLayoutTopBar />}
           <div
             className={`dockview-shell ${tileLayoutEnabled ? 'tile-layout-active' : ''}`}
             style={tileContainerHeight ? { height: `${tileContainerHeight}px` } : undefined}
@@ -424,8 +452,8 @@ export function App() {
               onReady={onReady}
               components={components}
               tabComponents={tabComponents}
-              prefixHeaderActionsComponent={HeaderActions}
-              rightHeaderActionsComponent={NewTabButton}
+              prefixHeaderActionsComponent={tileLayoutEnabled ? undefined : HeaderActions}
+              rightHeaderActionsComponent={tileLayoutEnabled ? undefined : NewTabButton}
             />
           </div>
         </div>

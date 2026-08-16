@@ -61,6 +61,7 @@ interface SessionState {
   setSessionTags: (sessionId: string, tags: string[]) => void;
   /** Update auto-approve from server broadcast (no sync back) */
   _setAutoApproveLocal: (sessionId: string, value: boolean) => void;
+  _setSeenLocal: (sessionId: string) => void;
   _applySessionSettingsLocal: (sessionId: string, patch: SessionSettingsPatch) => void;
   /** Replace all sessions from a given server */
   setServerSessions: (serverUrl: string, sessions: SessionSummary[]) => void;
@@ -415,7 +416,11 @@ export const useSessionStore = create<SessionState>((set) => ({
       }
 
       return { events: { ...state.events, [sessionId]: trimmed }, sessions };
-    }),
+  }),
+
+  _setSeenLocal: (sessionId) => set((state) => ({
+    sessions: state.sessions.map((session) => session.id === sessionId ? { ...session, seen: true } : session),
+  })),
 
   updateSessionStatus: (sessionId, status) =>
     set((state) => ({
