@@ -94,6 +94,72 @@ describe('agent state detector', () => {
     expect(detection.result.automationSafe).toBe(true);
   });
 
+  it('detects a selected approval through zsh and tmux without an agent banner', () => {
+    const screen = [
+      'Bash command',
+      '  timeout 60 ssh host scontrol show job',
+      '',
+      'This command requires approval',
+      '',
+      'Do you want to proceed?',
+      '❯ 1. Yes',
+      '  2. Yes, and don’t ask again for: timeout 60 ssh host',
+      '  3. No',
+      '',
+      'Esc to cancel · Tab to amend · ctrl+e to explain',
+      'server  1:zsh 2:python 8:claude',
+    ].join('\n');
+
+    const detection = detector.detect('/bin/zsh', input(screen));
+    expect(detection.result).toMatchObject({
+      agent: '/bin/zsh',
+      manifestId: 'generic-approval',
+      state: 'blocked',
+      matchedRuleId: 'selected-approval',
+      visibleBlocker: true,
+      automationSafe: true,
+    });
+  });
+
+  it('detects a Claude edit approval through zsh and tmux without an agent banner', () => {
+    const screen = [
+      'Do you want to make this edit to slurm-vllm-model?',
+      '› 1. Yes',
+      '  2. Yes, allow all edits during this session (shift+tab)',
+      '  3. No',
+      '',
+      'Esc to cancel · Tab to amend',
+      'server  1:zsh 8:claude',
+    ].join('\n');
+
+    const detection = detector.detect('/bin/zsh', input(screen));
+    expect(detection.result).toMatchObject({
+      agent: '/bin/zsh',
+      manifestId: 'generic-approval',
+      state: 'blocked',
+      matchedRuleId: 'selected-approval',
+      visibleBlocker: true,
+      automationSafe: true,
+    });
+  });
+
+  it('never auto-verifies an unknown-agent approval selected on No', () => {
+    const screen = [
+      'Do you want to proceed?',
+      '  1. Yes',
+      '❯ 2. No',
+      'Esc to cancel · Tab to amend',
+    ].join('\n');
+
+    const detection = detector.detect('/bin/zsh', input(screen));
+    expect(detection.result).toMatchObject({
+      state: 'blocked',
+      matchedRuleId: 'numbered-approval',
+      visibleBlocker: true,
+      automationSafe: false,
+    });
+  });
+
   it('reports a blocker but denies automation when the cursor is on No', () => {
     const screen = [
       'Do you want to proceed?',

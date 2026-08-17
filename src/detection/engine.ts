@@ -1,5 +1,6 @@
 import { compileManifest, type CompiledManifest, type CompiledMatcherGroup } from './manifest.js';
 import { BUILTIN_AGENT_MANIFESTS } from './manifests/index.js';
+import { genericApprovalManifest } from './manifests/generic-approval.js';
 import { selectDetectionRegion } from './regions.js';
 import type {
   AgentDetectionResult,
@@ -39,8 +40,13 @@ export interface RawDetection {
 
 export class AgentStateDetector {
   private readonly manifestsByAgent = new Map<string, CompiledManifest>();
+  private readonly fallbackManifest: CompiledManifest;
 
-  constructor(manifests: AgentStateManifest[] = BUILTIN_AGENT_MANIFESTS) {
+  constructor(
+    manifests: AgentStateManifest[] = BUILTIN_AGENT_MANIFESTS,
+    fallbackManifest: AgentStateManifest = genericApprovalManifest,
+  ) {
+    this.fallbackManifest = compileManifest(fallbackManifest);
     for (const definition of manifests) {
       const manifest = compileManifest(definition);
       for (const name of [definition.id, ...(definition.aliases ?? [])]) {
@@ -53,24 +59,11 @@ export class AgentStateDetector {
 
   detect(agent: string, input: DetectionInput, options?: { includeText?: boolean; now?: number }): RawDetection {
     const observedAt = options?.now ?? Date.now();
-    const manifest = this.manifestsByAgent.get(agent.toLocaleLowerCase());
-    if (!manifest) {
-      return {
-        result: {
-          agent,
-          state: 'unknown',
-          source: 'screen',
-          observedAt,
-          visibleIdle: false,
-          visibleWorking: false,
-          visibleBlocker: false,
-          skipStateUpdate: false,
-          automationSafe: false,
-          reason: 'no_manifest_for_agent',
-        },
-        evaluatedRules: [],
-      };
-    }
+    // Shell, SSH, and tmux sessions may attach to an already-running agent and
+    // never expose its startup banner. In that case, evaluate only the narrow
+    // tool-independent approval rules; do not infer the agent identity from a
+    // mutable tmux title or arbitrary terminal text.
+    const manifest = this.manifestsByAgent.get(agent.toLocaleLowerCase()) ?? this.fallbackManifest;
 
     let winner: typeof manifest.rules[number] | undefined;
     const evaluatedRules: RuleEvaluation[] = [];

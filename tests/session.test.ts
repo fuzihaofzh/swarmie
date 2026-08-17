@@ -427,6 +427,158 @@ describe('Session', () => {
     }
   });
 
+  it('auto-approves a Claude card inside a bannerless zsh/tmux session', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-tmux-approval', '/bin/zsh');
+      const session = new Session('sess-tmux-approval', 'tmux', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+      session.start();
+      session.setSettings({ autoApprove: true });
+
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: session.id,
+        timestamp: Date.now(),
+        data: {
+          data: Buffer.from([
+            'This command requires approval',
+            'Do you want to proceed?',
+            '❯ 1. Yes',
+            '  2. Yes, and don’t ask again for: timeout 60 ssh host',
+            '  3. No',
+            'Esc to cancel · Tab to amend · ctrl+e to explain',
+            'server  1:zsh 8:claude',
+          ].join('\r\n')).toString('base64'),
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(onWrite).toHaveBeenCalledWith('\r');
+      expect(session.getAutoApproveDebug()).toMatchObject({
+        eligibility: 'eligible',
+        ruleId: 'selected-approval',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('auto-approves a Claude edit card inside a bannerless zsh/tmux session', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-tmux-edit-approval', '/bin/zsh');
+      const session = new Session('sess-tmux-edit-approval', 'tmux', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+      session.start();
+      session.setSettings({ autoApprove: true });
+
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: session.id,
+        timestamp: Date.now(),
+        data: {
+          data: Buffer.from([
+            'Do you want to make this edit to slurm-vllm-model?',
+            '› 1. Yes',
+            '  2. Yes, allow all edits during this session (shift+tab)',
+            '  3. No',
+            'Esc to cancel · Tab to amend',
+            'server  1:zsh 8:claude',
+          ].join('\r\n')).toString('base64'),
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(onWrite).toHaveBeenCalledWith('\r');
+      expect(session.getAutoApproveDebug()).toMatchObject({
+        eligibility: 'eligible',
+        ruleId: 'selected-approval',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not publish a bell for a verified prompt handled during the auto-approve grace period', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-quiet-auto-approve');
+      const session = new Session('sess-quiet-auto-approve', 'test', adapter);
+      const events: NormalizedEvent[] = [];
+      adapter.onWrite = vi.fn();
+      session.on('event', (event: NormalizedEvent) => events.push(event));
+      session.start();
+      session.setSettings({ autoApprove: true });
+
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: session.id,
+        timestamp: Date.now(),
+        data: {
+          data: Buffer.from([
+            'Do you want to proceed?',
+            '❯ 1. Yes',
+            '  2. No',
+            'Esc to cancel · Tab to amend',
+          ].join('\r\n')).toString('base64'),
+        },
+      });
+
+      expect(adapter.status).toBe('waiting_input');
+      expect(session.status).toBe('running');
+      expect(events.some((event) => event.type === 'status:change'
+        && (event.data as { to?: string }).to === 'waiting_input')).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: session.id,
+        timestamp: Date.now(),
+        data: {
+          data: Buffer.from('\x1b[2J\x1b[H• Working (1s · esc to interrupt)').toString('base64'),
+        },
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(session.status).toBe('running');
+      expect(events.some((event) => event.type === 'status:change'
+        && (event.data as { to?: string }).to === 'waiting_input')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('publishes a verified auto-approve prompt when it remains stuck past the grace period', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-stuck-auto-approve');
+      const session = new Session('sess-stuck-auto-approve', 'test', adapter);
+      adapter.onWrite = vi.fn();
+      session.start();
+      session.setSettings({ autoApprove: true });
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: session.id,
+        timestamp: Date.now(),
+        data: {
+          data: Buffer.from('Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No\r\nEsc to cancel · Tab to amend').toString('base64'),
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(session.status).toBe('running');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(session.summary).toMatchObject({ status: 'waiting_input', seen: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps auto-approve armed even when sub-agent output flicks status to running mid-prompt', async () => {
     vi.useFakeTimers();
     try {
@@ -656,6 +808,8 @@ describe('Session', () => {
       const session = new Session('sess-selected-no', 'test', adapter);
       const onWrite = vi.fn();
       adapter.onWrite = onWrite;
+      session.start();
+      session.setSettings({ autoApprove: true });
 
       adapter.pushEvent({
         type: 'raw:output',
@@ -670,7 +824,7 @@ describe('Session', () => {
           ].join('\r\n')).toString('base64'),
         },
       });
-      session.setSettings({ autoApprove: true });
+      expect(session.summary).toMatchObject({ status: 'waiting_input', seen: false });
       await vi.advanceTimersByTimeAsync(5_000);
 
       expect(onWrite).not.toHaveBeenCalled();

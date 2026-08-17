@@ -88,6 +88,12 @@ const AUTO_APPROVE_PRESS_COOLDOWN_MS = 1500;
 const AUTO_APPROVE_FAST_PRESSES = 2;
 const AUTO_APPROVE_SLOW_COOLDOWN_MS = 30_000;
 const AUTO_APPROVE_RESET_MS = 2000;
+// A verified prompt normally disappears about one frame after the first
+// auto-approve press. Do not publish that short internal state as a user-facing
+// bell: by the time someone opens the tab there is nothing left to act on.
+// A prompt that survives this grace period is genuinely stuck and must still
+// notify the user.
+const AUTO_APPROVE_NOTIFICATION_GRACE_MS = 2_000;
 const DEFAULT_REPEAT_INTERVAL_SECONDS = 60;
 const AUTO_COMPACT_COMMAND = '/compact';
 const REPEAT_CLEAR_COMMAND = '/clear';
@@ -222,6 +228,8 @@ export class Session extends EventEmitter {
   private _autoApprovePromptFingerprint: string | null = null;
   private _autoApproveEligibility: 'no_prompt' | 'unverified_prompt' | 'eligible' = 'no_prompt';
   private _autoApproveRuleId: string | null = null;
+  private _autoApproveNotificationTimer: ReturnType<typeof setTimeout> | null = null;
+  private _publishingDeferredAutoApprovePrompt = false;
   private _autoCompactTimer: ReturnType<typeof setTimeout> | null = null;
   private _repeatTimer: ReturnType<typeof setTimeout> | null = null;
   private _repeatClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -369,6 +377,17 @@ export class Session extends EventEmitter {
         this.startAutoApproveTicker();
       } else {
         this.stopAutoApproveTicker();
+        // If auto-approve is disabled during the quiet grace period, surface
+        // the still-visible prompt immediately instead of leaving the public
+        // status at the preceding running state.
+        if (this.adapter.status === 'waiting_input' && this._publishedStatus !== 'waiting_input') {
+          this.handleEvent({
+            type: 'status:change',
+            sessionId: this.id,
+            timestamp: Date.now(),
+            data: { from: this._publishedStatus, to: 'waiting_input' },
+          });
+        }
       }
     }
     if (patch.autoCompact !== undefined) {
@@ -587,6 +606,25 @@ export class Session extends EventEmitter {
       const previous = this._publishedStatus;
       let next = raw.to;
 
+      // Auto-approve owns verified safe prompts. Give it a short window to
+      // consume them before exposing waiting_input to the dashboard; otherwise
+      // a successful approval flashes a bell for ~1 second and the user opens
+      // an already-empty tab. Unsafe prompts are never deferred.
+      const deferVerifiedAutoApprove = raw.to === 'waiting_input'
+        && previous !== 'waiting_input'
+        && !this._publishingDeferredAutoApprovePrompt
+        && this.isVerifiedAutoApprovePrompt();
+      if (raw.to === 'waiting_input' && raw.from !== 'waiting_input'
+          && this.autoApprove && !this._publishingDeferredAutoApprovePrompt) {
+        this.resetAutoApproveState();
+      }
+      if (deferVerifiedAutoApprove) {
+        next = previous;
+        this.scheduleAutoApproveNotification();
+      } else if (raw.to !== 'waiting_input') {
+        this.clearAutoApproveNotificationTimer();
+      }
+
       if (isAutoCompactBusyStatus(raw.to)) {
         // The initial starting -> busy -> idle handshake is readiness, not a
         // completed user task. Later transitions into busy open a work cycle.
@@ -670,6 +708,7 @@ export class Session extends EventEmitter {
       case 'session:end': {
         this._endTime = event.timestamp;
         this.stopAutoApproveTicker();
+        this.clearAutoApproveNotificationTimer();
         this.clearAutoCompactTimer();
         this.clearRepeatTimers();
         this.clearSubmitTimers();
@@ -697,9 +736,6 @@ export class Session extends EventEmitter {
         // next before the screen ever becomes prompt-free. Clear the dwell
         // and retry budget here; the ticker will arm itself against the new
         // card on its next poll.
-        if (data.to === 'waiting_input' && data.from !== 'waiting_input' && this.autoApprove) {
-          this.resetAutoApproveState();
-        }
         if (isAutoCompactBusyStatus(data.to) && this._autoCompactBlockedUntilBusy && !this._autoCompactWaitingForRunToIdle) {
           this._autoCompactBlockedUntilBusy = false;
         }
@@ -748,7 +784,48 @@ export class Session extends EventEmitter {
       clearInterval(this._autoApproveTicker);
       this._autoApproveTicker = null;
     }
+    this.clearAutoApproveNotificationTimer();
     this.resetAutoApproveState();
+  }
+
+  private isVerifiedAutoApprovePrompt(): boolean {
+    if (!this.autoApprove) return false;
+    const screen = this.adapter.getScreenSnapshot();
+    const detection = screen.detection;
+    return detection?.rawState === 'blocked'
+      && detection.visibleBlocker
+      && detection.automationSafe
+      && Boolean(detection.matchedRuleId)
+      && Boolean(waitingPromptFingerprint(screen.recent));
+  }
+
+  private scheduleAutoApproveNotification(): void {
+    this.clearAutoApproveNotificationTimer();
+    this._autoApproveNotificationTimer = setTimeout(() => {
+      this._autoApproveNotificationTimer = null;
+      if (!this.autoApprove || this.adapter.status !== 'waiting_input') return;
+
+      // The prompt survived automatic handling. Publish it now, bypassing the
+      // grace check exactly once so a stuck approval cannot be hidden forever.
+      this._publishingDeferredAutoApprovePrompt = true;
+      try {
+        this.handleEvent({
+          type: 'status:change',
+          sessionId: this.id,
+          timestamp: Date.now(),
+          data: { from: this._publishedStatus, to: 'waiting_input' },
+        });
+      } finally {
+        this._publishingDeferredAutoApprovePrompt = false;
+      }
+    }, AUTO_APPROVE_NOTIFICATION_GRACE_MS);
+    (this._autoApproveNotificationTimer as { unref?: () => void }).unref?.();
+  }
+
+  private clearAutoApproveNotificationTimer(): void {
+    if (!this._autoApproveNotificationTimer) return;
+    clearTimeout(this._autoApproveNotificationTimer);
+    this._autoApproveNotificationTimer = null;
   }
 
   private resetAutoApproveState(): void {
