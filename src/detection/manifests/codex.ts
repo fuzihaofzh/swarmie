@@ -4,13 +4,13 @@ const BUSY_SPINNER = '(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)';
 
 export const codexManifest: AgentStateManifest = {
   id: 'codex',
-  version: 3,
+  version: 4,
   rules: [
     {
       id: 'selected-approval',
       state: 'blocked',
       priority: 1200,
-      region: { kind: 'bottom_lines', count: 18 },
+      region: { kind: 'numbered_prompt_card' },
       lineRegex: ['^\\s*(?:[│┃]\\s*)?[›❯>]\\s*1\\.\\s*(?:yes|allow|approve|proceed)\\b'],
       all: [{ any: [
         { regex: ['esc.{0,40}cancel'] },

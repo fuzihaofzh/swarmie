@@ -16,6 +16,7 @@ import { HeadlessScreen } from './screen.js';
 import * as PROF from '../server/profile.js';
 import { getSystemDisplayHostname, isLocalHostname } from '../session/host.js';
 import { chooseStateSignal, defaultAgentStateDetector, DetectionStabilizer } from '../detection/index.js';
+import { selectNumberedPromptCard } from '../detection/regions.js';
 import type {
   AgentLifecycleState,
   DetectionExplanation,
@@ -44,25 +45,26 @@ const REPAINT_SUPPRESS_MS = 1_500;
 // is what made an assistant sentence like "Do you want me to also update the
 // tests?" ring the waiting-for-input bell, so detection only reads the tail.
 const STATUS_REGION_LINES = 14;
+const DEFAULT_DETECTION_SCROLLBACK_LINES = 20;
+const TALL_PROMPT_SCROLLBACK_LINES = 200;
+const SELECTED_NUMBERED_PROMPT_RE = /^\s*[│┃]?\s*[›❯>]\s*\d+\.\s*/mu;
+const APPROVAL_FOOTER_RE = /(?:\bEsc\b.{0,40}\bto\b.{0,40}\bcancel\b|\bTab\b.{0,40}\bto\b.{0,40}\bamend\b|\bctrl\+e\b.{0,40}\bto\b.{0,40}\bexplain\b)/iu;
 
-// Patterns that indicate a tool is waiting for user input. These deliberately
-// key off *structure* (a numbered choice list, a keybinding hint) rather than
-// question wording: wording appears in ordinary output, structure does not.
+// Waiting-input evidence is deliberately structural. A single token such as
+// `1. Yes` or `❯ 1. Yes` is not enough: agents often mention those exact
+// strings while explaining how approval detection works. Those explanations
+// are transcript prose, not a live menu, and used to leave the bell shaking.
+const NUMBERED_CHOICE_LINE_RE = /^\s*(?:[│┃]\s*)?(?:[›❯>]\s*)?\d+\.\s+\S.*$/imu;
+const SELECTED_NUMBERED_CHOICE_LINE_RE = /^\s*(?:[│┃]\s*)?[›❯>]\s*\d+\.\s+\S.*$/imu;
+const YES_CHOICE_LINE_RE = /^\s*(?:[│┃]\s*)?(?:[›❯>]\s*)?\d+\.\s+(?:yes|allow|approve|proceed)\b.*$/imu;
+const NO_CHOICE_LINE_RE = /^\s*(?:[│┃]\s*)?(?:[›❯>]\s*)?\d+\.\s+no\b.*$/imu;
+// Codex can leave a spinner glyph before the menu during an in-place redraw,
+// so this one distinctive full option label intentionally tolerates row-prefix
+// noise. Unlike the old bare `N. Yes` check, it does not match our own prose.
+const CODEX_PROCEED_CHOICE_RE = /(?:[›❯>]\s*)?\d+\.\s+Yes,[^\n]{0,24}\bproceed\b/iu;
+const APPROVAL_QUESTION_RE = /\bDo\s+you\s+want\s+to\s+proceed\?/iu;
+
 const WAITING_INPUT_PATTERNS = [
-  // Approval boxes render a numbered choice list — "❯ 1. Yes" / "  2. No" —
-  // optionally inside a box-drawing border. Far more stable than the prompt
-  // sentence printed above it, which every CLI words differently. Left
-  // unanchored because redraw artifacts (spinner glyphs, box edges) can share
-  // the row; the "N. Yes/No" shape is the signal.
-  /\d+\.[^\S\n]+(?:Yes|No)\b/i,
-  // Interactive selection menus whose options are not Yes/No — e.g. Claude
-  // Code's "Additional safety checks" notice (1. Retry with a faster model /
-  // 2. Keep waiting / 3. Learn more). These block just like an approval box
-  // but never carry a busy interrupt hint, so without this they read as
-  // "still running" forever. The selection cursor sitting on a numbered item
-  // ("❯ 2. Keep waiting") is the structural tell; ordinary prose lists and the
-  // idle "❯ " input prompt have no digit right after the cursor.
-  /[›❯][^\S\n]{0,4}\d+\.[^\S\n]/,
   // Belt-and-suspenders anchor for the safety-checks notice specifically, in
   // case a redraw lands with the cursor mid-transition: the wording is unique
   // to this blocking prompt and appears nowhere in ordinary agent output.
@@ -70,6 +72,7 @@ const WAITING_INPUT_PATTERNS = [
   /\bEsc\b[^\n]{0,40}\bto\b[^\n]{0,40}\bcancel\b/i,
   /\bTab\b[^\n]{0,40}\bto\b[^\n]{0,40}\bamend\b/i,
   /\bPress\b[^\n]{0,40}\benter\b[^\n]{0,40}\bto\b[^\n]{0,40}\bconfirm\b/i,
+  CODEX_PROCEED_CHOICE_RE,
   // Anchored to end-of-line so a "(y/n)" inside a diff or a source line the
   // agent happens to be printing does not count as a live shell prompt.
   /\(y\/n\)[^\S\n]*$/im,
@@ -301,7 +304,7 @@ export abstract class BaseAdapter extends EventEmitter {
    * auto-approve poller and by debug endpoints.
    */
   getScreenSnapshot(): ScreenSnapshot {
-    const recent = this._screen.getRecentText(20);
+    const recent = this.getDetectionRecentText();
     const viewport = this._screen.getViewportText();
     const legacyPromptVisible = this.shouldDetectWaitingPrompt() && matchesWaitingPrompt(recent);
     const promptVisible = legacyPromptVisible
@@ -312,7 +315,7 @@ export abstract class BaseAdapter extends EventEmitter {
   /** Explain the latest state decision without exposing terminal text by default. */
   getDetectionExplanation(includeText = false): DetectionExplanation {
     if (this._latestDetection && !includeText) return this._latestDetection;
-    const recent = this._screen.getRecentText(20);
+    const recent = this.getDetectionRecentText();
     const viewport = this._screen.getViewportText();
     const legacyState = this.classifyLegacyScreen(recent);
     return this.runAgentDetection(viewport, recent, legacyState, includeText, false);
@@ -325,7 +328,21 @@ export abstract class BaseAdapter extends EventEmitter {
    * screen text is a strictly better substitute.
    */
   get detectBuffer(): string {
-    return this._screen.getRecentText(20);
+    return this.getDetectionRecentText();
+  }
+
+  /**
+   * Usually the viewport plus 20 rows is enough. A remember-choice approval can
+   * wrap an entire command below its selected option, though, leaving the footer
+   * visible while `❯ 1. Yes` sits much farther back. Expand only for that shape
+   * so normal high-frequency screen sampling keeps its small, cheap window.
+   */
+  private getDetectionRecentText(): string {
+    const recent = this._screen.getRecentText(DEFAULT_DETECTION_SCROLLBACK_LINES);
+    if (APPROVAL_FOOTER_RE.test(recent) && !SELECTED_NUMBERED_PROMPT_RE.test(recent)) {
+      return this._screen.getRecentText(TALL_PROMPT_SCROLLBACK_LINES);
+    }
+    return recent;
   }
 
   protected shouldDetectWaitingPrompt(): boolean {
@@ -502,7 +519,7 @@ export abstract class BaseAdapter extends EventEmitter {
   private evaluateScreenState(): void {
     const tEval = PROF.profiling ? PROF.nowNs() : 0n;
     const tRead = PROF.profiling ? PROF.nowNs() : 0n;
-    const screen = this._screen.getRecentText(20);
+    const screen = this.getDetectionRecentText();
     const viewport = this._screen.getViewportText();
     if (PROF.profiling) PROF.mark('act.getRecentText', tRead, screen.length, this.sessionId);
     const screenMoved = this.noteMeaningfulScreenMovement(viewport);
@@ -898,7 +915,7 @@ export abstract class BaseAdapter extends EventEmitter {
       // timeout could never be reached.
       const screenFrozen = now - this._lastScreenChangeAt > SCREEN_FROZEN_TIMEOUT_MS;
 
-      if (!screenFrozen && this.shouldTreatScreenAsBusy(this._screen.getRecentText(20))) {
+      if (!screenFrozen && this.shouldTreatScreenAsBusy(this.getDetectionRecentText())) {
         this._lastActivity = now;
         return;
       }
@@ -935,7 +952,7 @@ export abstract class BaseAdapter extends EventEmitter {
       this._screenMovementTimer = null;
       if (this._commandExecuting || this._userInputActive) return;
       if (this._status !== 'running' && this._status !== 'thinking' && this._status !== 'tool_executing') return;
-      const screen = this._screen.getRecentText(20);
+      const screen = this.getDetectionRecentText();
       if (this.shouldSettleVisibleOutputToIdle(screen)) {
         this.setStatus('idle');
       }
@@ -984,11 +1001,28 @@ export abstract class BaseAdapter extends EventEmitter {
 
 /** Exposed so the Session-level auto-approve poller can share the same logic. */
 export function matchesWaitingPrompt(screenText: string): boolean {
-  const region = statusRegion(screenText);
-  for (const pattern of WAITING_INPUT_PATTERNS) {
-    if (pattern.test(region)) return true;
-  }
-  return false;
+  const region = selectNumberedPromptCard(screenText) || statusRegion(screenText);
+  return hasWaitingInputEvidence(region);
+}
+
+function hasWaitingInputEvidence(region: string): boolean {
+  if (WAITING_INPUT_PATTERNS.some((pattern) => pattern.test(region))) return true;
+
+  const numberedChoices = region
+    .split('\n')
+    .filter((line) => NUMBERED_CHOICE_LINE_RE.test(line));
+
+  // A selected row plus at least one sibling is the stable shape shared by
+  // approval dialogs and non-Yes/No pickers. Requiring the sibling prevents a
+  // wrapped prose sentence beginning with `❯ 1. Yes ...` from posing as a card.
+  if (SELECTED_NUMBERED_CHOICE_LINE_RE.test(region) && numberedChoices.length >= 2) return true;
+
+  // During a redraw the cursor can momentarily disappear. Retain support for
+  // that frame only when an explicit approval question accompanies both sides
+  // of the Yes/No menu.
+  return APPROVAL_QUESTION_RE.test(region)
+    && YES_CHOICE_LINE_RE.test(region)
+    && NO_CHOICE_LINE_RE.test(region);
 }
 
 /**
@@ -999,14 +1033,15 @@ export function matchesWaitingPrompt(screenText: string): boolean {
  * from a stubborn redraw of the same card. The latter must keep its retry
  * backoff; the former gets a fresh fast-press budget.
  *
- * The identity is deliberately derived only from the bottom status region and
- * normalizes the selection cursor. Moving the highlight between choices or
- * repainting whitespace therefore does not make one card look new, while the
- * command / explanation immediately above the choices still does.
+ * The identity is deliberately derived from the current numbered prompt card
+ * (falling back to the bottom status region) and normalizes the selection
+ * cursor. Moving the highlight between choices or repainting whitespace
+ * therefore does not make one card look new, while the command / explanation
+ * immediately above the choices still does.
  */
 export function waitingPromptFingerprint(screenText: string): string | null {
-  const region = statusRegion(screenText);
-  if (!WAITING_INPUT_PATTERNS.some((pattern) => pattern.test(region))) return null;
+  const region = selectNumberedPromptCard(screenText) || statusRegion(screenText);
+  if (!hasWaitingInputEvidence(region)) return null;
 
   const lines = region.split('\n');
   const numberedChoice = /^[^\S\n]*(?:[›❯][^\S\n]{0,4})?\d+\.[^\S\n]+/;

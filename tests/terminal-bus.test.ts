@@ -9,6 +9,8 @@ import {
   getRawCacheChunks,
   prependRawCache,
   isRawCacheFull,
+  getSessionMeta,
+  writeResyncToTerminal,
 } from '../src/web/terminalBus.js';
 
 function b64(size: number, fill: number): string {
@@ -140,6 +142,61 @@ describe('terminalBus', () => {
         expect(getRawCacheChunks(sessionId).join('')).toBe(
           bin(600, 69) + bin(400, 67) + bin(100, 65) + bin(10, 68),
         );
+      } finally {
+        clearTerminalBuffer(sessionId);
+      }
+    });
+
+    it('deduplicates overlapping reconnect replay before caching and rendering', () => {
+      const sessionId = 'raw-cache-overlap';
+      const received: string[] = [];
+      try {
+        registerTerminalWriter(sessionId, (chunk) => received.push(chunk));
+        writeToTerminal(sessionId, 'abcdefghij', 110);
+        // [105, 115) overlaps five bytes already seen; only [110, 115) is new.
+        writeToTerminal(sessionId, 'fghijklmno', 115, true);
+        // A wholly stale retry must not be rendered at all.
+        writeToTerminal(sessionId, 'ijklm', 113, true);
+
+        expect(received).toEqual(['abcdefghij', 'klmno']);
+        expect(getRawCacheStart(sessionId)).toBe(100);
+        expect(getRawCacheEnd(sessionId)).toBe(115);
+        expect(getRawCacheChunks(sessionId).join('')).toBe('abcdefghijklmno');
+      } finally {
+        clearTerminalBuffer(sessionId);
+      }
+    });
+
+    it('keeps only a contiguous suffix when a forward gap is observed', () => {
+      const sessionId = 'raw-cache-gap';
+      try {
+        writeToTerminal(sessionId, 'old', 103);
+        writeToTerminal(sessionId, 'new', 203);
+
+        expect(getRawCacheStart(sessionId)).toBe(200);
+        expect(getRawCacheEnd(sessionId)).toBe(203);
+        expect(getRawCacheChunks(sessionId).join('')).toBe('new');
+        expect(getSessionMeta(sessionId).reachedEarliest).toBe(false);
+      } finally {
+        clearTerminalBuffer(sessionId);
+      }
+    });
+
+    it('does not count a resync control prefix as raw session history', () => {
+      const sessionId = 'raw-cache-resync';
+      const reset = '\x1b[!p\x1b[0m';
+      const received: Array<{ data: string; isResync?: boolean }> = [];
+      try {
+        writeToTerminal(sessionId, 'stale', 105);
+        registerTerminalWriter(sessionId, (data, _end, _replay, isResync) => {
+          received.push({ data, isResync });
+        });
+        writeResyncToTerminal(sessionId, reset + 'TAIL', 200, 204);
+
+        expect(received.at(-1)).toEqual({ data: reset + 'TAIL', isResync: true });
+        expect(getRawCacheStart(sessionId)).toBe(200);
+        expect(getRawCacheEnd(sessionId)).toBe(204);
+        expect(getRawCacheChunks(sessionId).join('')).toBe('TAIL');
       } finally {
         clearTerminalBuffer(sessionId);
       }

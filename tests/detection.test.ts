@@ -107,6 +107,49 @@ describe('agent state detector', () => {
     expect(detection.result.automationSafe).toBe(false);
   });
 
+  it('auto-verifies a selected Yes even when a long option wraps past the old bottom-line window', () => {
+    const screen = [
+      'This command requires approval',
+      '',
+      'Do you want to proceed?',
+      '❯ 1. Yes',
+      '  2. Yes, and don’t ask again for: timeout 90 ssh host',
+      ...Array.from({ length: 32 }, (_, i) => `     wrapped command continuation ${i}`),
+      '  3. No',
+      '',
+      'Esc to cancel · Tab to amend · ctrl+e to explain',
+    ].join('\n');
+
+    for (const agent of ['claude', 'codex', 'gemini']) {
+      const detection = detector.detect(agent, input(screen));
+      expect(detection.result, agent).toMatchObject({
+        state: 'blocked',
+        matchedRuleId: 'selected-approval',
+        visibleBlocker: true,
+        automationSafe: true,
+      });
+    }
+  });
+
+  it('does not borrow an old selected Yes for a newer card selected on No', () => {
+    const screen = [
+      'Old approval',
+      '❯ 1. Yes',
+      '  2. No',
+      'Esc to cancel · Tab to amend',
+      '',
+      'New approval',
+      'Do you want to proceed?',
+      '  1. Yes',
+      '❯ 2. No',
+      'Esc to cancel · Tab to amend',
+    ].join('\n');
+
+    const detection = detector.detect('claude', input(screen));
+    expect(detection.result.state).toBe('blocked');
+    expect(detection.result.automationSafe).toBe(false);
+  });
+
   it('does not treat an ordinary question or prose list as a blocker', () => {
     const screen = [
       'I updated the implementation.',
@@ -278,6 +321,38 @@ describe('detection regions', () => {
     const region = selectDetectionRegion(input(screen), { kind: 'prompt_box_body' });
     expect(region).toContain('❯ New task');
     expect(region).not.toContain('secret from old output');
+  });
+
+  it('selects the complete current numbered card after a very long wrapped option', () => {
+    const screen = [
+      'old transcript',
+      '❯ 1. Yes',
+      'Esc to cancel',
+      '› next task',
+      'Current approval',
+      '❯ 1. Yes',
+      ...Array.from({ length: 30 }, (_, i) => `wrapped option ${i}`),
+      'Esc to cancel · Tab to amend',
+    ].join('\n');
+    const region = selectDetectionRegion(input(screen), { kind: 'numbered_prompt_card' });
+
+    expect(region).toContain('Current approval');
+    expect(region).toContain('wrapped option 29');
+    expect(region).toContain('Esc to cancel');
+    expect(region).not.toContain('old transcript');
+  });
+
+  it('rejects a numbered selection that belongs to an older prompt', () => {
+    const screen = [
+      'Old approval',
+      '❯ 1. Yes',
+      'Esc to cancel',
+      '› current free-form question',
+      'Esc to cancel · Enter to confirm',
+    ].join('\n');
+
+    expect(selectDetectionRegion(input(screen), { kind: 'numbered_prompt_card' })).toBe('');
+    expect(detector.detect('claude', input(screen)).result.automationSafe).toBe(false);
   });
 
   it('only returns output produced after the latest live prompt marker', () => {

@@ -2,14 +2,14 @@ import type { AgentStateManifest } from '../types.js';
 
 export const claudeManifest: AgentStateManifest = {
   id: 'claude',
-  version: 3,
+  version: 4,
   aliases: ['claude-code'],
   rules: [
     {
       id: 'selected-approval',
       state: 'blocked',
       priority: 1200,
-      region: { kind: 'bottom_lines', count: 18 },
+      region: { kind: 'numbered_prompt_card' },
       lineRegex: ['^\\s*(?:[│┃]\\s*)?[›❯>]\\s*1\\.\\s*(?:yes|allow|approve|proceed)\\b'],
       all: [{ any: [
         { regex: ['esc.{0,40}to.{0,40}cancel'] },

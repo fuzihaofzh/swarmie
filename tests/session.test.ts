@@ -388,6 +388,45 @@ describe('Session', () => {
     }
   });
 
+  it('auto-approves a tall card whose remember-choice command wraps over many rows', async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = createMockAdapter('sess-tall-approval');
+      const session = new Session('sess-tall-approval', 'test', adapter);
+      const onWrite = vi.fn();
+      adapter.onWrite = onWrite;
+      const card = [
+        '\x1b[2J\x1b[H',
+        'This command requires approval\r\n',
+        'Do you want to proceed?\r\n',
+        '❯ 1. Yes\r\n',
+        '  2. Yes, and don’t ask again for: timeout 90 ssh host\r\n',
+        // Taller than viewport + the normal 20-row detection lookback. The
+        // approval footer should trigger the bounded deep-card fallback.
+        ...Array.from({ length: 80 }, (_, i) => `     command continuation ${i}\r\n`),
+        '  3. No\r\n',
+        'Esc to cancel · Tab to amend · ctrl+e to explain\r\n',
+      ].join('');
+      adapter.pushEvent({
+        type: 'raw:output',
+        sessionId: 'sess-tall-approval',
+        timestamp: Date.now(),
+        data: { data: Buffer.from(card).toString('base64') },
+      });
+
+      session.setSettings({ autoApprove: true });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(onWrite).toHaveBeenCalledWith('\r');
+      expect(session.getAutoApproveDebug()).toMatchObject({
+        eligibility: 'eligible',
+        ruleId: 'selected-approval',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps auto-approve armed even when sub-agent output flicks status to running mid-prompt', async () => {
     vi.useFakeTimers();
     try {

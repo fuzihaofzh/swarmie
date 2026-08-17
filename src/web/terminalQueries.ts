@@ -52,6 +52,14 @@ export function stripDeviceQueries(binary: string): string {
 // are stripped too so a program's exit doesn't try to restore/clear the alt
 // buffer — its final screen simply stays in the normal buffer's scrollback.
 const ALT_SCREEN_TOGGLE = /\x1b\[\?(?:1049|1047|47)[hl]/g;
+const ALT_SCREEN_TOGGLES = [
+  '\x1b[?1049h',
+  '\x1b[?1049l',
+  '\x1b[?1047h',
+  '\x1b[?1047l',
+  '\x1b[?47h',
+  '\x1b[?47l',
+] as const;
 
 /**
  * Remove alternate-screen switches so full-screen apps render into the normal
@@ -60,6 +68,51 @@ const ALT_SCREEN_TOGGLE = /\x1b\[\?(?:1049|1047|47)[hl]/g;
 export function stripAlternateScreen(binary: string): string {
   if (binary.indexOf('\x1b') === -1) return binary;
   return binary.replace(ALT_SCREEN_TOGGLE, '');
+}
+
+/**
+ * Stateful alternate-screen filter for a streamed terminal byte sequence.
+ *
+ * PTY and WebSocket chunk boundaries are arbitrary: `ESC[?1049h` can arrive as
+ * `ESC[?10` followed by `49h`. Applying stripAlternateScreen() independently to
+ * those chunks lets xterm join the two halves itself and enter the alternate
+ * buffer, whose scrolled-off rows have no history. Keep only a suffix that can
+ * still become one of the toggles, then decide it when the next chunk arrives.
+ */
+export class AlternateScreenStreamFilter {
+  private carry = '';
+
+  write(binary: string, enabled = true): string {
+    if (!enabled) {
+      const out = this.carry + binary;
+      this.carry = '';
+      return out;
+    }
+
+    const combined = this.carry + binary;
+    this.carry = '';
+    let carryLength = 0;
+    const max = Math.min(
+      combined.length,
+      Math.max(...ALT_SCREEN_TOGGLES.map((toggle) => toggle.length - 1)),
+    );
+    for (let length = max; length > 0; length--) {
+      const suffix = combined.slice(-length);
+      if (ALT_SCREEN_TOGGLES.some((toggle) => toggle.startsWith(suffix))) {
+        carryLength = length;
+        break;
+      }
+    }
+    if (carryLength > 0) {
+      this.carry = combined.slice(-carryLength);
+    }
+    const ready = carryLength > 0 ? combined.slice(0, -carryLength) : combined;
+    return stripAlternateScreen(ready);
+  }
+
+  reset(): void {
+    this.carry = '';
+  }
 }
 
 function visibleByteLength(binary: string): number {

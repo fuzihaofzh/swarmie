@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { protectStatusLineRedraws, stripDeviceQueries, stripAlternateScreen } from '../src/web/terminalQueries.js';
+import {
+  AlternateScreenStreamFilter,
+  protectStatusLineRedraws,
+  stripDeviceQueries,
+  stripAlternateScreen,
+} from '../src/web/terminalQueries.js';
 
 describe('terminal escape preprocessing', () => {
   it('keeps short in-viewport status line redraws unchanged', () => {
@@ -38,5 +43,20 @@ describe('terminal escape preprocessing', () => {
 
   it('returns input unchanged when there is no escape byte', () => {
     expect(stripAlternateScreen('plain text, no escapes')).toBe('plain text, no escapes');
+  });
+
+  it('strips alternate-screen toggles across every possible stream split', () => {
+    const sequence = 'before\x1b[?1049hinside\x1b[?1049lafter';
+    for (let split = 1; split < sequence.length; split++) {
+      const filter = new AlternateScreenStreamFilter();
+      const actual = filter.write(sequence.slice(0, split)) + filter.write(sequence.slice(split));
+      expect(actual, `split at byte ${split}`).toBe('beforeinsideafter');
+    }
+  });
+
+  it('releases a partial toggle unchanged when filtering is disabled', () => {
+    const filter = new AlternateScreenStreamFilter();
+    expect(filter.write('\x1b[?10')).toBe('');
+    expect(filter.write('49htext', false)).toBe('\x1b[?1049htext');
   });
 });

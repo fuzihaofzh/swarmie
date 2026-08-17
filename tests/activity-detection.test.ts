@@ -185,11 +185,51 @@ describe('activity detection', () => {
     expect(waitingPromptFingerprint(first)).not.toBe(waitingPromptFingerprint(nextCommand));
   });
 
+  it('detects and fingerprints approval cards taller than the fixed status tail', () => {
+    const card = [
+      'This command requires approval',
+      'Do you want to proceed?',
+      '❯ 1. Yes',
+      '  2. Yes, and don’t ask again for: timeout 90 ssh host',
+      ...Array.from({ length: 30 }, (_, i) => `     command continuation ${i}`),
+      '  3. No',
+      'Esc to cancel · Tab to amend · ctrl+e to explain',
+    ].join('\n');
+
+    expect(matchesWaitingPrompt(card)).toBe(true);
+    expect(waitingPromptFingerprint(card)).toContain('1. Yes');
+    expect(waitingPromptFingerprint(card)).toContain('command continuation 29');
+  });
+
   it('does not mark generic shell output as waiting_input', () => {
     const adapter = createShellAdapter();
 
     adapter.feed('Press enter to confirm or esc to cancel');
 
+    expect(adapter.status).toBe('idle');
+  });
+
+  it('does not mistake an approval-detection explanation for a live prompt', () => {
+    const explanation = [
+      '现在审批识别会：',
+      '',
+      '  - 从最后一个带光标的编号选项定位整张审批卡片，不再依赖底部固定 14/18 行。',
+      '  - 遇到超长命令导致 ❯ 1. Yes 滚出普通检测窗口时，自动扩展 headless 回溯范围。',
+      '  - 保证旧审批卡片中的 Yes 不会误授权当前选中 No 的新卡片。',
+      '  - Claude、Codex、Gemini 三套规则均已更新。',
+      '',
+      '修改主要在 src/detection/regions.ts:73、src/adapters/base.ts:303 和各 agent manifest。',
+      '',
+      '验证结果：完整测试 261/261 通过，生产构建成功。重启 Swarmie 服务后生效。',
+    ].join('\n');
+
+    expect(matchesWaitingPrompt(explanation)).toBe(false);
+
+    // Exercise xterm's physical line wrapping too: the literal prompt sample
+    // may land at the beginning of a wrapped row even though it was inline in
+    // the original prose.
+    const adapter = createAdapter();
+    adapter.feed(explanation);
     expect(adapter.status).toBe('idle');
   });
 

@@ -2,14 +2,14 @@ import type { AgentStateManifest } from '../types.js';
 
 export const geminiManifest: AgentStateManifest = {
   id: 'gemini',
-  version: 2,
+  version: 3,
   aliases: ['gemini-cli'],
   rules: [
     {
       id: 'selected-approval',
       state: 'blocked',
       priority: 950,
-      region: { kind: 'bottom_lines', count: 16 },
+      region: { kind: 'numbered_prompt_card' },
       lineRegex: ['^\\s*(?:[│┃]\\s*)?[›❯>]\\s*1\\.\\s*(?:yes|allow|approve|proceed)\\b'],
       all: [
         {

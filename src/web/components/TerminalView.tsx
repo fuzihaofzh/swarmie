@@ -20,6 +20,7 @@ import {
   getRawCacheChunks,
   prependRawCache,
   isRawCacheFull,
+  syncSessionMetaToRawCache,
   type SessionMeta,
 } from '../terminalBus';
 import { MobileToolbar } from './MobileToolbar';
@@ -31,7 +32,15 @@ import {
   shouldShowMobileToolbar,
 } from '../focusPolicy';
 import { binaryStringToBytes } from '../base64';
-import { protectStatusLineRedraws, stripDeviceQueries, stripAlternateScreen } from '../terminalQueries';
+import {
+  AlternateScreenStreamFilter,
+  protectStatusLineRedraws,
+  stripDeviceQueries,
+} from '../terminalQueries';
+import {
+  captureTerminalScrollAnchor,
+  resolveTerminalScrollAnchor,
+} from '../terminalScrollAnchor';
 import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
 
 interface TerminalViewProps {
@@ -58,7 +67,7 @@ const MIN_TERMINAL_WRITE_BYTES_PER_FRAME = 4 * 1024;
 // and the tab never catches up (full freeze). Capped at the server's 16MB raw
 // ring — that is the most history a fresh replay could ever produce anyway, so
 // dropping older queued bytes loses nothing the backend can still show.
-const MAX_PENDING_WRITE_BYTES = 2 * 1024 * 1024;
+const MAX_PENDING_WRITE_BYTES = 16 * 1024 * 1024;
 // How many lines of local scrollback each terminal retains. The server owns the
 // deep history (16MB raw ring), but the client cap is what actually decides how
 // far back the user can scroll WITHOUT a round-trip — and, because every history
@@ -130,7 +139,11 @@ function readFileBase64(file: File): Promise<string> {
 // Chunks here are raw latin1 binary strings (the WS layer already decoded any
 // base64), so concatenation is all that's needed before the width-protection
 // pass and the final bytes handed to xterm.
-function decodeTerminalBytes(chunks: string[], term: Terminal): Uint8Array {
+function decodeTerminalBytes(
+  chunks: string[],
+  term: Terminal,
+  alternateScreenFilter: AlternateScreenStreamFilter,
+): Uint8Array {
   const binary = chunks.length === 1 ? chunks[0] : chunks.join('');
   // When enabled (default on), strip alternate-screen switches so full-screen
   // apps (tmux/vim/less) render into the normal buffer and their scrolled-off
@@ -138,9 +151,10 @@ function decodeTerminalBytes(chunks: string[], term: Terminal): Uint8Array {
   // xterm faking arrow keys (which cycles the shell's command history in tmux).
   // Applied here so EVERY write path — live flush, captured-during-load replay,
   // and history rebuild — is covered by the single choke point.
-  const source = useUIStore.getState().keepAltScreenInScrollback
-    ? stripAlternateScreen(binary)
-    : binary;
+  const source = alternateScreenFilter.write(
+    binary,
+    useUIStore.getState().keepAltScreenInScrollback,
+  );
   return binaryStringToBytes(protectStatusLineRedraws(source, term.cols, term.rows));
 }
 
@@ -218,7 +232,8 @@ export function TerminalView({
   const historyLoadingRef = useRef(false);
   const historyLoadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyLoadAttemptsRef = useRef(0);
-  const armHistoryLoadRef = useRef<((fromOffset: number) => void) | null>(null);
+  const historyLoadToOffsetRef = useRef<number | null>(null);
+  const armHistoryLoadRef = useRef<((fromOffset: number, toOffset?: number) => void) | null>(null);
   const capturedDuringLoadRef = useRef<Array<{ bin: string; offsetEnd?: number }>>([]);
   const capturedDuringLoadBytesRef = useRef(0);
   const pendingChunksRef = useRef<string[]>([]);
@@ -1127,6 +1142,7 @@ export function TerminalView({
     clearHistoryLoadTimeout();
     historyLoadingRef.current = false;
     historyLoadAttemptsRef.current = 0;
+    historyLoadToOffsetRef.current = null;
     capturedDuringLoadRef.current = [];
     capturedDuringLoadBytesRef.current = 0;
     setHistoryLoading(false);
@@ -1187,6 +1203,7 @@ export function TerminalView({
     if (fromOffset >= toOffset) return;
     historyLoadingRef.current = true;
     historyLoadAttemptsRef.current = 0;
+    historyLoadToOffsetRef.current = toOffset;
     capturedDuringLoadRef.current = [];
     capturedDuringLoadBytesRef.current = 0;
     setHistoryLoading(true);
@@ -1398,6 +1415,7 @@ export function TerminalView({
     let flushFrame: number | null = null;
     let writeInFlight = false;
     let disposed = false;
+    const alternateScreenFilter = new AlternateScreenStreamFilter();
 
     const scheduleFlush = () => {
       if (disposed) return;
@@ -1446,7 +1464,7 @@ export function TerminalView({
         writeInFlight = true;
         const writeStart = performance.now();
         const writeBytes = batchBytes;
-        term.write(decodeTerminalBytes(batch, term), () => {
+        term.write(decodeTerminalBytes(batch, term, alternateScreenFilter), () => {
           if (disposed) return;
           // Client-side jank visibility: a slow term.write is the main suspect
           // for a "frozen" tab. Log it with buffer size so we can see whether
@@ -1502,8 +1520,9 @@ export function TerminalView({
       const tail = capturedDuringLoadRef.current;
       capturedDuringLoadRef.current = [];
       capturedDuringLoadBytesRef.current = 0;
+      historyLoadToOffsetRef.current = null;
       for (const c of tail) {
-        term.write(decodeTerminalBytes([c.bin], term));
+        term.write(decodeTerminalBytes([c.bin], term, alternateScreenFilter));
       }
       historyLoadingRef.current = false;
       setHistoryLoading(false);
@@ -1511,8 +1530,23 @@ export function TerminalView({
 
     // `binData` is a raw latin1 binary string (live frames decoded at the WS
     // boundary; replay/history atob'd there too).
-    const writer = (binData: string, offsetEnd?: number, isReplay?: boolean) => {
+    const writer = (
+      binData: string,
+      offsetEnd?: number,
+      isReplay?: boolean,
+      isResync?: boolean,
+    ) => {
       if (disposed) return;
+      if (isResync) {
+        // A resync supersedes anything still queued from before the gap. Keeping
+        // those bytes would parse stale output immediately before an overlapping
+        // tail and create a visible jump. It also starts a new parser boundary.
+        pendingChunks.length = 0;
+        pendingBytes = 0;
+        alternateScreenFilter.reset();
+        capturedDuringLoadRef.current = [];
+        capturedDuringLoadBytesRef.current = 0;
+      }
       let data = binData;
       if (isReplay) {
         // Strip device queries from replayed history so xterm doesn't answer
@@ -1546,7 +1580,12 @@ export function TerminalView({
           const dropped = pendingChunks.shift()!;
           pendingBytes -= dropped.length;
         }
-        pendingChunks.unshift('\x1b[0m');
+        // Keep accounting exact: an uncounted standalone reset was subtracted
+        // on the next eviction, making pendingBytes drift downward until the
+        // supposedly bounded queue could grow without limit.
+        const reset = '\x1b[0m';
+        pendingChunks.unshift(reset);
+        pendingBytes += reset.length;
       }
       // Only push to the terminal while following the live edge. If the user
       // has scrolled up to read history, park the bytes (they stay in
@@ -1568,6 +1607,19 @@ export function TerminalView({
       if (disposed) return;
       if (!historyLoadingRef.current) return;
       clearHistoryLoadTimeout();
+      // A retry response can arrive after a newer page load has started, and a
+      // backpressure resync can replace the cache while this request is in
+      // flight. Only splice a page onto the exact cache boundary it requested;
+      // otherwise we would manufacture an overlap or an internal hole.
+      const expectedToOffset = historyLoadToOffsetRef.current;
+      const currentCacheStart = getRawCacheStart(sessionId);
+      if (expectedToOffset === null || currentCacheStart !== expectedToOffset) {
+        historyLoadToOffsetRef.current = null;
+        syncSessionMetaToRawCache(sessionId);
+        flushCapturedDuringLoadRef.current?.();
+        return;
+      }
+      historyLoadToOffsetRef.current = null;
       // Drop pending chunks — anything in there is already inside the snapshot
       // window (offsetEnd <= snapshot.endOffset).
       pendingChunks.length = 0;
@@ -1605,8 +1657,7 @@ export function TerminalView({
       // buffer is already at the cap — old and new line counts match, so the
       // diff is 0 and the view jumps to the top, the original bug). During the
       // load live chunks are parked, so this reading is stable.
-      const buf0 = term.buffer.active;
-      const linesFromBottom = Math.max(0, buf0.baseY - buf0.viewportY);
+      const scrollAnchor = captureTerminalScrollAnchor(term.buffer.active);
 
       // Render the cache as of now; bytes still streaming in are parked and
       // replayed against this offset once the rebuild lands.
@@ -1616,7 +1667,7 @@ export function TerminalView({
       const afterSnapshot = () => {
         if (disposed) return;
         const buf = term.buffer.active;
-        const target = Math.max(0, buf.baseY - linesFromBottom);
+        const target = resolveTerminalScrollAnchor(buf, scrollAnchor);
         try { term.scrollToLine(target); } catch { /* ignore */ }
         // Replay live tail at the bottom; with scrollOnOutput off this leaves
         // the anchored viewport untouched. Filter against what the rebuild
@@ -1629,7 +1680,7 @@ export function TerminalView({
         capturedDuringLoadRef.current = [];
         capturedDuringLoadBytesRef.current = 0;
         for (const c of tail) {
-          term.write(decodeTerminalBytes([c.bin], term));
+          term.write(decodeTerminalBytes([c.bin], term, alternateScreenFilter));
         }
         // If the rebuilt buffer already fills xterm's scrollback, older bytes
         // can't be displayed (they'd be discarded on the next rebuild), so stop
@@ -1643,6 +1694,7 @@ export function TerminalView({
         setHistoryLoading(false);
       };
 
+      alternateScreenFilter.reset();
       term.reset();
       if (rebuildChunks.length > 0) {
         // Write ONE cached chunk at a time, chained on term.write's callback,
@@ -1665,7 +1717,7 @@ export function TerminalView({
           }
           let bin = rebuildChunks[chunkIndex++];
           try { bin = stripDeviceQueries(bin); } catch { /* keep original */ }
-          term.write(decodeTerminalBytes([bin], term), writeNextChunk);
+          term.write(decodeTerminalBytes([bin], term, alternateScreenFilter), writeNextChunk);
         };
         writeNextChunk();
       } else {

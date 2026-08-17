@@ -13,6 +13,7 @@ export type DetectionRegion =
   | { kind: 'after_last_horizontal_rule' }
   | { kind: 'after_last_prompt_marker' }
   | { kind: 'prompt_box_body' }
+  | { kind: 'numbered_prompt_card' }
   | { kind: 'osc_title' }
   | { kind: 'osc_progress' };
 

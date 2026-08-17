@@ -469,9 +469,10 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   // echo queues behind seconds of stale output — "I can't type". When a client's
   // send buffer crosses HIGH we stop piling on raw frames for that session;
   // once it drains below LOW we send one terminal reset + the latest tail so the
-  // client snaps to the current screen. Bytes dropped in between are scrolled-off
-  // content; offsets stay contiguous (resync end → live continues) so the client
-  // needs no gap handling. Terminal sockets subscribe to a single session, so
+  // client snaps to the current screen. The resync frame carries its raw range
+  // explicitly so the client treats the tail as a new contiguous suffix; older
+  // retained bytes can then be paged back without hiding an internal gap.
+  // Terminal sockets subscribe to a single session, so
   // tracking "behind" per (ws, session) matches the bufferedAmount granularity.
   // Kept low on purpose: the backlog cap IS the worst-case added latency
   // (bytes / link-rate). 256KB over a 2MB/s link is ~125ms; 1MB would be ~500ms
@@ -507,13 +508,14 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   // client had to JSON.parse + atob a multi-KB string per frame on the main
   // thread. Binary frames send the PTY bytes verbatim — smaller on the wire,
   // better deflate ratio, and the client hands them straight to xterm. Layout:
-  //   [0]      = frame type (0x01 raw output; a leading RIS in the payload IS
-  //              the resync, so no separate type is needed)
+  //   [0]      = frame type (0x01 raw output, 0x02 resync)
   //   [1]      = sessionId byte length (uint8; ids are short UUIDs)
   //   [2..2+L] = sessionId (utf8)
-  //   [.. +8]  = offsetEnd (float64 LE; byte counts stay exact below 2^53)
-  //   [rest]   = raw PTY bytes
+  //   type 01: [.. +8] = offsetEnd, then raw PTY bytes
+  //   type 02: [.. +8] = rawStartOffset, [.. +8] = offsetEnd, then a terminal
+  //            reset prefix + the raw tail in [rawStartOffset, offsetEnd)
   const RAW_FRAME_TYPE = 0x01;
+  const RAW_RESYNC_FRAME_TYPE = 0x02;
   const encodeRawFrame = (sessionId: string, payload: Buffer, offsetEnd: number): Buffer => {
     const sid = Buffer.from(sessionId, 'utf8');
     const header = Buffer.allocUnsafe(2 + sid.length + 8);
@@ -521,6 +523,24 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     header[1] = sid.length;
     sid.copy(header, 2);
     header.writeDoubleLE(offsetEnd, 2 + sid.length);
+    return Buffer.concat([header, payload]);
+  };
+  // A resync payload has terminal-control bytes before the raw tail. Carry the
+  // raw start explicitly so the browser does not count that reset prefix as
+  // session history or append a post-backpressure gap as if it were contiguous.
+  const encodeRawResyncFrame = (
+    sessionId: string,
+    payload: Buffer,
+    rawStartOffset: number,
+    offsetEnd: number,
+  ): Buffer => {
+    const sid = Buffer.from(sessionId, 'utf8');
+    const header = Buffer.allocUnsafe(2 + sid.length + 16);
+    header[0] = RAW_RESYNC_FRAME_TYPE;
+    header[1] = sid.length;
+    sid.copy(header, 2);
+    header.writeDoubleLE(rawStartOffset, 2 + sid.length);
+    header.writeDoubleLE(offsetEnd, 2 + sid.length + 8);
     return Buffer.concat([header, payload]);
   };
 
@@ -598,7 +618,13 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
             PROF.markMs('resync.sent', 0, resyncBuf.length, sessionId);
           }
           if (isTerminal) {
-            sendRaw(ws, encodeRawFrame(sessionId, resyncBuf, tail.offsetEnd));
+            const rawTailBytes = Buffer.from(tail.data, 'base64').length;
+            sendRaw(ws, encodeRawResyncFrame(
+              sessionId,
+              resyncBuf,
+              Math.max(0, tail.offsetEnd - rawTailBytes),
+              tail.offsetEnd,
+            ));
           } else {
             sendRaw(ws, JSON.stringify({
               type: 'event',

@@ -15,7 +15,7 @@
 // byte), NOT base64. The live path receives binary WS frames and the replay/
 // history paths atob() their base64 at the WS boundary, so byte size is just
 // `.length` — exact, no estimate needed.
-type Writer = (binData: string, offsetEnd?: number, isReplay?: boolean) => void;
+type Writer = (binData: string, offsetEnd?: number, isReplay?: boolean, isResync?: boolean) => void;
 type SnapshotListener = (snapshot: HistorySnapshot) => void;
 type MetaListener = (meta: SessionMeta) => void;
 
@@ -31,7 +31,10 @@ const RAW_CACHE_MAX_BYTES = 24 * 1024 * 1024;
 const RAW_CACHE_LOW_WATER_BYTES = Math.floor(RAW_CACHE_MAX_BYTES * 0.9);
 
 const writers = new Map<string, Writer>();
-const buffers = new Map<string, { chunks: Array<{ bin: string; offsetEnd?: number; isReplay?: boolean }>; bytes: number }>();
+const buffers = new Map<string, {
+  chunks: Array<{ bin: string; offsetEnd?: number; isReplay?: boolean; isResync?: boolean }>;
+  bytes: number;
+}>();
 const meta = new Map<string, SessionMeta>();
 const metaListeners = new Map<string, Set<MetaListener>>();
 const snapshotListeners = new Map<string, Set<SnapshotListener>>();
@@ -90,6 +93,15 @@ function appendRawCache(sessionId: string, bin: string, offsetEnd: number): void
   }
 }
 
+function replaceRawCache(sessionId: string, bin: string, startOffset: number, offsetEnd: number): void {
+  rawCaches.set(sessionId, {
+    chunks: bin.length > 0 ? [{ bin, offsetEnd }] : [],
+    bytes: bin.length,
+    startOffset,
+    evicted: false,
+  });
+}
+
 /** Offset of the oldest byte this client still holds, or null if it holds none. */
 export function getRawCacheStart(sessionId: string): number | null {
   const c = rawCaches.get(sessionId);
@@ -127,7 +139,6 @@ export function prependRawCache(sessionId: string, bin: string, startOffset: num
     rawCaches.set(sessionId, c);
   }
   if (bin.length === 0) {
-    c.startOffset = Math.min(c.startOffset, startOffset);
     return;
   }
   c.chunks.unshift({ bin, offsetEnd: endOffset });
@@ -187,14 +198,20 @@ function emitMeta(sessionId: string): void {
   for (const l of listeners) l(m);
 }
 
-function appendBufferedChunk(sessionId: string, binData: string, offsetEnd?: number, isReplay?: boolean): void {
+function appendBufferedChunk(
+  sessionId: string,
+  binData: string,
+  offsetEnd?: number,
+  isReplay?: boolean,
+  isResync?: boolean,
+): void {
   let buffer = buffers.get(sessionId);
   if (!buffer) {
     buffer = { chunks: [], bytes: 0 };
     buffers.set(sessionId, buffer);
   }
 
-  buffer.chunks.push({ bin: binData, offsetEnd, isReplay });
+  buffer.chunks.push({ bin: binData, offsetEnd, isReplay, isResync });
   buffer.bytes += binData.length;
 
   while (buffer.bytes > MAX_BUFFERED_BYTES_PER_SESSION && buffer.chunks.length > 1) {
@@ -223,7 +240,7 @@ export function registerTerminalWriter(sessionId: string, writer: Writer): void 
   const buffer = buffers.get(sessionId);
   if (buffer && buffer.chunks.length > 0) {
     for (const chunk of buffer.chunks) {
-      writer(chunk.bin, chunk.offsetEnd, chunk.isReplay);
+      writer(chunk.bin, chunk.offsetEnd, chunk.isReplay, chunk.isResync);
     }
     buffers.delete(sessionId);
   }
@@ -240,13 +257,36 @@ export function writeToTerminal(sessionId: string, binData: string, offsetEnd?: 
   // Track offsets regardless of whether a writer is present — keeps history
   // metadata accurate even if the terminal is still mounting.
   if (typeof offsetEnd === 'number' && Number.isFinite(offsetEnd)) {
-    // Keep the bytes so "load earlier" can fetch only the older delta. Both the
-    // live and replay paths land here, so the cache stays contiguous through to
-    // the newest byte.
-    appendRawCache(sessionId, binData, offsetEnd);
     const m = getOrCreateMeta(sessionId);
-    const offsetStart = offsetEnd - binData.length;
+    let offsetStart = Math.max(0, offsetEnd - binData.length);
     const prevLowest = m.lowestOffset;
+    const prevReachedEarliest = m.reachedEarliest;
+
+    // Reconnect replays and delayed frames can overlap bytes already delivered.
+    // Trim that overlap before both caching and rendering; otherwise xterm
+    // parses the same terminal commands twice and scrollback visibly jumps.
+    if (m.highestOffset > 0 && offsetEnd <= m.highestOffset) {
+      return writers.has(sessionId);
+    }
+    if (m.highestOffset > 0 && offsetStart < m.highestOffset) {
+      const overlap = Math.min(binData.length, m.highestOffset - offsetStart);
+      binData = binData.slice(overlap);
+      offsetStart += overlap;
+    }
+
+    // A forward gap means the server intentionally resynced or its ring evicted
+    // bytes while this client was away. Never concatenate the two sides and call
+    // them contiguous: history paging only extends the front, so such an
+    // internal hole could never be repaired. Keep the newest contiguous suffix;
+    // the user can page backward from its exact start.
+    if (m.highestOffset > 0 && offsetStart > m.highestOffset) {
+      replaceRawCache(sessionId, binData, offsetStart, offsetEnd);
+      m.lowestOffset = offsetStart;
+      m.reachedEarliest = false;
+    } else {
+      appendRawCache(sessionId, binData, offsetEnd);
+    }
+
     if (m.highestOffset === 0 && m.lowestOffset === 0) {
       m.lowestOffset = Math.max(0, offsetStart);
     }
@@ -255,8 +295,12 @@ export function writeToTerminal(sessionId: string, binData: string, offsetEnd?: 
     // highestOffset advances on every output frame but nothing reads it in
     // render, so emitting here unconditionally re-rendered TerminalView (and
     // re-ran its history-load effect) on every single WS frame.
-    if (m.lowestOffset !== prevLowest) emitMeta(sessionId);
+    if (m.lowestOffset !== prevLowest || m.reachedEarliest !== prevReachedEarliest) {
+      emitMeta(sessionId);
+    }
   }
+
+  if (binData.length === 0) return writers.has(sessionId);
 
   const writer = writers.get(sessionId);
   if (writer) {
@@ -266,6 +310,40 @@ export function writeToTerminal(sessionId: string, binData: string, offsetEnd?: 
 
   // No writer yet — buffer bounded recent output for remounts.
   appendBufferedChunk(sessionId, binData, offsetEnd, isReplay);
+  return false;
+}
+
+/**
+ * Deliver a backpressure resync frame without corrupting raw-history offsets.
+ * `binData` contains a terminal soft-reset prefix followed by the raw tail, but
+ * only [rawStartOffset, offsetEnd) belongs to the session byte stream. Cache the
+ * exact tail as a fresh contiguous suffix while still delivering the reset to
+ * xterm so its parser leaves any truncated escape sequence behind.
+ */
+export function writeResyncToTerminal(
+  sessionId: string,
+  binData: string,
+  rawStartOffset: number,
+  offsetEnd: number,
+): boolean {
+  const start = Math.max(0, Math.floor(rawStartOffset));
+  const end = Math.max(start, Math.floor(offsetEnd));
+  const rawLength = Math.min(binData.length, end - start);
+  const rawTail = rawLength > 0 ? binData.slice(binData.length - rawLength) : '';
+  replaceRawCache(sessionId, rawTail, end - rawLength, end);
+
+  const m = getOrCreateMeta(sessionId);
+  m.lowestOffset = end - rawLength;
+  m.highestOffset = Math.max(m.highestOffset, end);
+  m.reachedEarliest = m.lowestOffset === 0;
+  emitMeta(sessionId);
+
+  const writer = writers.get(sessionId);
+  if (writer) {
+    writer(binData, end, true, true);
+    return true;
+  }
+  appendBufferedChunk(sessionId, binData, end, true, true);
   return false;
 }
 
@@ -293,6 +371,17 @@ export function markReachedEarliest(sessionId: string): void {
   const m = getOrCreateMeta(sessionId);
   if (m.reachedEarliest) return;
   m.reachedEarliest = true;
+  emitMeta(sessionId);
+}
+
+/** Restore metadata after rejecting a stale history response. */
+export function syncSessionMetaToRawCache(sessionId: string): void {
+  const m = getOrCreateMeta(sessionId);
+  const start = getRawCacheStart(sessionId);
+  const end = getRawCacheEnd(sessionId);
+  if (start !== null) m.lowestOffset = start;
+  if (end !== null) m.highestOffset = Math.max(m.highestOffset, end);
+  m.reachedEarliest = start === 0;
   emitMeta(sessionId);
 }
 

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { applyHistorySnapshot, getSessionMeta, writeToTerminal } from '../terminalBus';
+import {
+  applyHistorySnapshot,
+  getSessionMeta,
+  writeResyncToTerminal,
+  writeToTerminal,
+} from '../terminalBus';
 import { bytesToBinaryString } from '../base64';
 import { useServerStore, LOCAL_SERVER } from './useServers';
 import { useSessionStore, type NormalizedEvent } from './useSessions';
@@ -118,15 +123,22 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
   const handleBinaryFrame = useCallback((buf: ArrayBuffer) => {
     if (buf.byteLength < 10) return;
     const view = new DataView(buf);
-    if (view.getUint8(0) !== 0x01) return; // unknown frame type
+    const frameType = view.getUint8(0);
+    if (frameType !== 0x01 && frameType !== 0x02) return;
     const sidLen = view.getUint8(1);
-    const headerEnd = 2 + sidLen + 8;
+    const headerEnd = 2 + sidLen + (frameType === 0x02 ? 16 : 8);
     if (buf.byteLength < headerEnd) return;
     const sid = SID_DECODER.decode(new Uint8Array(buf, 2, sidLen));
     if (sid !== sessionId) return;
-    const offsetEnd = view.getFloat64(2 + sidLen, true);
     const bin = bytesToBinaryString(new Uint8Array(buf, headerEnd));
-    writeToTerminal(sessionId, bin, offsetEnd, false);
+    if (frameType === 0x02) {
+      const rawStartOffset = view.getFloat64(2 + sidLen, true);
+      const offsetEnd = view.getFloat64(2 + sidLen + 8, true);
+      writeResyncToTerminal(sessionId, bin, rawStartOffset, offsetEnd);
+    } else {
+      const offsetEnd = view.getFloat64(2 + sidLen, true);
+      writeToTerminal(sessionId, bin, offsetEnd, false);
+    }
   }, [sessionId]);
 
   const handleMessage = useCallback((msg: WSMessage) => {
