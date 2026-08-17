@@ -31,6 +31,15 @@ const OSC_PAYLOAD_RE = new RegExp(
   `${ESC_CHAR}\\]\\d+;([^${BEL_CHAR}${ESC_CHAR}]*?)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
   'g',
 );
+// Shell integrations emit OSC 133;A at the beginning of a prompt. OSC 7 is a
+// less specific fallback, but in interactive shells it is likewise normally
+// emitted by precmd just before the prompt. Seeing either after a detected
+// agent has been running gives us a lifecycle boundary that plain rendered
+// prompt text cannot provide reliably across arbitrary zsh/bash themes.
+const OSC_SHELL_PROMPT_RE = new RegExp(
+  `${ESC_CHAR}\\](?:133;A(?:;[^${BEL_CHAR}${ESC_CHAR}]*)?|7;file://[^${BEL_CHAR}${ESC_CHAR}]*)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
+);
+const AGENT_CRUISE_EXIT_LINE = 'AgentCruise exited.';
 const INTERACTIVE_SHELLS = new Set(['sh', 'bash', 'zsh', 'fish', 'tcsh', 'csh', 'ksh', 'dash']);
 
 function basename(command: string): string {
@@ -51,12 +60,17 @@ export class GenericAdapter extends BaseAdapter {
   private _detectedTool: string | null = null;
   /** Rolling buffer of stripped text scanned for a tool's startup banner. */
   private _detectBuf = '';
+  /** Small cross-chunk tails for shell-return markers (PTY reads may split at
+   *  any byte, including in the middle of an OSC sequence or exit line). */
+  private _shellReturnRawTail = '';
+  private _shellReturnTextTail = '';
   /**
    * Whether we're still scanning output for a startup banner. Active from launch
    * (a wrapper that boots straight into the tool prints its banner before any
    * keystroke) and re-armed on each Enter (a shell wrapper only launches the tool
-   * after the user types its name). Latches off for good once a tool is detected,
-   * so a Claude session that later prints "OpenAI Codex" can't flip its identity.
+   * after the user types its name). Latches off for that tool's lifetime, so a
+   * Claude session that later prints "OpenAI Codex" can't flip its identity;
+   * a verified return to the parent shell resets it for the next command.
    */
   private _detectActive = true;
 
@@ -101,28 +115,7 @@ export class GenericAdapter extends BaseAdapter {
     });
     this.startCwdPolling(this.ptyProcess.pid);
 
-    this.ptyProcess.onData((data: string) => {
-      const tChunk = PROF.profiling ? PROF.nowNs() : 0n;
-      this.detectTool(data);
-      if (PROF.profiling) PROF.mark('pty.detectTool', tChunk, data.length, this.sessionId);
-
-      const tAct = PROF.profiling ? PROF.nowNs() : 0n;
-      this.handleActivityDetection(data);
-      if (PROF.profiling) PROF.mark('pty.activityDetect', tAct, data.length, this.sessionId);
-
-      const tOsc = PROF.profiling ? PROF.nowNs() : 0n;
-      this.parseOSC(data);
-      if (PROF.profiling) PROF.mark('pty.parseOSC', tOsc, data.length, this.sessionId);
-
-      const tEmit = PROF.profiling ? PROF.nowNs() : 0n;
-      this.emitEvent('raw:output', {
-        data: Buffer.from(data).toString('base64'),
-      } satisfies RawOutputData);
-      if (PROF.profiling) {
-        PROF.mark('pty.emit+base64', tEmit, data.length, this.sessionId);
-        PROF.mark('pty.chunkTotal', tChunk, data.length, this.sessionId);
-      }
-    });
+    this.ptyProcess.onData((data: string) => this.handlePtyData(data));
 
     this.ptyProcess.onExit(({ exitCode, signal }) => {
       this.clearIdleTimer();
@@ -161,6 +154,83 @@ export class GenericAdapter extends BaseAdapter {
 
   kill(signal?: string): void {
     this.ptyProcess?.kill(signal);
+  }
+
+  /** Process one PTY output chunk. Kept as one unit so lifecycle boundaries
+   *  are evaluated in the same order as screen and OSC state. */
+  private handlePtyData(data: string): void {
+    const tChunk = PROF.profiling ? PROF.nowNs() : 0n;
+    const hadDetectedTool = this._detectedTool !== null;
+    this.detectTool(data);
+    if (PROF.profiling) PROF.mark('pty.detectTool', tChunk, data.length, this.sessionId);
+
+    const tAct = PROF.profiling ? PROF.nowNs() : 0n;
+    this.handleActivityDetection(data);
+    if (PROF.profiling) PROF.mark('pty.activityDetect', tAct, data.length, this.sessionId);
+
+    const tOsc = PROF.profiling ? PROF.nowNs() : 0n;
+    this.parseOSC(data);
+    if (PROF.profiling) PROF.mark('pty.parseOSC', tOsc, data.length, this.sessionId);
+
+    // A GenericAdapter often owns a long-lived shell which launches an agent
+    // as a child. The child exiting does not fire node-pty's onExit; only the
+    // outer shell would do that. Detect the return to the shell explicitly so
+    // the session does not retain the agent's running state and identity.
+    if (hadDetectedTool && this.didReturnToShell(data)) {
+      this.resetDetectedToolAtShellPrompt();
+    }
+
+    const tEmit = PROF.profiling ? PROF.nowNs() : 0n;
+    this.emitEvent('raw:output', {
+      data: Buffer.from(data).toString('base64'),
+    } satisfies RawOutputData);
+    if (PROF.profiling) {
+      PROF.mark('pty.emit+base64', tEmit, data.length, this.sessionId);
+      PROF.mark('pty.chunkTotal', tChunk, data.length, this.sessionId);
+    }
+  }
+
+  private didReturnToShell(data: string): boolean {
+    const rawCandidate = this._shellReturnRawTail + data;
+    const shellPromptSignal = OSC_SHELL_PROMPT_RE.test(rawCandidate);
+    // A complete signal is consumed now even if the busy-screen safety check
+    // rejects it, so a nested tool shell cannot trigger a later false return.
+    this._shellReturnRawTail = shellPromptSignal ? '' : rawCandidate.slice(-256);
+
+    const visibleChunk = data
+      .replace(OSC_ANY_RE, '')
+      .replace(CSI_RE, '')
+      .replace(ESC_OTHER_RE, '')
+      .replace(/\r/g, '');
+    this._shellReturnTextTail = (this._shellReturnTextTail + visibleChunk).slice(-512);
+    const explicitWrapperExit = this._shellReturnTextTail
+      .split('\n')
+      .some((line) => line.trim() === AGENT_CRUISE_EXIT_LINE);
+    if (explicitWrapperExit) return true;
+    if (!shellPromptSignal) return false;
+
+    // An interactive tool command can itself start a shell which emits OSC 7.
+    // Do not treat that as the parent prompt while the live screen still has
+    // an agent busy line or an approval card.
+    const screen = this.getScreenSnapshot();
+    return !screen.promptVisible && !matchesBusyScreen(screen.recent);
+  }
+
+  private resetDetectedToolAtShellPrompt(): void {
+    if (!this._detectedTool) return;
+    this._detectedTool = null;
+    // Stay quiescent at the returned prompt. write() re-arms detection on the
+    // next submitted command; scanning passive shell redraws here could latch
+    // onto an old banner repainted from terminal history.
+    this._detectActive = false;
+    this._detectBuf = '';
+    this._shellReturnRawTail = '';
+    this._shellReturnTextTail = '';
+    this.setStatus('idle');
+    this.emitEvent('tool:detect', {
+      tool: this.command,
+      displayName: this.command,
+    } satisfies ToolDetectData);
   }
 
   /** Scan stripped PTY output for a tool's startup banner (see _detectActive). */

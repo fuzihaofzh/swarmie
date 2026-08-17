@@ -1,5 +1,5 @@
 import { BaseAdapter, type AdapterOptions } from './base.js';
-import type { AdapterInfo, NormalizedEvent, RawOutputData, SessionStatus } from './types.js';
+import type { AdapterInfo, NormalizedEvent, RawOutputData, SessionStatus, ToolDetectData } from './types.js';
 
 /**
  * A virtual adapter that represents a session from a remote swarmie instance.
@@ -63,6 +63,14 @@ export class RemoteAdapter extends BaseAdapter {
       // status:change ourselves when _status actually changes), then forward
       // the original event so upstream consumers see the transition.
       this.applyExternalStatus(nextStatus);
+    }
+    if (event.type === 'tool:detect') {
+      const data = event.data as ToolDetectData;
+      this._info = {
+        ...this._info,
+        name: data.tool,
+        displayName: data.displayName,
+      };
     }
     if (event.type === 'session:end') {
       this.disposeScreen();

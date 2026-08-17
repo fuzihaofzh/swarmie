@@ -129,6 +129,59 @@ describe('adapter registry', () => {
     expect(adapter.info.name).toBe('claude');
   });
 
+  it('returns a banner-detected agent session to idle when AgentCruise exits to its shell', () => {
+    const adapter = createAdapter('/bin/zsh', { sessionId: 'generic-agentcruise-exit', toolArgs: [] });
+    const feed = (adapter as unknown as { handlePtyData: (chunk: string) => void }).handlePtyData.bind(adapter);
+    const detected: string[] = [];
+    adapter.on('event', (event) => {
+      if (event.type === 'tool:detect') detected.push((event.data as { tool: string }).tool);
+    });
+
+    adapter.write('agentcruise\r');
+    feed('│ >_ OpenAI Codex (v0.144.6) │');
+    expect(adapter.info.name).toBe('codex');
+    expect(adapter.status).toBe('running');
+
+    feed('\r\nAgentCruise ex');
+    expect(adapter.status).toBe('running');
+    feed('ited.\r\n%\r\n(base) user@host /work/project\r\n> ');
+
+    expect(adapter.status).toBe('idle');
+    expect(adapter.info).toMatchObject({ name: '/bin/zsh', displayName: '/bin/zsh' });
+    expect(detected).toEqual(['codex', '/bin/zsh']);
+
+    adapter.write('claude\r');
+    feed('Claude Code v2.1.212');
+    expect(adapter.info.name).toBe('claude');
+    expect(detected).toEqual(['codex', '/bin/zsh', 'claude']);
+  });
+
+  it('returns a banner-detected agent session to idle on a shell prompt OSC marker', () => {
+    const adapter = createAdapter('/bin/zsh', { sessionId: 'generic-shell-prompt', toolArgs: [] });
+    const feed = (adapter as unknown as { handlePtyData: (chunk: string) => void }).handlePtyData.bind(adapter);
+
+    adapter.write('codex\r');
+    feed('│ >_ OpenAI Codex (v0.144.6) │');
+    feed('\x1b]133;');
+    expect(adapter.status).toBe('running');
+    feed('A\x07\x1b]7;file://host/work/project\x07% ');
+
+    expect(adapter.status).toBe('idle');
+    expect(adapter.info.name).toBe('/bin/zsh');
+  });
+
+  it('does not mistake a nested shell OSC marker for the parent prompt while the agent is visibly busy', () => {
+    const adapter = createAdapter('/bin/zsh', { sessionId: 'generic-nested-shell', toolArgs: [] });
+    const feed = (adapter as unknown as { handlePtyData: (chunk: string) => void }).handlePtyData.bind(adapter);
+
+    adapter.write('codex\r');
+    feed('│ >_ OpenAI Codex (v0.144.6) │');
+    feed('\x1b]7;file://host/work/project\x07◦ Working (2m 36s • esc to interrupt)');
+
+    expect(adapter.status).toBe('running');
+    expect(adapter.info.name).toBe('codex');
+  });
+
   it('settles remote startup output to idle', () => {
     const adapter = new RemoteAdapter(
       { sessionId: 'remote-ready', toolArgs: [] },
@@ -150,6 +203,32 @@ describe('adapter registry', () => {
     });
 
     expect(adapter.status).toBe('idle');
+  });
+
+  it('keeps remote adapter info in sync with forwarded tool lifecycle changes', () => {
+    const adapter = new RemoteAdapter(
+      { sessionId: 'remote-tool-change', toolArgs: [] },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        icon: '',
+        command: '/bin/zsh',
+        supportsStructured: false,
+      },
+    );
+
+    adapter.pushEvent({
+      type: 'tool:detect',
+      sessionId: 'remote-tool-change',
+      timestamp: Date.now(),
+      data: { tool: '/bin/zsh', displayName: '/bin/zsh' },
+    });
+
+    expect(adapter.info).toMatchObject({
+      name: '/bin/zsh',
+      displayName: '/bin/zsh',
+      command: '/bin/zsh',
+    });
   });
 
   it('allows remote running status when no prompt is visible', () => {
