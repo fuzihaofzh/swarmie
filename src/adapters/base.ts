@@ -374,6 +374,16 @@ export abstract class BaseAdapter extends EventEmitter {
     return true;
   }
 
+  /**
+   * Whether OSC 7/window-title sequences in PTY output are shell metadata.
+   * Direct agent output is untrusted transcript/tool output and must not be
+   * allowed to move the session to a path merely because it contains an OSC
+   * sequence emitted by a nested command.
+   */
+  protected shouldTrackOscCwd(): boolean {
+    return true;
+  }
+
   /** Start the underlying tool process */
   abstract start(): void;
 
@@ -615,6 +625,8 @@ export abstract class BaseAdapter extends EventEmitter {
    * OSC 0/2: window title, often "user@host:path" — fallback for SSH.
    */
   protected parseOSC(chunk: string): void {
+    if (!this.shouldTrackOscCwd()) return;
+
     let match: RegExpExecArray | null;
 
     // OSC 7: authoritative cwd + hostname
@@ -791,13 +803,14 @@ export abstract class BaseAdapter extends EventEmitter {
     // Skip polling when OSC sequences are actively tracking cwd (e.g. SSH)
     if (this._oscCwdActive) return;
     try {
-      // Find the deepest descendant process — that's the actual shell/agent
-      const leafPid = await this.findLeafChild(pid);
+      // Track the PTY's owning shell/agent only. Coding agents routinely spawn
+      // short-lived tools in other directories; following the deepest child
+      // makes those implementation details look like a user `cd`.
       let resolvedCwd: string;
       if (process.platform === 'linux') {
-        resolvedCwd = await readlink(`/proc/${leafPid}/cwd`);
+        resolvedCwd = await readlink(`/proc/${pid}/cwd`);
       } else if (process.platform === 'darwin') {
-        const { stdout } = await execFileAsync('lsof', ['-a', '-p', String(leafPid), '-d', 'cwd', '-Fn'], { timeout: 3000 });
+        const { stdout } = await execFileAsync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 3000 });
         const match = stdout.match(/\nn(.*)/);
         if (!match) return;
         resolvedCwd = match[1];
@@ -810,19 +823,6 @@ export abstract class BaseAdapter extends EventEmitter {
       }
     } catch {
       // Process may have exited, ignore
-    }
-  }
-
-  /** Walk process tree to find the deepest child (leaf) process */
-  private async findLeafChild(pid: number): Promise<number> {
-    try {
-      const { stdout } = await execFileAsync('pgrep', ['-P', String(pid)], { timeout: 2000 });
-      const children = stdout.trim().split('\n').filter(Boolean).map(Number);
-      if (children.length === 0) return pid;
-      // Recurse into the last child (most likely the foreground process)
-      return this.findLeafChild(children[children.length - 1]);
-    } catch {
-      return pid; // no children or pgrep failed
     }
   }
 

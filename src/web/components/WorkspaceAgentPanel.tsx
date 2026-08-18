@@ -223,7 +223,7 @@ export function WorkspaceAgentPanel() {
     const workspaceSession = selectedWorkspace
       ? activeSessions.find((session) => workspaceKey(session) === selectedWorkspace)
       : undefined;
-    const cwd = workspacePath(selectedWorkspace) ?? workspaceSession?.cwd ?? workspaceSession?.workspaceCwd;
+    const cwd = workspacePath(selectedWorkspace) ?? workspaceSession?.workspaceCwd ?? workspaceSession?.cwd;
     const result = await createSession({
       tool: defaultAgentTool,
       ...(cwd && cwd !== '~' ? { cwd } : {}),

@@ -99,6 +99,10 @@ export class ClaudeAdapter extends BaseAdapter {
     this.handleUserInput(data);
   }
 
+  protected shouldTrackOscCwd(): boolean {
+    return false;
+  }
+
   protected applyResize(cols: number, rows: number): void {
     this.ptyProcess?.resize(cols, rows);
   }

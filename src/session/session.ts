@@ -297,6 +297,7 @@ export class Session extends EventEmitter {
       displayName: this.adapter.info.displayName,
       icon: this.adapter.info.icon,
       cwd: this._cwd,
+      workspaceCwd: this._workspaceCwd,
       hostname: this._hostname,
       initialHostname: this._initialHostname,
       autoApprove: this.autoApprove || undefined,

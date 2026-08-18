@@ -74,6 +74,7 @@ const EMPTY_EVENTS: NormalizedEvent[] = [];
 
 const SESSION_SETTINGS_KEY = 'swarmie-session-settings-map';
 const ARCHIVED_SESSIONS_KEY = 'swarmie-archived-session-ids';
+const ACTIVE_SESSION_KEY = 'swarmie-active-session-id';
 
 export interface SessionSettingsPatch {
   autoApprove?: boolean;
@@ -116,6 +117,23 @@ function loadArchivedSessionIds(): string[] {
     return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
   } catch {
     return [];
+  }
+}
+
+function loadActiveSessionId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_SESSION_KEY)?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveSessionId(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(ACTIVE_SESSION_KEY, id);
+    else localStorage.removeItem(ACTIVE_SESSION_KEY);
+  } catch {
+    // Storage can be unavailable in private/restricted browser contexts.
   }
 }
 
@@ -212,7 +230,7 @@ export function useSessionEvents(sessionId: string): NormalizedEvent[] {
 export const useSessionStore = create<SessionState>((set) => ({
   sessions: [],
   events: {},
-  activeSessionId: null,
+  activeSessionId: loadActiveSessionId(),
   archivedSessionIds: loadArchivedSessionIds(),
 
   setSessions: (sessions) =>
@@ -545,5 +563,11 @@ export const useSessionStore = create<SessionState>((set) => ({
           ? firstUnarchivedSessionId(sessions, archived)
           : state.activeSessionId;
       return { sessions, events, activeSessionId, archivedSessionIds };
-    }),
+  }),
 }));
+
+useSessionStore.subscribe((state, previous) => {
+  if (state.activeSessionId !== previous.activeSessionId) {
+    saveActiveSessionId(state.activeSessionId);
+  }
+});

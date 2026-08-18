@@ -48,6 +48,26 @@ describe('Session', () => {
     expect(session.info.tool).toBe('claude');
   });
 
+  it('keeps the workspace cwd stable in session summaries when the live cwd changes', () => {
+    const adapter = createMockAdapter('sess-workspace');
+    const session = new Session('sess-workspace', 'workspace-session', adapter, {
+      cwd: '/work/original',
+    });
+
+    adapter.pushEvent({
+      type: 'cwd:change',
+      sessionId: session.id,
+      timestamp: Date.now(),
+      data: { cwd: '/work/transient', hostname: getSystemDisplayHostname() },
+    });
+
+    expect(session.summary).toMatchObject({
+      cwd: '/work/transient',
+      workspaceCwd: '/work/original',
+    });
+    expect(session.info.workspaceCwd).toBe('/work/original');
+  });
+
   it('defaults tags to the session hostname', () => {
     const adapter = createMockAdapter('sess-host');
     const session = new Session('sess-host', 'test-session', adapter, {

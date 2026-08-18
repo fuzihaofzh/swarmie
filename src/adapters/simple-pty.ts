@@ -72,6 +72,10 @@ export abstract class SimplePtyAdapter extends BaseAdapter {
     return matchesAgentIdleScreen(screenText);
   }
 
+  protected shouldTrackOscCwd(): boolean {
+    return false;
+  }
+
   kill(signal?: string): void {
     this.ptyProcess?.kill(signal);
   }

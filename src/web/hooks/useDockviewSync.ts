@@ -116,15 +116,22 @@ export function useDockviewSync(api: DockviewApi | null) {
 
       // Added sessions — create a panel regardless of filter; the tab is
       // hidden via CSS if the session doesn't match the active filter.
+      let addedPanel = false;
       for (const session of workspaceSessions) {
         if (!prevIds.has(session.id) && !api.getPanel(session.id)) {
-          api.addPanel({
-            id: session.id,
-            component: 'terminal',
-            tabComponent: 'sessionTab',
-            params: { sessionId: session.id },
-            renderer: 'always',
-          });
+          suppressZustandSync.current = true;
+          try {
+            api.addPanel({
+              id: session.id,
+              component: 'terminal',
+              tabComponent: 'sessionTab',
+              params: { sessionId: session.id },
+              renderer: 'always',
+            });
+            addedPanel = true;
+          } finally {
+            suppressZustandSync.current = false;
+          }
         }
       }
 
@@ -144,7 +151,7 @@ export function useDockviewSync(api: DockviewApi | null) {
 
       // Active session changed in Zustand → activate panel in Dockview
       if (
-        (state.activeSessionId !== prev.activeSessionId || state.archivedSessionIds !== prev.archivedSessionIds) &&
+        (addedPanel || state.sessions !== prev.sessions || state.activeSessionId !== prev.activeSessionId || state.archivedSessionIds !== prev.archivedSessionIds) &&
         state.activeSessionId
       ) {
         const tagFilter = useUIStore.getState().tagFilter;
@@ -247,7 +254,12 @@ export function useDockviewSync(api: DockviewApi | null) {
         if (!useUIStore.getState().tileLayoutEnabled && isGeneratedTileLayout(savedLayout)) {
           localStorage.removeItem(getLayoutKey());
         } else {
-          api.fromJSON(savedLayout);
+          suppressZustandSync.current = true;
+          try {
+            api.fromJSON(savedLayout);
+          } finally {
+            suppressZustandSync.current = false;
+          }
           restored = true;
 
           // Remove the transient new-session panel if it was in the saved layout
@@ -281,13 +293,18 @@ export function useDockviewSync(api: DockviewApi | null) {
             // not just filter-visible — filter only hides the tab header).
             for (const session of sessions) {
               if (!api.getPanel(session.id)) {
-                api.addPanel({
-                  id: session.id,
-                  component: 'terminal',
-                  tabComponent: 'sessionTab',
-                  params: { sessionId: session.id },
-                  renderer: 'always',
-                });
+                suppressZustandSync.current = true;
+                try {
+                  api.addPanel({
+                    id: session.id,
+                    component: 'terminal',
+                    tabComponent: 'sessionTab',
+                    params: { sessionId: session.id },
+                    renderer: 'always',
+                  });
+                } finally {
+                  suppressZustandSync.current = false;
+                }
               }
             }
           }
@@ -301,13 +318,18 @@ export function useDockviewSync(api: DockviewApi | null) {
     if (!restored) {
       for (const session of sessions) {
         if (!api.getPanel(session.id)) {
-          api.addPanel({
-            id: session.id,
-            component: 'terminal',
-            tabComponent: 'sessionTab',
-            params: { sessionId: session.id },
-            renderer: 'always',
-          });
+          suppressZustandSync.current = true;
+          try {
+            api.addPanel({
+              id: session.id,
+              component: 'terminal',
+              tabComponent: 'sessionTab',
+              params: { sessionId: session.id },
+              renderer: 'always',
+            });
+          } finally {
+            suppressZustandSync.current = false;
+          }
         }
       }
       prevSessionIdsRef.current = sessionIds;

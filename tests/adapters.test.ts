@@ -55,6 +55,24 @@ describe('adapter registry', () => {
     expect(adapter.info.name).toBe('codex');
   });
 
+  it('does not treat OSC paths in direct Codex output as cwd metadata', () => {
+    const adapter = createAdapter('codex', {
+      sessionId: 'codex-output-cwd',
+      toolArgs: [],
+      cwd: '/work/original',
+    });
+    const cwdChanges: unknown[] = [];
+    adapter.on('event', (event) => {
+      if (event.type === 'cwd:change') cwdChanges.push(event.data);
+    });
+
+    (adapter as unknown as { parseOSC: (chunk: string) => void }).parseOSC(
+      '\x1b]7;file://remote.invalid/work/from-tool-output\x07',
+    );
+
+    expect(cwdChanges).toEqual([]);
+  });
+
   it('creates a gemini adapter', () => {
     const adapter = createAdapter('gemini', {
       sessionId: 'test-3',
@@ -89,6 +107,29 @@ describe('adapter registry', () => {
 
     expect(adapter.info.name).toBe('mytool');
     expect(adapter.info.displayName).toBe('mytool');
+  });
+
+  it('stops accepting shell cwd metadata while a generic session is running Codex', () => {
+    const adapter = createAdapter('/bin/zsh', {
+      sessionId: 'generic-codex-output-cwd',
+      toolArgs: [],
+      cwd: '/work/original',
+    });
+    const cwdChanges: unknown[] = [];
+    adapter.on('event', (event) => {
+      if (event.type === 'cwd:change') cwdChanges.push(event.data);
+    });
+    adapter.write('codex\r');
+    (adapter as unknown as { detectTool: (chunk: string) => void }).detectTool(
+      '│ >_ OpenAI Codex (v0.144.6) │',
+    );
+
+    (adapter as unknown as { parseOSC: (chunk: string) => void }).parseOSC(
+      '\x1b]7;file://remote.invalid/work/from-tool-output\x07',
+    );
+
+    expect(adapter.info.name).toBe('codex');
+    expect(cwdChanges).toEqual([]);
   });
 
   it('detects the startup banner printed before any keystroke', () => {

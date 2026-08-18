@@ -152,6 +152,10 @@ export class GenericAdapter extends BaseAdapter {
     return isInteractiveShellCommand(this.command);
   }
 
+  protected shouldTrackOscCwd(): boolean {
+    return this._detectedTool === null;
+  }
+
   kill(signal?: string): void {
     this.ptyProcess?.kill(signal);
   }
