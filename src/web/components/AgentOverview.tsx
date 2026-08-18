@@ -4,6 +4,7 @@ import { useUIStore } from '../hooks/useUI';
 import { useWsContext } from '../contexts/WsContext';
 import { ToolIcon } from './ToolIcon';
 import { sessionHostLabel } from '../serverHost';
+import { sessionDisplayLabel, sessionWorkspacePath } from '../sessionPresentation';
 
 type AgentView = 'attention' | 'active' | 'archived';
 
@@ -15,11 +16,6 @@ function shortPath(path: string): string {
   return path
     .replace(/^\/Users\/[^/]+/, '~')
     .replace(/^\/home\/[^/]+/, '~');
-}
-
-function basename(path: string): string {
-  const cleaned = path.endsWith('/') && path !== '/' ? path.slice(0, -1) : path;
-  return cleaned.split('/').pop() || cleaned || '~';
 }
 
 function hostLabel(session: SessionSummary, allSessions: readonly SessionSummary[]): string {
@@ -352,12 +348,12 @@ export function AgentOverview() {
                 <ToolIcon tool={session.tool} status={session.status} />
                 <div className="agent-row-main" onDoubleClick={() => openSession(session.id)}>
                   <div className="agent-row-title">
-                    <span>{session.name || basename(session.cwd)}</span>
+                    <span>{sessionDisplayLabel(session, sessions)}</span>
                     <span className={`agent-status-chip status-${session.status}`}>{statusLabel(session.status)}</span>
                   </div>
                   <div className="agent-row-meta">
                     <span>{hostLabel(session, sessions)}</span>
-                    <span>{shortPath(session.cwd)}</span>
+                    <span>{shortPath(sessionWorkspacePath(session, sessions))}</span>
                     <span>{formatAge(lastActivityAt(session, events), now)} ago</span>
                   </div>
                 </div>

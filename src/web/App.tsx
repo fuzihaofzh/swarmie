@@ -17,6 +17,7 @@ import { TabSwitcher } from './components/TabSwitcher';
 import { TagSwitcher } from './components/TagSwitcher';
 import { WorkspaceAgentPanel } from './components/WorkspaceAgentPanel';
 import { sessionMatchesTagFilter } from './tagFilter';
+import { sessionDisplayLabel } from './sessionPresentation';
 
 const components = {
   terminal: DockviewTerminalPanel,
@@ -46,7 +47,7 @@ function visibleWorkspaceSessions(
 ) {
   const workspaceSessions = activeWorkspaceSessions(sessions, archivedSessionIds);
   return workspaceSessions.filter((session) =>
-    tagFilter.length === 0 || sessionMatchesTagFilter(session, tagFilter)
+    tagFilter.length === 0 || sessionMatchesTagFilter(session, tagFilter, workspaceSessions)
   );
 }
 
@@ -184,7 +185,7 @@ function TileLayoutTopBar() {
     <div className="tile-layout-topbar">
       <HeaderActions />
       <div className="tile-layout-active-tab">
-        {active?.displayName || active?.name || 'Workspace'}
+        {active ? sessionDisplayLabel(active, sessions) : 'Workspace'}
       </div>
       <NewTabButton />
     </div>
@@ -395,7 +396,7 @@ export function App() {
         : group.panels.filter((p) => {
             const session = sessions.find((s) => s.id === p.id);
             // Non-session panels (e.g. the new-session panel) always pass.
-            return !session || sessionMatchesTagFilter(session, tagFilter);
+            return !session || sessionMatchesTagFilter(session, tagFilter, sessions);
           });
       if (panels.length < 2) return;
       e.preventDefault();
@@ -776,7 +777,7 @@ function TagFilterSettings() {
 
   const visibleCount = tagFilter.length === 0
     ? workspaceSessions.length
-    : workspaceSessions.filter((session) => sessionMatchesTagFilter(session, tagFilter)).length;
+    : workspaceSessions.filter((session) => sessionMatchesTagFilter(session, tagFilter, workspaceSessions)).length;
 
   return (
     <div className="settings-section">

@@ -4,6 +4,7 @@ import { useSessionStore, type SessionSummary } from './useSessions';
 import { useUIStore } from './useUI';
 import { NEW_SESSION_PANEL_ID } from '../components/DockviewCustomTab';
 import { sessionMatchesTagFilter } from '../tagFilter';
+import { sessionWorkspaceKey } from '../sessionPresentation';
 
 const LAYOUT_KEY_DESKTOP = 'swarmie-dockview-layout';
 const LAYOUT_KEY_MOBILE = 'swarmie-dockview-layout-mobile';
@@ -79,8 +80,8 @@ export function useDockviewSync(api: DockviewApi | null) {
     const workspaceSessions = sessions.filter((s) => !archived.has(s.id));
     const activeId = useSessionStore.getState().activeSessionId;
     const activeSession = activeId ? workspaceSessions.find((s) => s.id === activeId) : undefined;
-    if (activeSession && !sessionMatchesTagFilter(activeSession, tagFilter)) {
-      const firstVisible = workspaceSessions.find((s) => sessionMatchesTagFilter(s, tagFilter));
+    if (activeSession && !sessionMatchesTagFilter(activeSession, tagFilter, workspaceSessions)) {
+      const firstVisible = workspaceSessions.find((s) => sessionMatchesTagFilter(s, tagFilter, workspaceSessions));
       useSessionStore.getState().setActiveSession(firstVisible?.id ?? null);
       if (firstVisible) {
         const panel = api.getPanel(firstVisible.id);
@@ -156,7 +157,14 @@ export function useDockviewSync(api: DockviewApi | null) {
       ) {
         const tagFilter = useUIStore.getState().tagFilter;
         const activeSession = workspaceSessions.find((s) => s.id === state.activeSessionId);
-        if (activeSession && !sessionMatchesTagFilter(activeSession, tagFilter)) return;
+        if (activeSession && !sessionMatchesTagFilter(activeSession, tagFilter, workspaceSessions)) {
+          // A refreshed session list must follow the persisted active tab, not
+          // let an older sidebar workspace selection replace it. User-driven
+          // workspace changes use reconcileActiveForFilter above instead.
+          if (state.sessions === prev.sessions) return;
+          const workspace = sessionWorkspaceKey(activeSession, workspaceSessions);
+          useUIStore.getState().setTagFilter(workspace ? [workspace] : []);
+        }
         const panel = api.getPanel(state.activeSessionId);
         if (panel && !panel.api.isActive) {
           suppressZustandSync.current = true;
@@ -337,10 +345,13 @@ export function useDockviewSync(api: DockviewApi | null) {
 
     // Activate the right panel — must satisfy the active tag filter so a
     // CSS-hidden tab doesn't end up as the visible content.
-    const firstVisible = sessions.find((s) => sessionMatchesTagFilter(s, tagFilter));
+    const firstVisible = sessions.find((s) => sessionMatchesTagFilter(s, tagFilter, sessions));
     const activeSession = activeId ? sessions.find((s) => s.id === activeId) : undefined;
-    const activeIsVisible = activeSession ? sessionMatchesTagFilter(activeSession, tagFilter) : false;
-    if (activeId && activeIsVisible) {
+    if (activeId && activeSession) {
+      if (!sessionMatchesTagFilter(activeSession, tagFilter, sessions)) {
+        const workspace = sessionWorkspaceKey(activeSession, sessions);
+        useUIStore.getState().setTagFilter(workspace ? [workspace] : []);
+      }
       const panel = api.getPanel(activeId);
       if (panel) panel.api.setActive();
     } else if (firstVisible) {

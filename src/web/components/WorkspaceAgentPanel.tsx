@@ -4,6 +4,12 @@ import { useUIStore } from '../hooks/useUI';
 import { useWsContext } from '../contexts/WsContext';
 import { ToolIcon } from './ToolIcon';
 import { sessionHostLabel } from '../serverHost';
+import {
+  sessionDisplayLabel,
+  sessionWorkspaceKey,
+  sessionWorkspacePath,
+  workspacePathFromKey,
+} from '../sessionPresentation';
 
 const BUSY = new Set(['starting', 'running', 'thinking', 'tool_executing']);
 
@@ -21,57 +27,10 @@ function statusLabel(status: string): string {
   return status;
 }
 
-function workspaceName(tag: string): string {
-  return tag.replace(/[-_]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function workspaceKey(session: SessionSummary): string | null {
-  // Hostname changes arrive as cwd:change events. Compare against the
-  // session's initial host directly so a remote workspace appears even when
-  // the browser has not yet learned the local host aliases.
-  const remoteHost = session.hostname && session.initialHostname
-    && session.hostname.toLowerCase() !== session.initialHostname.toLowerCase()
-    ? session.hostname
-    : sessionHostLabel(session, [session]);
-  // A remote shell's cwd is the actual workspace location. For local
-  // sessions keep the original workspace cwd stable while agents cd around.
-  const cwd = (remoteHost ? session.cwd : (session.workspaceCwd ?? session.cwd))?.trim();
-  if (!cwd || cwd === '~') return session.tags?.[0] ? `workspace:tag:${session.tags[0]}` : null;
-  return remoteHost
-    ? `workspace:hostcwd:${remoteHost}:${cwd}`
-    : `workspace:cwd:${cwd}`;
-}
-
-function workspaceLabel(key: string): string {
-  if (key.startsWith('workspace:cwd:')) {
-    const path = key.slice('workspace:cwd:'.length).replace(/\/$/, '');
-    return path.split('/').pop() || path || 'Workspace';
-  }
-  if (key.startsWith('workspace:hostcwd:')) {
-    const value = key.slice('workspace:hostcwd:'.length);
-    const separator = value.indexOf(':');
-    const host = separator >= 0 ? value.slice(0, separator) : value;
-    const path = separator >= 0 ? value.slice(separator + 1).replace(/\/$/, '') : '';
-    return `${host} · ${path.split('/').pop() || path || 'Workspace'}`;
-  }
-  return workspaceName(key.replace('workspace:tag:', ''));
-}
-
-function workspacePath(key: string | null): string | undefined {
-  if (!key) return undefined;
-  if (key.startsWith('workspace:cwd:')) return key.slice('workspace:cwd:'.length);
-  if (key.startsWith('workspace:hostcwd:')) {
-    const value = key.slice('workspace:hostcwd:'.length);
-    const separator = value.indexOf(':');
-    return separator >= 0 ? value.slice(separator + 1) : undefined;
-  }
-  return undefined;
-}
-
-function agentMatches(session: SessionSummary, query: string): boolean {
+function agentMatches(session: SessionSummary, query: string, allSessions: SessionSummary[]): boolean {
   const value = query.trim().toLocaleLowerCase();
   if (!value) return true;
-  return [session.displayName, session.name, session.tool, session.cwd, session.status, ...(session.tags ?? [])]
+  return [sessionDisplayLabel(session, allSessions), session.displayName, session.name, session.tool, session.cwd, session.status, ...(session.tags ?? [])]
     .some((part) => part.toLocaleLowerCase().includes(value));
 }
 
@@ -139,11 +98,11 @@ export function WorkspaceAgentPanel() {
   const workspaces = useMemo(() => {
     const groups = new Map<string, SessionSummary[]>();
     for (const session of activeSessions) {
-      const key = workspaceKey(session);
+      const key = sessionWorkspaceKey(session, activeSessions);
       if (key) groups.set(key, [...(groups.get(key) ?? []), session]);
     }
     return [...groups.entries()]
-      .map(([key, grouped]) => [key, countStates(grouped)] as const)
+      .map(([key, grouped]) => [key, countStates(grouped), sessionDisplayLabel(grouped[0], activeSessions)] as const)
       .sort((a, b) => a[0].localeCompare(b[0]));
   }, [activeSessions]);
   const rawWorkspace = tagFilter.length === 1 ? tagFilter[0] : null;
@@ -160,13 +119,13 @@ export function WorkspaceAgentPanel() {
   }, [rawWorkspace, selectedWorkspace, setTagFilter]);
   const visibleAgents = useMemo(() => {
     const workspaceAgents = selectedWorkspace
-      ? activeSessions.filter((session) => workspaceKey(session) === selectedWorkspace)
+      ? activeSessions.filter((session) => sessionWorkspaceKey(session, activeSessions) === selectedWorkspace)
       : activeSessions;
     return workspaceAgents
-      .filter((session) => agentMatches(session, query))
+      .filter((session) => agentMatches(session, query, activeSessions))
       .filter((session) => stateFilter === 'all' || statusClass(session.status) === stateFilter)
       .sort((a, b) => {
-        if (sortMode === 'name') return (a.displayName || a.name).localeCompare(b.displayName || b.name);
+        if (sortMode === 'name') return sessionDisplayLabel(a, activeSessions).localeCompare(sessionDisplayLabel(b, activeSessions));
         if (sortMode === 'recent') return b.startTime - a.startTime;
         const rank = (session: SessionSummary) => session.status === 'waiting_input' || session.status === 'blocked' ? 0 : BUSY.has(session.status) ? 1 : session.status === 'done' || session.status === 'completed' ? 2 : 3;
         return rank(a) - rank(b) || b.startTime - a.startTime;
@@ -221,9 +180,9 @@ export function WorkspaceAgentPanel() {
 
   const createAgent = async () => {
     const workspaceSession = selectedWorkspace
-      ? activeSessions.find((session) => workspaceKey(session) === selectedWorkspace)
+      ? activeSessions.find((session) => sessionWorkspaceKey(session, activeSessions) === selectedWorkspace)
       : undefined;
-    const cwd = workspacePath(selectedWorkspace) ?? workspaceSession?.workspaceCwd ?? workspaceSession?.cwd;
+    const cwd = workspacePathFromKey(selectedWorkspace) ?? workspaceSession?.workspaceCwd ?? workspaceSession?.cwd;
     const result = await createSession({
       tool: defaultAgentTool,
       ...(cwd && cwd !== '~' ? { cwd } : {}),
@@ -258,14 +217,14 @@ export function WorkspaceAgentPanel() {
           <span className="workspace-item-count">{allWorkspaceSummary.total}</span>
           {stateCounts(allWorkspaceSummary)}
         </button>
-        {workspaces.map(([workspace, counts]) => (
+        {workspaces.map(([workspace, counts, label]) => (
           <button
             className={`workspace-item ${selectedWorkspace === workspace ? 'selected' : ''}`}
             key={workspace}
             onClick={() => selectWorkspace(workspace)}
           >
             <span className="workspace-item-mark">◈</span>
-            <span>{workspaceLabel(workspace)}</span>
+            <span>{label}</span>
             <span className="workspace-item-count">{counts.total}</span>
             {stateCounts(counts)}
           </button>
@@ -273,7 +232,7 @@ export function WorkspaceAgentPanel() {
       </div>
 
       <div className="workspace-agents-heading">
-        <span>{selectedWorkspace ? workspaceLabel(selectedWorkspace) : 'All agents'}</span>
+        <span>{selectedWorkspace ? workspaces.find(([key]) => key === selectedWorkspace)?.[2] ?? 'Workspace' : 'All agents'}</span>
         <span>{visibleAgents.length}</span>
       </div>
       <div className="workspace-state-summary" aria-label="Workspace agent state summary">
@@ -306,8 +265,8 @@ export function WorkspaceAgentPanel() {
             <span className={`workspace-status-dot ${statusClass(session.status)}`} />
             <span className="workspace-agent-icon"><ToolIcon tool={session.tool} status={session.status} /></span>
             <span className="workspace-agent-copy">
-              <span className="workspace-agent-name">{session.displayName || session.name}</span>
-              <span className="workspace-agent-meta">{statusLabel(session.status)} · {elapsedLabel(session.startTime, now)} · {session.tool} · {session.cwd} · {sessionHostLabel(session, sessions) ?? session.hostname}</span>
+              <span className="workspace-agent-name">{sessionDisplayLabel(session, sessions)}</span>
+              <span className="workspace-agent-meta">{statusLabel(session.status)} · {elapsedLabel(session.startTime, now)} · {session.tool} · {sessionWorkspacePath(session, sessions)} · {sessionHostLabel(session, sessions) ?? session.hostname}</span>
               {explanations[session.id] && <span className="workspace-agent-explanation">{explanations[session.id]}</span>}
             </span>
             <span className="workspace-agent-actions" onClick={(event) => event.stopPropagation()}>

@@ -15,7 +15,7 @@ export function DockviewNewSessionPanel({ api }: IDockviewPanelProps) {
   const servers = useServerStore((s) => s.servers);
   const autoCreated = useRef(false);
   const activeSession = sessions.find((session) => session.id === activeSessionId)
-    ?? sessions.find((session) => sessionMatchesTagFilter(session, tagFilter));
+    ?? sessions.find((session) => sessionMatchesTagFilter(session, tagFilter, sessions));
   const initialCwd = activeSession?.workspaceCwd ?? activeSession?.cwd;
 
   // Single server — auto-create session immediately

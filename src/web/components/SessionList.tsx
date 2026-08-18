@@ -40,6 +40,7 @@ export function SessionList() {
         <SessionCard
           key={session.id}
           session={session}
+          allSessions={sessions}
           isActive={session.id === activeSessionId}
           onClick={() => {
             setActiveSession(session.id);

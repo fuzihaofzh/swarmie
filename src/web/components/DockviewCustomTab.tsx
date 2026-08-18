@@ -7,7 +7,7 @@ import { useWsContext } from '../contexts/WsContext';
 import { ToolIcon } from './ToolIcon';
 import { sessionMatchesTagFilter } from '../tagFilter';
 import { shouldShowMobileToolbar } from '../focusPolicy';
-import { sessionHostLabel } from '../serverHost';
+import { sessionDisplayLabel } from '../sessionPresentation';
 
 function getFocusPolicyEnv() {
   return {
@@ -178,15 +178,6 @@ function useSwipeSafeTabActivate(
   }, [tabRef]);
 }
 
-function shortPath(p: string): string {
-  if (p === '~' || p === '/') return p;
-  // Show only the last directory name
-  const name = p.endsWith('/') ? p.slice(0, -1) : p;
-  const lastSlash = name.lastIndexOf('/');
-  if (lastSlash === -1) return name;
-  return name.slice(lastSlash + 1) || p;
-}
-
 function formatRemaining(target: number | null | undefined, now: number): string {
   if (!target) return '';
   const seconds = Math.max(0, Math.ceil((target - now) / 1000));
@@ -280,10 +271,10 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
 
   if (!session) return null;
 
-  const filteredOut = tagFilter.length > 0 && !sessionMatchesTagFilter(session, tagFilter);
+  const filteredOut = tagFilter.length > 0 && !sessionMatchesTagFilter(session, tagFilter, allSessions);
 
   const active = !!session.autoApprove;
-  const displayHost = sessionHostLabel(session, allSessions);
+  const displayLabel = sessionDisplayLabel(session, allSessions);
 
   const handleToolsClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -357,9 +348,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
       onMouseLeave={() => setHovered(false)}
     >
       <ToolIcon tool={session.tool} status={session.status} />
-      <span className="dv-tab-name">
-        {displayHost ? `${displayHost}:${shortPath(session.cwd)}` : shortPath(session.cwd)}
-      </span>
+      <span className="dv-tab-name">{displayLabel}</span>
       <span
         ref={toolsRef}
         className={`dv-tab-tools ${toolsActive || hovered || panelOpen ? 'visible' : ''}`}
@@ -521,7 +510,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
           <div className="tab-close-confirm" onClick={(e) => e.stopPropagation()}>
             <div className="tab-close-confirm-title">Close session?</div>
             <div className="tab-close-confirm-body">
-              {displayHost ? `${displayHost}:${shortPath(session.cwd)}` : shortPath(session.cwd)}
+              {displayLabel}
               <span className="tab-close-confirm-hint">This kills the running process.</span>
             </div>
             <div className="tab-close-confirm-actions">

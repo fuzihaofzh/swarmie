@@ -1,23 +1,25 @@
-// Single source of truth for "is this session visible under the active tag
-// filter". An empty filter shows everything; otherwise a session is visible if
-// it carries at least one of the filtered tags. Inlining this in multiple
-// places (keyboard tab-switch, MRU switcher, tab headers, settings count) is
-// how filtered tabs and arrow-switching drifted out of sync before.
+// Single source of truth for "is this session visible under the active filter".
+// Workspace identity comes from the same presentation module as tab/sidebar
+// names, so filtering and labels cannot independently drift.
+
+import type { SessionSummary } from './hooks/useSessions';
+import { sessionWorkspaceKey, sessionWorkspacePath } from './sessionPresentation';
 
 export function sessionMatchesTagFilter(
-  session: { tags?: string[] | null; cwd?: string | null; workspaceCwd?: string | null; hostname?: string | null },
+  session: SessionSummary,
   tagFilter: string[],
+  allSessions: readonly SessionSummary[] = [session],
 ): boolean {
   if (tagFilter.length === 0) return true;
   return tagFilter.some((filter) =>
     filter.startsWith('workspace:hostcwd:')
-      ? `${session.hostname ?? ''}:${session.cwd ?? session.workspaceCwd ?? ''}` === filter.slice('workspace:hostcwd:'.length)
+      ? sessionWorkspaceKey(session, allSessions) === filter
       : filter.startsWith('workspace:cwd:')
-      ? (session.workspaceCwd ?? session.cwd) === filter.slice('workspace:cwd:'.length)
+      ? sessionWorkspaceKey(session, allSessions) === filter
       : filter.startsWith('workspace:tag:')
         ? (session.tags ?? []).includes(filter.slice('workspace:tag:'.length))
         : filter.startsWith('cwd:')
-          ? (session.workspaceCwd ?? session.cwd) === filter.slice(4)
+          ? sessionWorkspacePath(session, allSessions) === filter.slice(4)
           : (session.tags ?? []).includes(filter),
   );
 }

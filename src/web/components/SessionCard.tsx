@@ -1,13 +1,15 @@
 import type { SessionSummary } from '../hooks/useSessions';
 import { StatusIndicator } from './StatusIndicator';
+import { sessionDisplayLabel, sessionWorkspacePath } from '../sessionPresentation';
 
 interface SessionCardProps {
   session: SessionSummary;
+  allSessions: SessionSummary[];
   isActive: boolean;
   onClick: () => void;
 }
 
-export function SessionCard({ session, isActive, onClick }: SessionCardProps) {
+export function SessionCard({ session, allSessions, isActive, onClick }: SessionCardProps) {
   const elapsed = session.endTime
     ? formatDuration(session.endTime - session.startTime)
     : formatDuration(Date.now() - session.startTime);
@@ -20,10 +22,10 @@ export function SessionCard({ session, isActive, onClick }: SessionCardProps) {
       <div className="session-main">
         <div className="session-item-name">
           <StatusIndicator status={session.status} />
-          <span className="name-text">{session.displayName}@{session.hostname}</span>
+          <span className="name-text">{sessionDisplayLabel(session, allSessions)}</span>
         </div>
         <div className="session-item-info">
-          {shortPath(session.cwd)} &middot; {elapsed}
+          {shortPath(sessionWorkspacePath(session, allSessions))} &middot; {elapsed}
         </div>
       </div>
     </div>

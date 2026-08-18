@@ -4,7 +4,7 @@ import { ToolIcon } from './ToolIcon';
 import { useKeybindingStore, matchesAction } from '../hooks/useKeybindings';
 import { useUIStore } from '../hooks/useUI';
 import { sessionMatchesTagFilter } from '../tagFilter';
-import { sessionHostLabel } from '../serverHost';
+import { sessionDisplayLabel } from '../sessionPresentation';
 
 interface TabSwitcherProps {
   mruRef: React.RefObject<string[]>;
@@ -80,7 +80,7 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
         const currentTagFilter = useUIStore.getState().tagFilter;
         const visibleSessions = state.sessions
           .filter((s) => !archived.has(s.id))
-          .filter((s) => currentTagFilter.length === 0 || sessionMatchesTagFilter(s, currentTagFilter));
+          .filter((s) => currentTagFilter.length === 0 || sessionMatchesTagFilter(s, currentTagFilter, state.sessions));
         const visibleById = new Map(visibleSessions.map((s) => [s.id, s]));
         const filtered = [...(mruRef.current ?? [])].filter((id) => visibleById.has(id));
         if (filtered.length < 2) {
@@ -145,10 +145,6 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
         {orderIds.map((id, i) => {
           const s = sessionById.get(id);
           if (!s || archived.has(id)) return null;
-          const host = sessionHostLabel(s, sessions);
-          const short = s.cwd
-            .replace(/^\/Users\/[^/]+/, '~')
-            .replace(/^\/home\/[^/]+/, '~');
           return (
             <div
               key={s.id}
@@ -159,12 +155,7 @@ export function TabSwitcher({ mruRef }: TabSwitcherProps) {
               }}
             >
               <ToolIcon tool={s.tool} status={s.status} />
-              <span className="tab-switcher-name">
-                {short || '~'}
-              </span>
-              {host && (
-                <span className="tab-switcher-host">{host}</span>
-              )}
+              <span className="tab-switcher-name">{sessionDisplayLabel(s, sessions)}</span>
               <span
                 className="tab-switcher-toggle"
                 onClick={(e) => {
