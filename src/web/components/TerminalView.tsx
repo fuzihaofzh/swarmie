@@ -39,6 +39,7 @@ import {
 } from '../terminalQueries';
 import {
   captureTerminalScrollAnchor,
+  nextTerminalFollowState,
   resolveTerminalScrollAnchor,
 } from '../terminalScrollAnchor';
 import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
@@ -660,17 +661,23 @@ export function TerminalView({
       // The component may have unmounted (term disposed) between scheduling and
       // running this frame; bail rather than operate on a dead terminal.
       if (termRef.current !== term) return;
-      // Capture whether the user was following live output BEFORE fit() can
-      // shift the buffer. Only snap back to the bottom if they were already
-      // there — otherwise returning to a tab would yank a scrolled-up reader
-      // back down and lose their place.
+      // Capture follow intent BEFORE fit() can transiently shift baseY ahead of
+      // viewportY. Programmatic layout movement is not a reader scrolling up.
       const buf = term.buffer.active;
-      const wasAtBottom = buf.viewportY >= buf.baseY;
+      const shouldFollow = nextTerminalFollowState(
+        followingRef.current,
+        buf.viewportY >= buf.baseY,
+        false,
+      );
       try {
         fitAddon?.fit();
         reportResizeRef.current(term);
       } catch { /* ignore */ }
-      if (wasAtBottom) term.scrollToBottom();
+      if (shouldFollow) {
+        followingRef.current = true;
+        setPausedOutput(false);
+        term.scrollToBottom();
+      }
       if (autoFocus) {
         term.focus();
       }
@@ -1232,7 +1239,15 @@ export function TerminalView({
     const viewport = root.querySelector('.xterm-viewport') as HTMLElement | null;
     if (!viewport) return;
 
+    // Set immediately before a real browser input scroll. The first xterm/DOM
+    // scroll notification consumes it; later output-driven notifications are
+    // therefore not allowed to turn following off.
+    let userScrollPending = false;
+    const markUserScroll = () => {
+      userScrollPending = true;
+    };
     const onWheel = (e: WheelEvent) => {
+      markUserScroll();
       if (e.deltaY < 0) scrolledUpAtRef.current = performance.now();
     };
     const touchStartY: { y: number } = { y: 0 };
@@ -1241,8 +1256,20 @@ export function TerminalView({
     };
     const onTouchMove = (e: TouchEvent) => {
       const y = e.touches[0]?.pageY ?? 0;
+      if (Math.abs(y - touchStartY.y) > 2) markUserScroll();
       // Finger moving DOWN reveals OLDER content in xterm scrollback.
       if (y - touchStartY.y > 8) scrolledUpAtRef.current = performance.now();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === 'PageUp'
+        || e.key === 'PageDown'
+        || e.key === 'Home'
+        || e.key === 'End'
+        || (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown'))
+      ) {
+        markUserScroll();
+      }
     };
     // xterm's own viewportY is the authoritative scroll position. The DOM
     // `.xterm-viewport.scrollTop` transiently reads 0 while scrolling against
@@ -1256,20 +1283,22 @@ export function TerminalView({
     // bottom parks output (writer/flush read followingRef); returning to it
     // resumes and drains the parked bytes. This is what stops new output from
     // yanking a scrolled-up reader around.
-    const updateFollowing = () => {
+    const updateFollowing = (userInitiated: boolean) => {
       const b = term.buffer.active;
       const atBottom = b.viewportY >= b.baseY;
-      if (atBottom && !followingRef.current) {
-        followingRef.current = true;
+      const next = nextTerminalFollowState(followingRef.current, atBottom, userInitiated);
+      if (next === followingRef.current) return;
+      followingRef.current = next;
+      if (next) {
         setPausedOutput(false);
         scheduleFlushRef.current?.();
-      } else if (!atBottom && followingRef.current) {
-        followingRef.current = false;
       }
     };
 
     const onScroll = () => {
-      updateFollowing();
+      const userInitiated = userScrollPending;
+      userScrollPending = false;
+      updateFollowing(userInitiated);
       const isTop = isAtScrollbackTop();
       setAtTop(isTop);
       if (!isTop) return;
@@ -1280,22 +1309,30 @@ export function TerminalView({
       handleLoadEarlierRef.current?.();
     };
 
-    root.addEventListener('wheel', onWheel, { passive: true });
-    root.addEventListener('touchstart', onTouchStart, { passive: true });
-    root.addEventListener('touchmove', onTouchMove, { passive: true });
+    // Capture before xterm's own handlers mutate viewportY, so the resulting
+    // scroll notification is tagged with the user action that caused it.
+    root.addEventListener('wheel', onWheel, { passive: true, capture: true });
+    root.addEventListener('keydown', onKeyDown, { passive: true, capture: true });
+    root.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+    root.addEventListener('touchmove', onTouchMove, { passive: true, capture: true });
+    viewport.addEventListener('pointerdown', markUserScroll, { passive: true });
     viewport.addEventListener('scroll', onScroll, { passive: true });
     // term.onScroll fires on output-driven and programmatic scroll where the
     // DOM 'scroll' event may not — keep the button's atTop state accurate, but
     // don't auto-load here (no user gesture drove it).
     const scrollDisposable = term.onScroll(() => {
-      updateFollowing();
+      const userInitiated = userScrollPending;
+      userScrollPending = false;
+      updateFollowing(userInitiated);
       setAtTop(isAtScrollbackTop());
     });
 
     return () => {
-      root.removeEventListener('wheel', onWheel);
-      root.removeEventListener('touchstart', onTouchStart);
-      root.removeEventListener('touchmove', onTouchMove);
+      root.removeEventListener('wheel', onWheel, true);
+      root.removeEventListener('keydown', onKeyDown, true);
+      root.removeEventListener('touchstart', onTouchStart, true);
+      root.removeEventListener('touchmove', onTouchMove, true);
+      viewport.removeEventListener('pointerdown', markUserScroll);
       viewport.removeEventListener('scroll', onScroll);
       scrollDisposable.dispose();
     };
@@ -1455,11 +1492,10 @@ export function TerminalView({
         const batch = pendingChunks.splice(0, batchCount);
         pendingBytes -= batchBytes;
 
-        // Capture bottom state from xterm's own buffer right before writing.
-        // Works for any input method (wheel, touch, keyboard) — no need to
-        // listen for individual scroll events, which miss touch on mobile.
-        const buf = term.buffer.active;
-        const wasAtBottom = buf.viewportY >= buf.baseY;
+        // Capture the follow intent, not the instantaneous viewport geometry.
+        // With scrollOnOutput disabled, xterm moves baseY before the callback
+        // can scroll the viewport, so viewportY < baseY is expected mid-write.
+        const wasFollowing = followingRef.current;
 
         writeInFlight = true;
         const writeStart = performance.now();
@@ -1491,7 +1527,9 @@ export function TerminalView({
               `bufferLines=${term.buffer.active.length} pending=${pendingChunks.length} session=${sessionId}`,
             );
           }
-          if (wasAtBottom) {
+          // A user may deliberately scroll up while this asynchronous write is
+          // in flight. Preserve following only if they have not done so.
+          if (wasFollowing && followingRef.current) {
             term.scrollToBottom();
           }
           writeInFlight = false;

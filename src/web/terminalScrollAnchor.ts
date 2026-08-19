@@ -18,6 +18,24 @@ export interface TerminalScrollAnchor {
 const ANCHOR_ROWS = 6;
 const SEARCH_RADIUS = 5000;
 
+/**
+ * Resolve whether a terminal should keep following its live edge.
+ *
+ * xterm briefly reports viewportY < baseY while output, fit(), or another
+ * programmatic operation moves the buffer. That transient must not look like a
+ * reader scrolling up: only a user-originated scroll may turn following off.
+ * Reaching the bottom by any route turns it back on.
+ */
+export function nextTerminalFollowState(
+  currentlyFollowing: boolean,
+  atBottom: boolean,
+  userInitiated: boolean,
+): boolean {
+  if (atBottom) return true;
+  if (userInitiated) return false;
+  return currentlyFollowing;
+}
+
 /** Capture visible content as well as the traditional distance-from-bottom. */
 export function captureTerminalScrollAnchor(buffer: TerminalBufferLike): TerminalScrollAnchor {
   const rows: string[] = [];

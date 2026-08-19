@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   captureTerminalScrollAnchor,
+  nextTerminalFollowState,
   resolveTerminalScrollAnchor,
 } from '../src/web/terminalScrollAnchor.js';
 
@@ -16,6 +17,24 @@ function buffer(lines: string[], viewportY: number, rows = 4) {
 }
 
 describe('terminal scroll anchor', () => {
+  it('keeps following while replay output temporarily moves the live edge', () => {
+    let following = true;
+
+    // Each replay batch advances baseY before TerminalView can scroll the
+    // viewport. These are output-driven transitions, not user scrolls.
+    for (let batch = 0; batch < 4; batch++) {
+      following = nextTerminalFollowState(following, false, false);
+      expect(following).toBe(true);
+      following = nextTerminalFollowState(following, true, false);
+    }
+
+    // A real reader scroll pauses output, and returning to the bottom resumes.
+    following = nextTerminalFollowState(following, false, true);
+    expect(following).toBe(false);
+    following = nextTerminalFollowState(following, true, false);
+    expect(following).toBe(true);
+  });
+
   it('keeps the same visible passage when older rows are prepended', () => {
     const original = Array.from({ length: 40 }, (_, i) => `line-${i}`);
     const before = buffer(original, 8);
