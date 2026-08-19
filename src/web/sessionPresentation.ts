@@ -22,8 +22,18 @@ export function sessionWorkspacePath(
   return (remoteHost ? session.cwd : (session.workspaceCwd ?? session.cwd)).trim() || '~';
 }
 
-/** Canonical user-facing session/workspace name. */
+/** Canonical live session name used by tabs and agent rows. */
 export function sessionDisplayLabel(
+  session: SessionSummary,
+  allSessions: readonly SessionSummary[] = [],
+): string {
+  const host = sessionHostLabel(session, allSessions);
+  const path = shortSessionPath(session.cwd.trim() || '~');
+  return host ? `${host}:${path}` : path;
+}
+
+/** Canonical stable workspace name used by workspace groups/headings. */
+export function sessionWorkspaceLabel(
   session: SessionSummary,
   allSessions: readonly SessionSummary[] = [],
 ): string {
