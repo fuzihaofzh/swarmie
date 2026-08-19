@@ -200,6 +200,10 @@ describe('adapter registry', () => {
   it('returns a banner-detected agent session to idle on a shell prompt OSC marker', () => {
     const adapter = createAdapter('/bin/zsh', { sessionId: 'generic-shell-prompt', toolArgs: [] });
     const feed = (adapter as unknown as { handlePtyData: (chunk: string) => void }).handlePtyData.bind(adapter);
+    const cwdChanges: Array<{ cwd: string }> = [];
+    adapter.on('event', (event) => {
+      if (event.type === 'cwd:change') cwdChanges.push(event.data as { cwd: string });
+    });
 
     adapter.write('codex\r');
     feed('│ >_ OpenAI Codex (v0.144.6) │');
@@ -209,6 +213,7 @@ describe('adapter registry', () => {
 
     expect(adapter.status).toBe('idle');
     expect(adapter.info.name).toBe('/bin/zsh');
+    expect(cwdChanges.at(-1)?.cwd).toBe('/work/project');
   });
 
   it('does not mistake a nested shell OSC marker for the parent prompt while the agent is visibly busy', () => {

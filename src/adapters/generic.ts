@@ -1,4 +1,6 @@
 import * as pty from 'node-pty';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { BaseAdapter, buildSpawnEnv, matchesAgentIdleScreen, matchesBusyScreen } from './base.js';
 import type {
   AdapterInfo,
@@ -9,6 +11,8 @@ import type {
 } from './types.js';
 import { ESC_CHAR, BEL_CHAR, OSC_ANY_RE, CSI_RE, ESC_OTHER_RE, CONTROL_CHARS_RE } from './ansi.js';
 import * as PROF from '../server/profile.js';
+
+const execFileAsync = promisify(execFile);
 
 // Match each tool by its startup *banner*, not a bare mention. A bare /claude/i
 // or /codex/i also fires on a directory named "claude", an OSC title carrying the
@@ -41,6 +45,8 @@ const OSC_SHELL_PROMPT_RE = new RegExp(
 );
 const AGENT_CRUISE_EXIT_LINE = 'AgentCruise exited.';
 const INTERACTIVE_SHELLS = new Set(['sh', 'bash', 'zsh', 'fish', 'tcsh', 'csh', 'ksh', 'dash']);
+const SHELL_RETURN_PROBE_INTERVAL_MS = 250;
+const SHELL_RETURN_PROBE_WINDOW_MS = 3_000;
 
 function basename(command: string): string {
   return command.split('/').filter(Boolean).pop() ?? command;
@@ -64,6 +70,15 @@ export class GenericAdapter extends BaseAdapter {
    *  any byte, including in the middle of an OSC sequence or exit line). */
   private _shellReturnRawTail = '';
   private _shellReturnTextTail = '';
+  /**
+   * Ctrl+C can either interrupt work inside an agent or exit the agent itself.
+   * While that distinction is unresolved, briefly poll the PTY foreground
+   * process group. The agent has really exited only once the parent shell owns
+   * the terminal again.
+   */
+  private _shellReturnProbeTimer: ReturnType<typeof setInterval> | null = null;
+  private _shellReturnProbeUntil = 0;
+  private _shellReturnProbeInFlight = false;
   /**
    * Whether we're still scanning output for a startup banner. Active from launch
    * (a wrapper that boots straight into the tool prints its banner before any
@@ -118,6 +133,7 @@ export class GenericAdapter extends BaseAdapter {
     this.ptyProcess.onData((data: string) => this.handlePtyData(data));
 
     this.ptyProcess.onExit(({ exitCode, signal }) => {
+      this.stopShellReturnProbe();
       this.clearIdleTimer();
       this.setStatus(exitCode === 0 ? 'completed' : 'error');
       this.emitEvent('session:end', {
@@ -132,6 +148,9 @@ export class GenericAdapter extends BaseAdapter {
   write(data: string): void {
     this.ptyProcess?.write(data);
     this.handleUserInput(data);
+    if (this._detectedTool && data.includes('\x03')) {
+      this.startShellReturnProbe();
+    }
     // On Enter, re-arm banner scanning for the command about to run — but never
     // after a tool is already locked in, so its own output can't re-trigger detection.
     if (!this._detectedTool && (data.includes('\r') || data.includes('\n'))) {
@@ -172,17 +191,17 @@ export class GenericAdapter extends BaseAdapter {
     this.handleActivityDetection(data);
     if (PROF.profiling) PROF.mark('pty.activityDetect', tAct, data.length, this.sessionId);
 
-    const tOsc = PROF.profiling ? PROF.nowNs() : 0n;
-    this.parseOSC(data);
-    if (PROF.profiling) PROF.mark('pty.parseOSC', tOsc, data.length, this.sessionId);
-
-    // A GenericAdapter often owns a long-lived shell which launches an agent
-    // as a child. The child exiting does not fire node-pty's onExit; only the
-    // outer shell would do that. Detect the return to the shell explicitly so
-    // the session does not retain the agent's running state and identity.
+    // Restore shell mode before parsing this same chunk. Shell integrations
+    // commonly put the prompt marker and its authoritative cwd in one PTY
+    // write; parsing first would discard that cwd while the adapter still
+    // believes the agent owns the terminal.
     if (hadDetectedTool && this.didReturnToShell(data)) {
       this.resetDetectedToolAtShellPrompt();
     }
+
+    const tOsc = PROF.profiling ? PROF.nowNs() : 0n;
+    this.parseOSC(data);
+    if (PROF.profiling) PROF.mark('pty.parseOSC', tOsc, data.length, this.sessionId);
 
     const tEmit = PROF.profiling ? PROF.nowNs() : 0n;
     this.emitEvent('raw:output', {
@@ -222,6 +241,7 @@ export class GenericAdapter extends BaseAdapter {
 
   private resetDetectedToolAtShellPrompt(): void {
     if (!this._detectedTool) return;
+    this.stopShellReturnProbe();
     this._detectedTool = null;
     // Stay quiescent at the returned prompt. write() re-arms detection on the
     // next submitted command; scanning passive shell redraws here could latch
@@ -235,6 +255,59 @@ export class GenericAdapter extends BaseAdapter {
       tool: this.command,
       displayName: this.command,
     } satisfies ToolDetectData);
+  }
+
+  private startShellReturnProbe(): void {
+    if (!this._detectedTool || !this.ptyProcess || !isInteractiveShellCommand(this.command)) return;
+    this._shellReturnProbeUntil = Date.now() + SHELL_RETURN_PROBE_WINDOW_MS;
+    if (this._shellReturnProbeTimer) return;
+    void this.probeForShellReturn();
+    this._shellReturnProbeTimer = setInterval(
+      () => void this.probeForShellReturn(),
+      SHELL_RETURN_PROBE_INTERVAL_MS,
+    );
+  }
+
+  private stopShellReturnProbe(): void {
+    if (this._shellReturnProbeTimer) {
+      clearInterval(this._shellReturnProbeTimer);
+      this._shellReturnProbeTimer = null;
+    }
+    this._shellReturnProbeUntil = 0;
+  }
+
+  private async probeForShellReturn(): Promise<void> {
+    if (this._shellReturnProbeInFlight) return;
+    if (!this._detectedTool || !this.ptyProcess || Date.now() > this._shellReturnProbeUntil) {
+      this.stopShellReturnProbe();
+      return;
+    }
+
+    const detectedTool = this._detectedTool;
+    const shellPid = this.ptyProcess.pid;
+    this._shellReturnProbeInFlight = true;
+    try {
+      const { stdout } = await execFileAsync(
+        'ps',
+        ['-o', 'pgid=', '-o', 'tpgid=', '-p', String(shellPid)],
+        { timeout: 1_000 },
+      );
+      const [processGroupId, terminalForegroundGroupId] = stdout
+        .trim()
+        .split(/\s+/)
+        .map(Number);
+      const shellOwnsTerminal = processGroupId > 0
+        && terminalForegroundGroupId > 0
+        && processGroupId === terminalForegroundGroupId;
+      if (shellOwnsTerminal && this._detectedTool === detectedTool) {
+        this.resetDetectedToolAtShellPrompt();
+      }
+    } catch {
+      // Process inspection is a best-effort fallback. Prompt OSC markers still
+      // provide the ordinary shell-return signal on integrated shells.
+    } finally {
+      this._shellReturnProbeInFlight = false;
+    }
   }
 
   /** Scan stripped PTY output for a tool's startup banner (see _detectActive). */

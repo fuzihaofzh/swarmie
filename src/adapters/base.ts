@@ -266,8 +266,6 @@ export abstract class BaseAdapter extends EventEmitter {
   private _lastDetectAt: number = 0;
   /** Pending trailing sample for chunks that arrived inside the throttle window. */
   private _detectTrailingTimer: ReturnType<typeof setTimeout> | null = null;
-  /** True when cwd is being tracked via OSC sequences (e.g. SSH session) */
-  private _oscCwdActive: boolean = false;
   private _oscTitle = '';
   private _oscProgress = '';
   private readonly _detectionMode: DetectionMode;
@@ -644,7 +642,6 @@ export abstract class BaseAdapter extends EventEmitter {
       if (changed) {
         if (newCwd) this.cwd = newCwd;
         this.hostname = host;
-        this._oscCwdActive = true;
         this.emitEvent('cwd:change', { cwd: this.cwd, hostname: this.hostname } satisfies CwdChangeData);
       }
     }
@@ -667,7 +664,6 @@ export abstract class BaseAdapter extends EventEmitter {
       if (path !== this.cwd || host !== this.hostname) {
         if (path !== '~') this.cwd = path;
         this.hostname = host;
-        this._oscCwdActive = true;
         this.emitEvent('cwd:change', { cwd: this.cwd, hostname: this.hostname } satisfies CwdChangeData);
       }
     }
@@ -800,8 +796,12 @@ export abstract class BaseAdapter extends EventEmitter {
   }
 
   private async pollCwd(pid: number): Promise<void> {
-    // Skip polling when OSC sequences are actively tracking cwd (e.g. SSH)
-    if (this._oscCwdActive) return;
+    // The PTY owner is the local shell, so its process cwd is authoritative
+    // only while the session is local. Keep polling after local OSC updates:
+    // it is the fallback for shells whose prompt integration disappears after
+    // an interactive child exits. For SSH, remote OSC/title metadata remains
+    // authoritative and the local shell cwd must not overwrite it.
+    if (this.hostname !== this._initialHostname) return;
     try {
       // Track the PTY's owning shell/agent only. Coding agents routinely spawn
       // short-lived tools in other directories; following the deepest child
