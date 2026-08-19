@@ -3,7 +3,6 @@ import type { SessionSummary } from '../src/web/hooks/useSessions.js';
 import {
   sessionDisplayLabel,
   sessionWorkspaceKey,
-  sessionWorkspaceLabel,
   sessionWorkspacePath,
 } from '../src/web/sessionPresentation.js';
 import { sessionMatchesTagFilter } from '../src/web/tagFilter.js';
@@ -27,16 +26,15 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
 }
 
 describe('shared session presentation', () => {
-  it('updates local tab/sidebar names from live cwd while workspace identity stays at launch cwd', () => {
+  it('binds local tab/sidebar/workspace names and identity to the same live cwd', () => {
     const local = session({ cwd: '/tmp/manually-selected-dir' });
     const sessions = [local];
 
-    expect(sessionWorkspacePath(local, sessions)).toBe('/work/original');
+    expect(sessionWorkspacePath(local, sessions)).toBe('/tmp/manually-selected-dir');
     expect(sessionDisplayLabel(local, sessions)).toBe('manually-selected-dir');
-    expect(sessionWorkspaceLabel(local, sessions)).toBe('original');
-    expect(sessionWorkspaceKey(local, sessions)).toBe('workspace:cwd:/work/original');
-    expect(sessionMatchesTagFilter(local, ['workspace:cwd:/work/original'], sessions)).toBe(true);
-    expect(sessionMatchesTagFilter(local, ['workspace:cwd:/tmp/manually-selected-dir'], sessions)).toBe(false);
+    expect(sessionWorkspaceKey(local, sessions)).toBe('workspace:cwd:/tmp/manually-selected-dir');
+    expect(sessionMatchesTagFilter(local, ['workspace:cwd:/tmp/manually-selected-dir'], sessions)).toBe(true);
+    expect(sessionMatchesTagFilter(local, ['workspace:cwd:/work/original'], sessions)).toBe(false);
   });
 
   it('uses one remote host/path label and identity after a real SSH transition', () => {
@@ -49,7 +47,6 @@ describe('shared session presentation', () => {
 
     expect(sessionWorkspacePath(remote, sessions)).toBe('/srv/remote-project');
     expect(sessionDisplayLabel(remote, sessions)).toBe('gpu-worker:remote-project');
-    expect(sessionWorkspaceLabel(remote, sessions)).toBe('gpu-worker:remote-project');
     expect(sessionWorkspaceKey(remote, sessions)).toBe('workspace:hostcwd:gpu-worker:/srv/remote-project');
     expect(sessionMatchesTagFilter(remote, ['workspace:hostcwd:gpu-worker:/srv/remote-project'], sessions)).toBe(true);
   });

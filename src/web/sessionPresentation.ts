@@ -9,17 +9,12 @@ export function shortSessionPath(path: string): string {
   return lastSlash === -1 ? normalized : (normalized.slice(lastSlash + 1) || path);
 }
 
-/**
- * One canonical path for every session label/grouping consumer.
- * Local agent child processes may move around, so their workspace stays at
- * the launch cwd. A real SSH transition uses the remote shell's live cwd.
- */
+/** One live cwd shared by tab labels, workspace groups, and agent rows. */
 export function sessionWorkspacePath(
   session: SessionSummary,
-  allSessions: readonly SessionSummary[] = [],
+  _allSessions: readonly SessionSummary[] = [],
 ): string {
-  const remoteHost = sessionHostLabel(session, allSessions);
-  return (remoteHost ? session.cwd : (session.workspaceCwd ?? session.cwd)).trim() || '~';
+  return session.cwd.trim() || '~';
 }
 
 /** Canonical live session name used by tabs and agent rows. */
@@ -29,16 +24,6 @@ export function sessionDisplayLabel(
 ): string {
   const host = sessionHostLabel(session, allSessions);
   const path = shortSessionPath(session.cwd.trim() || '~');
-  return host ? `${host}:${path}` : path;
-}
-
-/** Canonical stable workspace name used by workspace groups/headings. */
-export function sessionWorkspaceLabel(
-  session: SessionSummary,
-  allSessions: readonly SessionSummary[] = [],
-): string {
-  const host = sessionHostLabel(session, allSessions);
-  const path = shortSessionPath(sessionWorkspacePath(session, allSessions));
   return host ? `${host}:${path}` : path;
 }
 

@@ -7,7 +7,6 @@ import { sessionHostLabel } from '../serverHost';
 import {
   sessionDisplayLabel,
   sessionWorkspaceKey,
-  sessionWorkspaceLabel,
   sessionWorkspacePath,
   workspacePathFromKey,
 } from '../sessionPresentation';
@@ -103,7 +102,7 @@ export function WorkspaceAgentPanel() {
       if (key) groups.set(key, [...(groups.get(key) ?? []), session]);
     }
     return [...groups.entries()]
-      .map(([key, grouped]) => [key, countStates(grouped), sessionWorkspaceLabel(grouped[0], activeSessions)] as const)
+      .map(([key, grouped]) => [key, countStates(grouped), sessionDisplayLabel(grouped[0], activeSessions)] as const)
       .sort((a, b) => a[0].localeCompare(b[0]));
   }, [activeSessions]);
   const rawWorkspace = tagFilter.length === 1 ? tagFilter[0] : null;
@@ -183,7 +182,7 @@ export function WorkspaceAgentPanel() {
     const workspaceSession = selectedWorkspace
       ? activeSessions.find((session) => sessionWorkspaceKey(session, activeSessions) === selectedWorkspace)
       : undefined;
-    const cwd = workspacePathFromKey(selectedWorkspace) ?? workspaceSession?.workspaceCwd ?? workspaceSession?.cwd;
+    const cwd = workspacePathFromKey(selectedWorkspace) ?? workspaceSession?.cwd ?? workspaceSession?.workspaceCwd;
     const result = await createSession({
       tool: defaultAgentTool,
       ...(cwd && cwd !== '~' ? { cwd } : {}),
