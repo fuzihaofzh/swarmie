@@ -273,6 +273,7 @@ export function App() {
 
   const applyTileLayout = useCallback(() => {
     if (!api) return false;
+    if (useUIStore.getState().showNewSession) return false;
     const panelIds = visibleWorkspaceSessions(
       useSessionStore.getState().sessions,
       useSessionStore.getState().archivedSessionIds,
@@ -313,6 +314,7 @@ export function App() {
 
   const applyTabbedLayout = useCallback(() => {
     if (!api) return false;
+    if (useUIStore.getState().showNewSession) return false;
     const panelIds = activeWorkspaceSessions(
       useSessionStore.getState().sessions,
       useSessionStore.getState().archivedSessionIds,

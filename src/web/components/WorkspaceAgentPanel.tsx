@@ -182,12 +182,24 @@ export function WorkspaceAgentPanel() {
     const workspaceSession = selectedWorkspace
       ? activeSessions.find((session) => sessionWorkspaceKey(session, activeSessions) === selectedWorkspace)
       : undefined;
-    const cwd = workspacePathFromKey(selectedWorkspace) ?? workspaceSession?.cwd ?? workspaceSession?.workspaceCwd;
-    const result = await createSession({
-      tool: defaultAgentTool,
-      ...(cwd && cwd !== '~' ? { cwd } : {}),
-    });
-    if (result) setActiveSession(result.id);
+    const targetServerUrl = workspaceSession?.serverUrl || undefined;
+    const nestedRemoteHost = !targetServerUrl && workspaceSession
+      ? sessionHostLabel(workspaceSession, activeSessions)
+      : null;
+    const cwd = nestedRemoteHost
+      ? undefined
+      : workspacePathFromKey(selectedWorkspace) ?? workspaceSession?.cwd ?? workspaceSession?.workspaceCwd;
+    try {
+      const result = await createSession({
+        tool: defaultAgentTool,
+        ...(targetServerUrl ? { serverUrl: targetServerUrl } : {}),
+        ...(cwd ? { cwd } : {}),
+      });
+      setActiveSession(result.id);
+    } catch {
+      // ServerConnection logs the concrete error. Keep the current workspace
+      // and session selection unchanged when the request fails.
+    }
   };
 
   const filterOptions = ['all', 'working', 'blocked', 'done', 'idle'];

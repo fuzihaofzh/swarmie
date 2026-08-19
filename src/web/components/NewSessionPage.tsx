@@ -2,21 +2,31 @@ import { useState } from 'react';
 import { useServerStore, LOCAL_SERVER } from '../hooks/useServers';
 import { useSessionStore } from '../hooks/useSessions';
 import { saveRecentDir, getRecentEntries } from '../recentDirs';
+import { hostnamesEquivalent, serverUrlHostname } from '../serverHost';
 
 interface NewSessionPageProps {
   onCreateSession: (opts: {
     serverUrl?: string;
     cwd?: string;
-  }) => Promise<{ id: string } | null>;
+  }) => Promise<{ id: string }>;
   onCancel?: () => void;
   initialCwd?: string;
+  initialServerUrl?: string;
+  initialError?: string;
 }
 
-export function NewSessionPage({ onCreateSession, onCancel, initialCwd }: NewSessionPageProps) {
-  const [creating, setCreating] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const [selectedServer, setSelectedServer] = useState(LOCAL_SERVER);
+export function NewSessionPage({
+  onCreateSession,
+  onCancel,
+  initialCwd,
+  initialServerUrl,
+  initialError,
+}: NewSessionPageProps) {
   const servers = useServerStore((s) => s.servers);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState(initialError ?? '');
+  const [showAll, setShowAll] = useState(false);
+  const [selectedServer, setSelectedServer] = useState(initialServerUrl ?? LOCAL_SERVER);
   const sessions = useSessionStore((s) => s.sessions);
 
   const recentEntries = getRecentEntries(sessions.map((s) => ({ cwd: s.cwd, hostname: s.hostname })));
@@ -24,19 +34,49 @@ export function NewSessionPage({ onCreateSession, onCancel, initialCwd }: NewSes
   const handleStart = async (cwd?: string, hostname?: string) => {
     if (creating) return;
     const targetCwd = cwd ?? initialCwd;
-    if (targetCwd) saveRecentDir({ dir: targetCwd, hostname });
+    let targetServer = selectedServer;
+    // Recent entries remember the machine that owns the directory. When that
+    // machine is a configured Swarmie server, route the create request there
+    // instead of trying the path on Local. An SSH-only host has no coordinator
+    // we can spawn through, so explain that rather than sending a doomed POST.
+    if (!targetServer && hostname) {
+      const matchingServer = servers.find((server) => {
+        const serverHost = serverUrlHostname(server.url);
+        return !!serverHost && hostnamesEquivalent(serverHost, hostname);
+      });
+      if (!matchingServer) {
+        setCreateError(`The directory belongs to ${hostname}. Select or add that Swarmie server before creating a session there.`);
+        return;
+      }
+      targetServer = matchingServer.url;
+      setSelectedServer(targetServer);
+    }
+    setCreateError('');
     setCreating(true);
-    await onCreateSession({
-      serverUrl: selectedServer || undefined,
-      cwd: targetCwd,
-    });
-    setCreating(false);
+    try {
+      await onCreateSession({
+        serverUrl: targetServer || undefined,
+        cwd: targetCwd,
+      });
+      // A failed path must not poison the recent-directory list.
+      if (targetCwd) saveRecentDir({ dir: targetCwd, hostname });
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreating(false);
+    }
   };
 
   return (
     <div className="new-session-page">
       <div className="new-session-content">
         <h2>New Session</h2>
+
+        {createError && (
+          <div className="new-session-error" role="alert">
+            {createError}
+          </div>
+        )}
 
         <div className="form-group">
           <label>Server</label>

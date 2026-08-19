@@ -76,6 +76,16 @@ function resolveRecordingFilePath(recordDir: string, rawFilename: string): strin
   return resolvedPath;
 }
 
+/** Expand the shell-style home shorthand accepted by the web session form. */
+export function resolveSessionWorkingDirectory(rawCwd?: string): string {
+  if (!rawCwd) return homedir();
+  if (rawCwd === '~') return homedir();
+  if (rawCwd.startsWith('~/') || rawCwd.startsWith('~\\')) {
+    return resolve(homedir(), rawCwd.slice(2));
+  }
+  return rawCwd;
+}
+
 export function setupRoutes(app: FastifyInstance, manager: SessionManager): void {
   // List all sessions
   app.get('/api/sessions', async () => {
@@ -379,7 +389,7 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
     const requestId = resolveRequestId(request);
     const { tool: rawTool, args, cwd, sessionName, cols, rows } = request.body;
     const tool = rawTool || process.env.SHELL || 'bash';
-    const sessionCwd = cwd || homedir();
+    const sessionCwd = resolveSessionWorkingDirectory(cwd);
 
     const sessionId = nanoid(12);
     const name = sessionName || `${tool}-${sessionId.slice(0, 6)}`;

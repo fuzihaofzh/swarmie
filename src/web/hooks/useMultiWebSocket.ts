@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { ServerConnection } from './useWebSocket';
+import { ServerConnection, type CreatedSession } from './useWebSocket';
 import { useServerStore, LOCAL_SERVER } from './useServers';
 import { useSessionStore, registerAutoApproveSync, registerSessionSettingsSync, type SessionSettingsPatch } from './useSessions';
 import { registerAutoCompactMinutesSync, useUIStore } from './useUI';
@@ -113,12 +113,11 @@ export function useMultiWebSocket() {
     cwd?: string;
     sessionName?: string;
     serverUrl?: string;
-  }): Promise<{ id: string; name: string; tool: string; status: string } | null> => {
+  }): Promise<CreatedSession> => {
     const targetUrl = opts.serverUrl ?? LOCAL_SERVER;
     const conn = connectionsRef.current.get(targetUrl);
     if (!conn) {
-      console.error(`No connection found for server: "${targetUrl}". Available:`, [...connectionsRef.current.keys()]);
-      return null;
+      throw new Error(`No connection found for server: "${targetUrl}"`);
     }
     return conn.createSession(opts);
   }, []);

@@ -150,6 +150,11 @@ export function useDockviewSync(api: DockviewApi | null) {
 
       prevSessionIdsRef.current = currentIds;
 
+      // Opening New Session is an explicit modal-like tab state. Background
+      // status/cwd updates still reconcile panel membership above, but must not
+      // reactivate the previously selected terminal and close the form.
+      if (useUIStore.getState().showNewSession) return;
+
       // Active session changed in Zustand → activate panel in Dockview
       if (
         (addedPanel || state.sessions !== prev.sessions || state.activeSessionId !== prev.activeSessionId || state.archivedSessionIds !== prev.archivedSessionIds) &&

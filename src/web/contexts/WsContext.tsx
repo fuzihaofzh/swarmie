@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { ServerConnection } from '../hooks/useWebSocket';
+import type { CreatedSession, ServerConnection } from '../hooks/useWebSocket';
 
 export interface WsFunctions {
   createSession: (opts: {
@@ -8,7 +8,7 @@ export interface WsFunctions {
     cwd?: string;
     sessionName?: string;
     serverUrl?: string;
-  }) => Promise<{ id: string; name: string; tool: string; status: string } | null>;
+  }) => Promise<CreatedSession>;
   killSession: (sessionId: string) => Promise<void>;
   getConnection: (serverUrl: string) => ServerConnection | undefined;
 }

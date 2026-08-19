@@ -8,6 +8,13 @@ type WSMessage = {
   [key: string]: unknown;
 };
 
+export interface CreatedSession {
+  id: string;
+  name: string;
+  tool: string;
+  status: string;
+}
+
 /**
  * Manages a single WebSocket + REST connection to one swarmie server.
  */
@@ -303,7 +310,7 @@ export class ServerConnection {
     args?: string[];
     cwd?: string;
     sessionName?: string;
-  }): Promise<{ id: string; name: string; tool: string; status: string } | null> {
+  }): Promise<CreatedSession> {
     try {
       const base = this.apiBase();
       const res = await fetch(`${base}/api/sessions`, {
@@ -312,14 +319,14 @@ export class ServerConnection {
         body: JSON.stringify(opts),
       });
       if (!res.ok) {
-        const err = await res.json();
-        console.error('Failed to create session:', err);
-        return null;
+        const body = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(body?.error || `Failed to create session (HTTP ${res.status})`);
       }
-      return await res.json();
+      return await res.json() as CreatedSession;
     } catch (err) {
       console.error('Failed to create session:', err);
-      return null;
+      if (err instanceof Error) throw err;
+      throw new Error(String(err));
     }
   }
 

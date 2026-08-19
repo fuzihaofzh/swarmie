@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { getConfigDir, loadConfig } from '../src/cli/config.js';
 import { SessionManager } from '../src/session/manager.js';
 import { RemoteAdapter } from '../src/adapters/remote.js';
 import { createServer } from '../src/server/index.js';
+import { resolveSessionWorkingDirectory } from '../src/server/routes.js';
 
 const TEST_PASSWORD = 'test-secret';
 const AUTH_TOKEN = createHash('sha256').update(TEST_PASSWORD).digest('hex');
@@ -102,6 +104,12 @@ function parseObservabilityLogs(calls: unknown[][]): Array<Record<string, unknow
 }
 
 describe('REST API', () => {
+  it('expands shell home shorthand before validating a session cwd', () => {
+    expect(resolveSessionWorkingDirectory('~')).toBe(homedir());
+    expect(resolveSessionWorkingDirectory('~/lin/qemu-vm')).toBe(join(homedir(), 'lin/qemu-vm'));
+    expect(resolveSessionWorkingDirectory('~someone/project')).toBe('~someone/project');
+  });
+
   it('createServer with port=0 returns a concrete bound port', () => {
     expect(new URL(baseUrl).port).not.toBe('0');
   });

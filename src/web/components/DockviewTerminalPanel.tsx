@@ -26,14 +26,12 @@ export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<Termi
     setDockActive(api.isActive);
     if (api.isActive) {
       useSessionStore.getState().setActiveSession(sessionId);
-      useUIStore.getState().setShowNewSession(false);
     }
     const disposable = api.onDidActiveChange((e) => {
       setDockActive(e.isActive);
       if (e.isActive) {
         // Update Zustand when dockview activates this panel
         useSessionStore.getState().setActiveSession(sessionId);
-        useUIStore.getState().setShowNewSession(false);
       }
     });
     return () => disposable.dispose();
