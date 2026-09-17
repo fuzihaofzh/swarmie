@@ -42,6 +42,7 @@ import {
   nextTerminalFollowState,
   resolveTerminalScrollAnchor,
 } from '../terminalScrollAnchor';
+import { getTerminalSize, subscribeTerminalSize } from '../terminalSize';
 import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
 
 interface TerminalViewProps {
@@ -91,11 +92,17 @@ const MAX_INLINE_MATH_LINES = 0.95;
 // How many bytes earlier to fetch each time the user asks for more history.
 // Kept modest (not multi-MB) on purpose: the server's history:snapshot spans
 // [fromOffset, current-end], so the client term.reset()s and re-renders the
-// whole window on the main thread each load. A 2MB window made "scroll up a
-// bit" stall for seconds (and risk the retry timeout, which re-requests another
-// full snapshot and compounds). A smaller window loads near-instantly and the
-// user can keep scrolling to pull more, infinite-scroll style.
-const HISTORY_CHUNK_BYTES = 512 * 1024;
+// whole window on the main thread each load. Note the FETCH is now bounded to
+// [cacheStart-chunk, cacheStart) via toOffset, so a bigger chunk no longer means
+// a to-END re-send (the old cause of the multi-second "scroll up a bit" stall).
+// It only means cacheStart jumps back further per load, so a full scroll-to-top
+// takes FEWER rebuilds. Since every rebuild re-parses [cacheStart, END], the
+// cumulative parse cost of reaching the top is ~proportional to 1/chunkSize —
+// halving the load count (512KB -> 1MB) roughly halves the total stall on a big
+// session (measured ~5.0s -> ~2.5s of parse on a 12MB/41k-line Claude session).
+// Kept at 1MB rather than larger so a single delta fetch stays modest over
+// bandwidth-limited remote tunnels.
+const HISTORY_CHUNK_BYTES = 1024 * 1024;
 // How long to wait for a history:snapshot before re-sending the request. The
 // reply can be lost (e.g. it raced a WS reconnect, or the socket was briefly
 // not OPEN when we sent) — without a resend the load would just spin until the
@@ -108,6 +115,9 @@ const HISTORY_LOAD_RETRY_MS = 6_000;
 const HISTORY_LOAD_MAX_ATTEMPTS = 4;
 /** Auto-trigger only fires if the user wheel/touch-swiped up within this window. */
 const AUTO_LOAD_RECENT_WINDOW_MS = 600;
+/** Minimum gap between two AUTO-triggered history loads, so a hard flick-up
+ *  can't stack several full-cache rebuilds back to back. */
+const AUTO_LOAD_COOLDOWN_MS = 500;
 const MAX_CLIPBOARD_IMAGE_BYTES = 16 * 1024 * 1024;
 
 function clipboardImageFromPaste(event: ClipboardEvent): File | null {
@@ -244,6 +254,7 @@ export function TerminalView({
   const scheduleFlushRef = useRef<(() => void) | null>(null);
   const cancelScheduledFlushRef = useRef<(() => void) | null>(null);
   const scrolledUpAtRef = useRef(0);
+  const lastAutoLoadAtRef = useRef(0);
   const handleLoadEarlierRef = useRef<(() => void) | null>(null);
   // Writes the live output parked during a history load straight to the
   // terminal and ends the loading state without a reset/anchor. Set inside the
@@ -256,12 +267,20 @@ export function TerminalView({
   const fontSizeRef = useRef(fontSize);
   const fontFamilyRef = useRef(fontFamily);
 
+  // Report the space this viewer offers, separately from the shared PTY grid.
+  // Reporting term.cols after applying the shared minimum would pin every
+  // desktop to the phone's size even after that phone leaves.
   const reportResize = useCallback((term: Terminal) => {
+    const desired = fitRef.current?.proposeDimensions();
+    if (!desired || !Number.isFinite(desired.cols) || !Number.isFinite(desired.rows)) return;
     const previous = lastReportedSizeRef.current;
-    if (previous?.cols === term.cols && previous.rows === term.rows) return;
-    lastReportedSizeRef.current = { cols: term.cols, rows: term.rows };
-    onResize?.(term.cols, term.rows);
-  }, [onResize]);
+    if (previous?.cols !== desired.cols || previous.rows !== desired.rows) {
+      lastReportedSizeRef.current = desired;
+      onResize?.(desired.cols, desired.rows);
+    }
+    const grid = getTerminalSize(sessionId) ?? desired;
+    term.resize(grid.cols, grid.rows);
+  }, [onResize, sessionId]);
 
   // Latest reportResize via ref so the active-tab effect doesn't re-run every
   // parent render (parent passes an inline `onResize` arrow → new identity each
@@ -511,8 +530,7 @@ export function TerminalView({
             // snap to bottom on resize if they were already following live.
             const buf = term.buffer.active;
             const wasAtBottom = buf.viewportY >= buf.baseY;
-            fitAddon.fit();
-            reportResize(term);
+            reportResizeRef.current(term);
             if (wasAtBottom) {
               term.scrollToBottom();
             }
@@ -529,7 +547,7 @@ export function TerminalView({
       // Fit first, THEN signal ready — ensures buffered data is replayed
       // at the correct terminal dimensions, not the default 80x24.
       requestAnimationFrame(() => {
-        try { fitAddon.fit(); } catch { /* ignore */ }
+        try { reportResizeRef.current(term); } catch { /* ignore */ }
         setTermReady((c) => c + 1);
       });
     };
@@ -641,7 +659,6 @@ export function TerminalView({
     }
     if (!isActive) return;
     const term = termRef.current;
-    const fitAddon = fitRef.current;
     if (!term) return;
     // On a genuine re-activation (tab switched back, not the first show), force
     // ink/TUI apps (codex, Claude Code) to repaint. While hidden, live output is
@@ -670,7 +687,6 @@ export function TerminalView({
         false,
       );
       try {
-        fitAddon?.fit();
         reportResizeRef.current(term);
       } catch { /* ignore */ }
       if (shouldFollow) {
@@ -731,6 +747,20 @@ export function TerminalView({
     }
   }, [isActive, termReady]);
 
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    // Called directly from the WebSocket size message, before subsequent raw
+    // output reaches the writer. A larger viewer is letterboxed instead of
+    // interpreting the same cursor controls against a different grid.
+    return subscribeTerminalSize(sessionId, (size) => {
+      const follow = followingRef.current;
+      term.resize(size.cols, size.rows);
+      if (follow) term.scrollToBottom();
+      term.refresh(0, term.rows - 1);
+    });
+  }, [sessionId, termReady]);
+
   // Update terminal when theme/font changes
   useEffect(() => {
     const term = termRef.current;
@@ -739,7 +769,7 @@ export function TerminalView({
     term.options.fontSize = fontSize;
     term.options.fontFamily = fontFamily;
     requestAnimationFrame(() => {
-      try { fitRef.current?.fit(); } catch { /* ignore */ }
+      try { reportResizeRef.current(term); } catch { /* ignore */ }
     });
   }, [currentTheme, fontSize, fontFamily]);
 
@@ -1303,9 +1333,18 @@ export function TerminalView({
       setAtTop(isTop);
       if (!isTop) return;
       if (performance.now() - scrolledUpAtRef.current > AUTO_LOAD_RECENT_WINDOW_MS) return;
+      // Cool down between auto-loads. A hard flick-up fires several scroll
+      // notifications and, each time a rebuild lands re-anchored near the top,
+      // the next queued gesture would immediately pull another page — stacking
+      // expensive full-cache rebuilds back to back (the "load history and it
+      // freezes" pile-up). One page per cooldown keeps it responsive; the user
+      // can still scroll again to pull more. Manual Load-earlier button bypasses
+      // this (it calls handleLoadEarlier directly).
+      if (performance.now() - lastAutoLoadAtRef.current < AUTO_LOAD_COOLDOWN_MS) return;
       // Consume the gesture timestamp so we don't refire each frame while
       // the viewport sits at the top.
       scrolledUpAtRef.current = 0;
+      lastAutoLoadAtRef.current = performance.now();
       handleLoadEarlierRef.current?.();
     };
 
@@ -1810,7 +1849,7 @@ export function TerminalView({
       className={`terminal-view${isActive ? ' terminal-view-active' : ''}`}
       style={{ display: 'flex', flexDirection: 'column', flex: 1, width: '100%', height: '100%', minHeight: 0 }}
     >
-    <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+    <div style={{ flex: 1, minHeight: 0, position: 'relative', padding: '4px' }}>
       {searchOpen && (
         <div className="terminal-search-bar">
           <input
@@ -1840,7 +1879,7 @@ export function TerminalView({
       )}
       <div
         ref={containerCallbackRef}
-        style={{ width: '100%', height: '100%', minHeight: 0, padding: '4px' }}
+        style={{ width: '100%', height: '100%', minHeight: 0 }}
       />
       {atTop && !sessionMeta.reachedEarliest && (
         <button

@@ -457,6 +457,7 @@ export function App() {
   return (
     <WsContext value={wsContext}>
       <div className="app-layout">
+        {workspacePanelOpen && <button className="workspace-panel-backdrop" aria-label="Close workspace panel" onClick={() => useUIStore.getState().toggleWorkspacePanel()} />}
         {workspacePanelOpen && <WorkspaceAgentPanel />}
         {/* Main area */}
         <div className={`app-main ${tileLayoutEnabled ? 'tile-layout-scroll' : ''}`}>
@@ -502,20 +503,45 @@ function SettingsModal({
   onApplyTileLayout: () => boolean;
   tileSessionCount: number;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    const previousFocus = document.activeElement;
+    const dialog = dialogRef.current;
+    const focusable = () => Array.from(dialog?.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
+    ) ?? []).filter((element) => element.getClientRects().length > 0);
+    focusable()[0]?.focus();
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      } else if (e.key === 'Tab') {
+        const elements = focusable();
+        const first = elements[0];
+        const last = elements[elements.length - 1];
+        if (e.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) {
+          e.preventDefault();
+          last?.focus();
+        } else if (!e.shiftKey && (document.activeElement === last || !dialog?.contains(document.activeElement))) {
+          e.preventDefault();
+          first?.focus();
+        }
+      }
     };
     window.addEventListener('keydown', onKeyDown, true);
-    return () => window.removeEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus({ preventScroll: true });
+    };
   }, [onClose]);
 
   return (
     <div className="settings-modal-overlay" onClick={onClose}>
-      <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(e) => e.stopPropagation()}>
         <div className="settings-modal-header">
-          <h2>Settings</h2>
-          <button className="settings-modal-close" onClick={onClose}>&times;</button>
+          <h2 id="settings-title">Settings</h2>
+          <button className="settings-modal-close" aria-label="Close settings" onClick={onClose}>&times;</button>
         </div>
         <div className="settings-modal-body">
           <section className="settings-panel-section settings-panel-section-wide">

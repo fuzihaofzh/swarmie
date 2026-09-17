@@ -48,7 +48,9 @@ export function DockviewNewSessionPanel({ api }: IDockviewPanelProps) {
   // The local single-server path creates immediately. Stay blank only while
   // that first request is in flight; on failure render the form + exact error
   // so the tab remains useful and the user can retry.
-  if (servers.length === 0 && !nestedRemoteHost && !autoCreateError) return null;
+  if (servers.length === 0 && !nestedRemoteHost && !autoCreateError) {
+    return <div className="new-session-page" role="status">Starting session…</div>;
+  }
 
   return (
     <NewSessionPage

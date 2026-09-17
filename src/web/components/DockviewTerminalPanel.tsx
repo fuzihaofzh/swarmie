@@ -21,27 +21,17 @@ export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<Termi
   const active = tileLayoutEnabled || (activeSessionId ? activeSessionId === sessionId : dockActive);
   const { sendInput, sendResize, sendRedraw, sendLoadHistory, sendClipboardImage } = useTerminalWebSocket(sessionId, active);
 
-  // Track active state from dockview
+  // Only observe here. useDockviewSync owns selection changes and suppresses
+  // temporary activations while restoring/rebuilding layouts. Writing to the
+  // store here bypassed that guard and replaced the saved active session with
+  // whichever panel happened to mount last, leaving the visible pane blank.
   useEffect(() => {
     setDockActive(api.isActive);
-    if (api.isActive) {
-      useSessionStore.getState().setActiveSession(sessionId);
-    }
     const disposable = api.onDidActiveChange((e) => {
       setDockActive(e.isActive);
-      if (e.isActive) {
-        // Update Zustand when dockview activates this panel
-        useSessionStore.getState().setActiveSession(sessionId);
-      }
     });
     return () => disposable.dispose();
-  }, [api, sessionId]);
-
-  useEffect(() => {
-    if (activeSessionId === sessionId && !api.isActive) {
-      api.setActive();
-    }
-  }, [activeSessionId, api, sessionId]);
+  }, [api]);
 
   return (
     <TerminalView

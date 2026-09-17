@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSessionStore, type SessionSummary } from '../hooks/useSessions';
 import { useUIStore } from '../hooks/useUI';
 import { useWsContext } from '../contexts/WsContext';
@@ -11,15 +11,7 @@ import {
   workspacePathFromKey,
 } from '../sessionPresentation';
 
-const BUSY = new Set(['starting', 'running', 'thinking', 'tool_executing']);
-
-function statusClass(status: string): string {
-  if (status === 'waiting_input' || status === 'blocked') return 'blocked';
-  if (status === 'done' || status === 'completed') return 'done';
-  if (status === 'error') return 'error';
-  if (BUSY.has(status)) return 'working';
-  return 'idle';
-}
+import { agentStateGroup, agentStatePriority, countAgentStates } from '../agentState';
 
 function statusLabel(status: string): string {
   if (status === 'waiting_input') return 'waiting';
@@ -42,16 +34,7 @@ function elapsedLabel(startTime: number, now: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-type WorkspaceCounts = { total: number; working: number; blocked: number; done: number; idle: number };
-
-function countStates(sessions: SessionSummary[]): WorkspaceCounts {
-  const counts: WorkspaceCounts = { total: sessions.length, working: 0, blocked: 0, done: 0, idle: 0 };
-  for (const session of sessions) {
-    const state = statusClass(session.status);
-    counts[state === 'error' ? 'blocked' : state]++;
-  }
-  return counts;
-}
+type WorkspaceCounts = ReturnType<typeof countAgentStates>;
 
 export function WorkspaceAgentPanel() {
   const sessions = useSessionStore((state) => state.sessions);
@@ -71,6 +54,10 @@ export function WorkspaceAgentPanel() {
   const [now, setNow] = useState(Date.now());
   const [explanations, setExplanations] = useState<Record<string, string>>({});
   const [resizing, setResizing] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const creatingRef = useRef(false);
+  const [createError, setCreateError] = useState('');
+  const toggleWorkspacePanel = useUIStore((state) => state.toggleWorkspacePanel);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -83,10 +70,12 @@ export function WorkspaceAgentPanel() {
     const stop = () => setResizing(false);
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', stop, { once: true });
+    window.addEventListener('pointercancel', stop, { once: true });
     document.body.classList.add('workspace-panel-resizing');
     return () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
       document.body.classList.remove('workspace-panel-resizing');
     };
   }, [resizing, setWorkspacePanelWidth]);
@@ -102,7 +91,7 @@ export function WorkspaceAgentPanel() {
       if (key) groups.set(key, [...(groups.get(key) ?? []), session]);
     }
     return [...groups.entries()]
-      .map(([key, grouped]) => [key, countStates(grouped), sessionDisplayLabel(grouped[0], activeSessions)] as const)
+      .map(([key, grouped]) => [key, countAgentStates(grouped), sessionDisplayLabel(grouped[0], activeSessions)] as const)
       .sort((a, b) => a[0].localeCompare(b[0]));
   }, [activeSessions]);
   const rawWorkspace = tagFilter.length === 1 ? tagFilter[0] : null;
@@ -111,7 +100,7 @@ export function WorkspaceAgentPanel() {
     : rawWorkspace && workspaces.some(([key]) => key === `workspace:tag:${rawWorkspace}`)
       ? `workspace:tag:${rawWorkspace}`
       : null;
-  const allWorkspaceSummary = useMemo(() => countStates(activeSessions), [activeSessions]);
+  const allWorkspaceSummary = useMemo(() => countAgentStates(activeSessions), [activeSessions]);
   useEffect(() => {
     if (rawWorkspace && selectedWorkspace && rawWorkspace !== selectedWorkspace) {
       setTagFilter([selectedWorkspace]);
@@ -123,24 +112,14 @@ export function WorkspaceAgentPanel() {
       : activeSessions;
     return workspaceAgents
       .filter((session) => agentMatches(session, query, activeSessions))
-      .filter((session) => stateFilter === 'all' || statusClass(session.status) === stateFilter)
+      .filter((session) => stateFilter === 'all' || agentStateGroup(session.status) === stateFilter)
       .sort((a, b) => {
         if (sortMode === 'name') return sessionDisplayLabel(a, activeSessions).localeCompare(sessionDisplayLabel(b, activeSessions));
         if (sortMode === 'recent') return b.startTime - a.startTime;
-        const rank = (session: SessionSummary) => session.status === 'waiting_input' || session.status === 'blocked' ? 0 : BUSY.has(session.status) ? 1 : session.status === 'done' || session.status === 'completed' ? 2 : 3;
-        return rank(a) - rank(b) || b.startTime - a.startTime;
+        return agentStatePriority(a.status) - agentStatePriority(b.status) || b.startTime - a.startTime;
       });
   }, [activeSessions, query, selectedWorkspace, sortMode, stateFilter]);
-  const workspaceSummary = useMemo(() => {
-    const counts = { working: 0, blocked: 0, done: 0, idle: 0 };
-    for (const session of visibleAgents) {
-      if (session.status === 'waiting_input' || session.status === 'blocked') counts.blocked++;
-      else if (BUSY.has(session.status)) counts.working++;
-      else if (session.status === 'done' || session.status === 'completed') counts.done++;
-      else counts.idle++;
-    }
-    return counts;
-  }, [visibleAgents]);
+  const workspaceSummary = useMemo(() => countAgentStates(visibleAgents), [visibleAgents]);
 
   const selectWorkspace = (workspace: string | null) => {
     setTagFilter(workspace ? [workspace] : []);
@@ -149,6 +128,7 @@ export function WorkspaceAgentPanel() {
   const openAgent = (session: SessionSummary) => {
     setActiveSession(session.id);
     setShowNewSession(false);
+    if (window.matchMedia('(max-width: 760px)').matches) toggleWorkspacePanel();
   };
 
   const markSeen = (session: SessionSummary) => {
@@ -179,6 +159,10 @@ export function WorkspaceAgentPanel() {
   };
 
   const createAgent = async () => {
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
+    setCreateError('');
     const workspaceSession = selectedWorkspace
       ? activeSessions.find((session) => sessionWorkspaceKey(session, activeSessions) === selectedWorkspace)
       : undefined;
@@ -196,21 +180,37 @@ export function WorkspaceAgentPanel() {
         ...(cwd ? { cwd } : {}),
       });
       setActiveSession(result.id);
-    } catch {
-      // ServerConnection logs the concrete error. Keep the current workspace
-      // and session selection unchanged when the request fails.
+      setShowNewSession(false);
+      if (window.matchMedia('(max-width: 760px)').matches) toggleWorkspacePanel();
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error));
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
     }
   };
 
   const filterOptions = ['all', 'working', 'blocked', 'done', 'idle'];
-  const stateCounts = (counts: WorkspaceCounts) => (
-    <span className="workspace-item-states" aria-label={`running ${counts.working}, blocked ${counts.blocked}, done ${counts.done}, idle ${counts.idle}`}>
-      {counts.working > 0 && <span className="working">{counts.working}</span>}
-      {counts.blocked > 0 && <span className="blocked">{counts.blocked}</span>}
-      {counts.done > 0 && <span className="done">{counts.done}</span>}
-      {counts.idle > 0 && <span className="idle">{counts.idle}</span>}
-    </span>
-  );
+  // Compact count: running(green) / done(blue) / total(gray). Running folds in
+  // blocked (waiting_input) so agents needing attention still surface; total is
+  // always the rightmost segment. Zero segments are dropped, colour disambiguates.
+  const workspaceCounts = (counts: WorkspaceCounts) => {
+    const running = counts.working + counts.blocked;
+    const segments: { key: string; cls: string; value: number }[] = [];
+    if (running > 0) segments.push({ key: 'running', cls: 'wc-running', value: running });
+    if (counts.done > 0) segments.push({ key: 'done', cls: 'wc-done', value: counts.done });
+    segments.push({ key: 'total', cls: 'wc-total', value: counts.total });
+    return (
+      <span className="workspace-item-count" aria-label={`${counts.total} total, ${running} running, ${counts.done} done`}>
+        {segments.map((seg, index) => (
+          <span key={seg.key} className={seg.cls}>
+            {index > 0 && <span className="wc-sep">/</span>}
+            {seg.value}
+          </span>
+        ))}
+      </span>
+    );
+  };
 
   return (
     <aside className="workspace-agent-panel" style={{ width: `${workspacePanelWidth}px` }} aria-label="Workspace and agents">
@@ -219,15 +219,18 @@ export function WorkspaceAgentPanel() {
           <div className="workspace-panel-kicker">WORKSPACE</div>
           <h2>Agents</h2>
         </div>
-        <button className="workspace-panel-new" onClick={() => void createAgent()} title={`New ${defaultAgentTool} agent`}>+</button>
+        <div className="workspace-panel-header-actions">
+          <button className="workspace-panel-new" onClick={() => void createAgent()} disabled={creating} aria-label={creating ? "Creating agent" : `New ${defaultAgentTool} agent`} title={`New ${defaultAgentTool} agent`}>{creating ? '…' : '+'}</button>
+          <button className="workspace-panel-new" onClick={toggleWorkspacePanel} aria-label="Close workspace panel" title="Close workspace panel">×</button>
+        </div>
       </div>
 
-      <div className="workspace-list" role="listbox" aria-label="Workspaces">
+      {createError && <div className="workspace-create-error" role="alert">{createError}</div>}
+      <div className="workspace-list" role="group" aria-label="Workspaces">
         <button className={`workspace-item ${selectedWorkspace === null ? 'selected' : ''}`} onClick={() => selectWorkspace(null)}>
           <span className="workspace-item-mark">⌂</span>
-          <span>All workspaces</span>
-          <span className="workspace-item-count">{allWorkspaceSummary.total}</span>
-          {stateCounts(allWorkspaceSummary)}
+          <span className="workspace-item-label">All workspaces</span>
+          {workspaceCounts(allWorkspaceSummary)}
         </button>
         {workspaces.map(([workspace, counts, label]) => (
           <button
@@ -236,9 +239,8 @@ export function WorkspaceAgentPanel() {
             onClick={() => selectWorkspace(workspace)}
           >
             <span className="workspace-item-mark">◈</span>
-            <span>{label}</span>
-            <span className="workspace-item-count">{counts.total}</span>
-            {stateCounts(counts)}
+            <span className="workspace-item-label" title={workspace}>{label}</span>
+            {workspaceCounts(counts)}
           </button>
         ))}
       </div>
@@ -272,9 +274,14 @@ export function WorkspaceAgentPanel() {
             onClick={() => openAgent(session)}
             role="button"
             tabIndex={0}
-            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') openAgent(session); }}
+            onKeyDown={(event) => {
+              if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                event.preventDefault();
+                openAgent(session);
+              }
+            }}
           >
-            <span className={`workspace-status-dot ${statusClass(session.status)}`} />
+            <span className={`workspace-status-dot ${session.status === 'error' ? 'error' : agentStateGroup(session.status)}`} />
             <span className="workspace-agent-icon"><ToolIcon tool={session.tool} status={session.status} /></span>
             <span className="workspace-agent-copy">
               <span className="workspace-agent-name">{sessionDisplayLabel(session, sessions)}</span>
@@ -287,7 +294,7 @@ export function WorkspaceAgentPanel() {
             </span>
           </div>
         ))}
-        {visibleAgents.length === 0 && <div className="workspace-agent-empty">No agents in this workspace</div>}
+        {visibleAgents.length === 0 && <div className="workspace-agent-empty">{query || stateFilter !== 'all' ? 'No agents match your filters' : 'No agents in this workspace'}</div>}
       </div>
       <div
         className={`workspace-panel-resizer ${resizing ? 'active' : ''}`}

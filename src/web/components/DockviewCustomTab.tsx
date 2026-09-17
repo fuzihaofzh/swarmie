@@ -348,7 +348,7 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
       onMouseLeave={() => setHovered(false)}
     >
       <ToolIcon tool={session.tool} status={session.status} />
-      <span className="dv-tab-name">{displayLabel}</span>
+      <span className="dv-tab-name" title={displayLabel}>{displayLabel}</span>
       <span
         ref={toolsRef}
         className={`dv-tab-tools ${toolsActive || hovered || panelOpen ? 'visible' : ''}`}

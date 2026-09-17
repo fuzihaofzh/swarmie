@@ -95,26 +95,39 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
       if (entry.cols < minCols) minCols = entry.cols;
       if (entry.rows < minRows) minRows = entry.rows;
     }
-    if (!Number.isFinite(minCols) || !Number.isFinite(minRows)) return;
-
     const pending = resizeTimers.get(sessionId);
     if (pending) clearTimeout(pending);
+    resizeTimers.delete(sessionId);
+    if (!Number.isFinite(minCols) || !Number.isFinite(minRows)) return;
     resizeTimers.set(sessionId, setTimeout(() => {
       resizeTimers.delete(sessionId);
       const applied = appliedSize.get(sessionId);
       if (applied?.cols === minCols && applied.rows === minRows) return;
       appliedSize.set(sessionId, { cols: minCols, rows: minRows });
+      // Announce the grid before the PTY can emit its resize redraw. Every
+      // viewer must parse cursor positions and wrapping using this same grid.
+      for (const [socket, subs] of subscriptions) {
+        if (subs.has(sessionId)) send(socket, { type: 'terminal:size', sessionId, cols: minCols, rows: minRows });
+      }
       manager.getSession(sessionId)?.resize(minCols, minRows);
     }, RESIZE_DEBOUNCE_MS));
   }
 
   function recordClientSize(key: WebSocket | typeof CLI_SIZE_KEY, sessionId: string, cols: number, rows: number): void {
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 2 || rows < 1 || cols > 1000 || rows > 1000) return;
     let perSession = clientSizes.get(key);
     if (!perSession) {
       perSession = new Map();
       clientSizes.set(key, perSession);
     }
     perSession.set(sessionId, { cols, rows });
+    applyMinSizeForSession(sessionId);
+  }
+
+  function dropSessionSize(socket: WebSocket, sessionId: string): void {
+    const sizes = clientSizes.get(socket);
+    if (!sizes?.delete(sessionId)) return;
+    if (sizes.size === 0) clientSizes.delete(socket);
     applyMinSizeForSession(sessionId);
   }
 
@@ -180,6 +193,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     socketRequestIds.set(socket, requestId);
     lastSeen.set(socket, Date.now());
     const isTerminalSocket = request.url.includes('terminal=1');
+    const clientIsLoopback = isLoopbackAddress(request.ip);
     if (isTerminalSocket) terminalSockets.add(socket);
     logObservabilityEvent('ws.connect', {
       requestId,
@@ -287,7 +301,14 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
 
       // Browser client messages
       ensureSessionList();
-      handleMessage(socket, msg, manager, subscriptions, dashboardClients, recordClientSize, isTerminalSocket);
+      if (msg.type === 'unsubscribe' && typeof msg.sessionId === 'string') {
+        dropSessionSize(socket, msg.sessionId);
+      }
+      if (msg.type === 'subscribe' && typeof msg.sessionId === 'string') {
+        const size = appliedSize.get(msg.sessionId);
+        if (size) send(socket, { type: 'terminal:size', sessionId: msg.sessionId, ...size });
+      }
+      handleMessage(socket, msg, manager, subscriptions, dashboardClients, recordClientSize, isTerminalSocket, clientIsLoopback);
     });
 
     socket.on('close', () => {
@@ -732,6 +753,20 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   };
 }
 
+// True when the WebSocket peer is on the same machine as this coordinator.
+// `session.isLocal` only means "the PTY runs in this coordinator process" — it
+// says nothing about where the BROWSER is. The clipboard-image shortcut (forward
+// Ctrl-V so the CLI reads the shared OS clipboard) is only valid when the two
+// actually share a clipboard, i.e. the browser is loopback. A browser reaching a
+// `--host 0.0.0.0` server over the LAN is NOT loopback, so its pasted image must
+// be uploaded to this machine instead. (An SSH `-L` localhost tunnel still reads
+// as loopback here — a known corner the upload path can't distinguish.)
+export function isLoopbackAddress(ip: string | undefined): boolean {
+  if (!ip) return false;
+  const addr = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+  return addr === '127.0.0.1' || addr === '::1' || addr === 'localhost' || addr.startsWith('127.');
+}
+
 function handleMessage(
   socket: WebSocket,
   msg: WSMessage,
@@ -740,6 +775,7 @@ function handleMessage(
   dashboardClients: Set<WebSocket>,
   recordClientSize: (socket: WebSocket, sessionId: string, cols: number, rows: number) => void,
   isTerminalSocket: boolean,
+  clientIsLoopback: boolean,
 ): void {
   const subs = subscriptions.get(socket);
   if (!subs) return;
@@ -864,7 +900,7 @@ function handleMessage(
       break;
     }
     case 'clipboard:image': {
-      void handleClipboardImage(socket, msg, manager);
+      void handleClipboardImage(socket, msg, manager, clientIsLoopback);
       break;
     }
     case 'set:autoApprove': {
@@ -937,6 +973,7 @@ async function handleClipboardImage(
   socket: WebSocket,
   msg: WSMessage,
   manager: SessionManager,
+  clientIsLoopback: boolean,
 ): Promise<void> {
   const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
   const mimeType = typeof msg.mimeType === 'string' ? msg.mimeType : '';
@@ -954,11 +991,15 @@ async function handleClipboardImage(
     return;
   }
 
-  // Local sessions share the OS clipboard with the browser: the image the user
-  // just pasted is already on the system clipboard. No need to decode, save, or
-  // re-set anything remotely — just forward the paste keystroke so the CLI tool
-  // reads the same clipboard directly (an actual image, not a path).
-  if (session.isLocal) {
+  // Shortcut only when the browser and the PTY truly share one OS clipboard:
+  // the session is local to this coordinator AND the browser is on this same
+  // machine (loopback). Then the image the user pasted is already on the system
+  // clipboard, so just forward the paste keystroke and let the CLI read it
+  // directly (an actual image, not a path). When the browser is remote — e.g.
+  // reaching a `--host 0.0.0.0` server over the LAN — the clipboards are NOT
+  // shared, so fall through to upload the pasted bytes to THIS machine and
+  // insert a path the CLI here can actually read.
+  if (session.isLocal && clientIsLoopback) {
     send(socket, {
       type: 'clipboard:image:result',
       sessionId,

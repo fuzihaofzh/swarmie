@@ -6,6 +6,7 @@ import {
   writeToTerminal,
 } from '../terminalBus';
 import { bytesToBinaryString } from '../base64';
+import { setTerminalSize } from '../terminalSize';
 import { useServerStore, LOCAL_SERVER } from './useServers';
 import { useSessionStore, type NormalizedEvent } from './useSessions';
 
@@ -101,6 +102,7 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
   const subscribe = useCallback((ws = wsRef.current) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (subscribedRef.current) return;
+    if (document.visibilityState === 'hidden') return;
     const { highestOffset } = getSessionMeta(sessionId);
     ws.send(JSON.stringify({
       type: 'subscribe',
@@ -108,6 +110,9 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
       fromOffset: highestOffset > 0 ? highestOffset : undefined,
     }));
     subscribedRef.current = true;
+    const size = lastSizeRef.current;
+    if (size) ws.send(JSON.stringify({ type: 'resize', sessionId, ...size }));
+    ws.send(JSON.stringify({ type: 'redraw', sessionId }));
   }, [sessionId]);
 
   const unsubscribe = useCallback(() => {
@@ -143,6 +148,12 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
 
   const handleMessage = useCallback((msg: WSMessage) => {
     switch (msg.type) {
+      case 'terminal:size': {
+        if (msg.sessionId === sessionId) {
+          setTerminalSize(sessionId, { cols: Number(msg.cols), rows: Number(msg.rows) });
+        }
+        break;
+      }
       case 'event': {
         const event = msg.event as NormalizedEvent;
         if (event?.sessionId !== sessionId || event.type !== 'raw:output') return;
@@ -179,6 +190,15 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
   }, [isActive, subscribe, unsubscribe]);
 
   useEffect(() => {
+    const visibilityChanged = () => {
+      if (document.visibilityState === 'hidden') unsubscribe();
+      else if (activeRef.current) subscribe();
+    };
+    document.addEventListener('visibilitychange', visibilityChanged);
+    return () => document.removeEventListener('visibilitychange', visibilityChanged);
+  }, [subscribe, unsubscribe]);
+
+  useEffect(() => {
     if (serverUrl === undefined) return;
 
     let disposed = false;
@@ -203,10 +223,6 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
           return;
         }
         if (activeRef.current) subscribe(ws);
-        const size = lastSizeRef.current;
-        if (size) {
-          ws.send(JSON.stringify({ type: 'resize', sessionId, cols: size.cols, rows: size.rows }));
-        }
         pingTimerRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'ping' }));
@@ -263,7 +279,9 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
 
   const sendResize = useCallback((cols: number, rows: number) => {
     lastSizeRef.current = { cols, rows };
-    send({ type: 'resize', sessionId, cols, rows });
+    if (activeRef.current && subscribedRef.current && document.visibilityState !== 'hidden') {
+      send({ type: 'resize', sessionId, cols, rows });
+    }
   }, [send, sessionId]);
 
   const sendRedraw = useCallback(() => {

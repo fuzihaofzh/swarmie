@@ -15,6 +15,8 @@
 // byte), NOT base64. The live path receives binary WS frames and the replay/
 // history paths atob() their base64 at the WS boundary, so byte size is just
 // `.length` — exact, no estimate needed.
+import { clearTerminalSize } from './terminalSize';
+
 type Writer = (binData: string, offsetEnd?: number, isReplay?: boolean, isResync?: boolean) => void;
 type SnapshotListener = (snapshot: HistorySnapshot) => void;
 type MetaListener = (meta: SessionMeta) => void;
@@ -349,6 +351,7 @@ export function writeResyncToTerminal(
 
 /** Clean up buffer when a session is removed */
 export function clearTerminalBuffer(sessionId: string): void {
+  clearTerminalSize(sessionId);
   buffers.delete(sessionId);
   writers.delete(sessionId);
   meta.delete(sessionId);

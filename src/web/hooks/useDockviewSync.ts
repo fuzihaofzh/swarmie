@@ -106,7 +106,7 @@ export function useDockviewSync(api: DockviewApi | null) {
 
       // Dockview cannot remove the final panel/group. If archiving or removing
       // sessions empties the workspace, create the new-session panel first.
-      if (currentIds.size === 0) {
+      if (currentIds.size === 0 && (state.sessions !== prev.sessions || state.archivedSessionIds !== prev.archivedSessionIds)) {
         suppressZustandSync.current = true;
         ensureNewSessionPanel(api);
         suppressZustandSync.current = false;

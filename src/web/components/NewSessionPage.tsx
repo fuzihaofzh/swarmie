@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useServerStore, LOCAL_SERVER } from '../hooks/useServers';
 import { useSessionStore } from '../hooks/useSessions';
 import { saveRecentDir, getRecentEntries } from '../recentDirs';
@@ -27,13 +27,15 @@ export function NewSessionPage({
   const [createError, setCreateError] = useState(initialError ?? '');
   const [showAll, setShowAll] = useState(false);
   const [selectedServer, setSelectedServer] = useState(initialServerUrl ?? LOCAL_SERVER);
+  const [cwd, setCwd] = useState(initialCwd ?? '');
+  const formId = useId();
   const sessions = useSessionStore((s) => s.sessions);
 
   const recentEntries = getRecentEntries(sessions.map((s) => ({ cwd: s.cwd, hostname: s.hostname })));
 
-  const handleStart = async (cwd?: string, hostname?: string) => {
+  const handleStart = async (recentCwd?: string, hostname?: string) => {
     if (creating) return;
-    const targetCwd = cwd ?? initialCwd;
+    const targetCwd = recentCwd ?? (cwd.trim() || undefined);
     let targetServer = selectedServer;
     // Recent entries remember the machine that owns the directory. When that
     // machine is a configured Swarmie server, route the create request there
@@ -69,7 +71,7 @@ export function NewSessionPage({
 
   return (
     <div className="new-session-page">
-      <div className="new-session-content">
+      <form className="new-session-content" onSubmit={(event) => { event.preventDefault(); void handleStart(); }}>
         <h2>New Session</h2>
 
         {createError && (
@@ -79,8 +81,10 @@ export function NewSessionPage({
         )}
 
         <div className="form-group">
-          <label>Server</label>
+          <label htmlFor={`${formId}-server`}>Server</label>
           <select
+            id={`${formId}-server`}
+            disabled={creating}
             value={selectedServer}
             onChange={(e) => setSelectedServer(e.target.value)}
           >
@@ -89,6 +93,11 @@ export function NewSessionPage({
               <option key={s.url} value={s.url}>{s.label}</option>
             ))}
           </select>
+        </div>
+
+        <div className="form-group">
+          <label htmlFor={`${formId}-cwd`}>Working directory</label>
+          <input type="text" id={`${formId}-cwd`} value={cwd} onChange={(event) => setCwd(event.target.value)} disabled={creating} placeholder="Server home directory" autoComplete="off" spellCheck={false} />
         </div>
 
         {recentEntries.length > 0 && (
@@ -102,6 +111,7 @@ export function NewSessionPage({
                 const host = entry.hostname && entry.hostname !== 'local' ? entry.hostname : '';
                 return (
                   <button
+                    type="button"
                     key={`${entry.hostname || ''}:${entry.dir}`}
                     className="recent-item"
                     onClick={() => handleStart(entry.dir, entry.hostname)}
@@ -117,7 +127,7 @@ export function NewSessionPage({
                 );
               })}
               {recentEntries.length > 5 && !showAll && (
-                <button className="recent-item recent-more" onClick={() => setShowAll(true)}>
+                <button type="button" className="recent-item recent-more" onClick={() => setShowAll(true)}>
                   More...
                 </button>
               )}
@@ -127,19 +137,19 @@ export function NewSessionPage({
 
         <div className="form-actions">
           {onCancel && (
-            <button className="cancel-btn" onClick={onCancel} disabled={creating}>
+            <button type="button" className="cancel-btn" onClick={onCancel} disabled={creating}>
               Cancel
             </button>
           )}
           <button
+            type="submit"
             className="start-btn"
-            onClick={() => handleStart()}
             disabled={creating}
           >
             {creating ? 'Starting...' : 'New Session'}
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }

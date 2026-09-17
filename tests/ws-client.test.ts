@@ -6,6 +6,7 @@ import { parseServerAddress } from '../src/ipc/ws-client.js';
 import { RemoteAdapter } from '../src/adapters/remote.js';
 import { SessionManager } from '../src/session/manager.js';
 import { createServer } from '../src/server/index.js';
+import { isLoopbackAddress } from '../src/server/websocket.js';
 
 const TEST_PASSWORD = 'ws-test-secret';
 const WS_TOKEN = createHash('sha256').update(TEST_PASSWORD).digest('hex');
@@ -118,6 +119,70 @@ describe('WebSocket observability', () => {
       ),
     );
     await serverClose();
+  });
+
+  it('shares the PTY grid and releases a phone size on unsubscribe without closing its socket', async () => {
+    const id = 'size-desktop-phone';
+    const adapter = new RemoteAdapter({ sessionId: id, toolArgs: [] }, {
+      name: 'codex', displayName: 'Codex', icon: '', command: 'codex', supportsStructured: true,
+    });
+    const resize = vi.fn();
+    adapter.onResize = resize;
+    manager.addSession(id, id, adapter).start();
+    const desktop = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
+    const phone = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
+    const desktopMessages: Array<Record<string, unknown>> = [];
+    desktop.on('message', (data, binary) => { if (!binary) desktopMessages.push(JSON.parse(data.toString())); });
+    await Promise.all([waitForSocketOpen(desktop), waitForSocketOpen(phone)]);
+    const send = (ws: WebSocket, message: Record<string, unknown>) => ws.send(JSON.stringify({ sessionId: id, ...message }));
+    try {
+      send(desktop, { type: 'subscribe' });
+      send(desktop, { type: 'resize', cols: 140, rows: 45 });
+      send(phone, { type: 'subscribe' });
+      send(phone, { type: 'resize', cols: 35, rows: 18 });
+      await vi.waitFor(() => expect(resize).toHaveBeenLastCalledWith(35, 18));
+      await vi.waitFor(() => expect(desktopMessages).toContainEqual({ type: 'terminal:size', sessionId: id, cols: 35, rows: 18 }));
+
+      send(phone, { type: 'unsubscribe' });
+      await vi.waitFor(() => expect(resize).toHaveBeenLastCalledWith(140, 45));
+      expect(phone.readyState).toBe(WebSocket.OPEN);
+      await vi.waitFor(() => expect(desktopMessages).toContainEqual({ type: 'terminal:size', sessionId: id, cols: 140, rows: 45 }));
+
+      // Returning to the phone must send its saved desired size again.
+      send(phone, { type: 'subscribe' });
+      send(phone, { type: 'resize', cols: 35, rows: 18 });
+      await vi.waitFor(() => expect(resize).toHaveBeenLastCalledWith(35, 18));
+      phone.close();
+      await vi.waitFor(() => expect(resize).toHaveBeenLastCalledWith(140, 45));
+    } finally {
+      desktop.close();
+      phone.close();
+    }
+  });
+
+  it('cancels a queued resize when the last viewer leaves and ignores invalid dimensions', async () => {
+    const id = 'size-pending';
+    const adapter = new RemoteAdapter({ sessionId: id, toolArgs: [] }, {
+      name: 'codex', displayName: 'Codex', icon: '', command: 'codex', supportsStructured: true,
+    });
+    const resize = vi.fn();
+    adapter.onResize = resize;
+    manager.addSession(id, id, adapter).start();
+    const ws = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
+    await waitForSocketOpen(ws);
+    try {
+      ws.send(JSON.stringify({ type: 'subscribe', sessionId: id }));
+      ws.send(JSON.stringify({ type: 'resize', sessionId: id, cols: 35, rows: 18 }));
+      ws.send(JSON.stringify({ type: 'unsubscribe', sessionId: id }));
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(resize).not.toHaveBeenCalled();
+      ws.send(JSON.stringify({ type: 'resize', sessionId: id, cols: -1, rows: 18 }));
+      ws.send(JSON.stringify({ type: 'resize', sessionId: id, cols: 35.5, rows: 18 }));
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(resize).not.toHaveBeenCalled();
+    } finally {
+      ws.close();
+    }
   });
 
   it('logs ws connect/disconnect with required fields', async () => {
@@ -689,5 +754,22 @@ describe('WebSocket observability', () => {
     await new Promise<void>((resolve) => {
       ws.once('close', () => resolve());
     });
+  });
+});
+
+describe('isLoopbackAddress', () => {
+  // Gates the clipboard-image Ctrl+V shortcut: only a browser on the same
+  // machine as the PTY shares its OS clipboard. A remote browser (LAN IP) must
+  // fall through to upload instead of forwarding \x16.
+  it('treats loopback forms as co-located', () => {
+    for (const ip of ['127.0.0.1', '::1', '::ffff:127.0.0.1', '127.0.0.53', 'localhost']) {
+      expect(isLoopbackAddress(ip)).toBe(true);
+    }
+  });
+
+  it('treats LAN/remote and empty addresses as not co-located', () => {
+    for (const ip of ['192.168.1.20', '10.0.0.5', '100.81.90.5', '::ffff:192.168.1.20', '2001:db8::1', '', undefined]) {
+      expect(isLoopbackAddress(ip)).toBe(false);
+    }
   });
 });
