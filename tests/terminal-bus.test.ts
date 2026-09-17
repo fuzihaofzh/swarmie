@@ -11,6 +11,8 @@ import {
   isRawCacheFull,
   getSessionMeta,
   writeResyncToTerminal,
+  applyHistorySnapshot,
+  subscribeHistorySnapshot,
 } from '../src/web/terminalBus.js';
 
 function b64(size: number, fill: number): string {
@@ -18,6 +20,43 @@ function b64(size: number, fill: number): string {
 }
 
 describe('terminalBus', () => {
+  it('ignores a cancelled history reply without marking unseen older output as loaded', () => {
+    const id = 'cancelled-history';
+    writeToTerminal(id, 'tail', 104);
+    const before = { ...getSessionMeta(id) };
+    let loading = false;
+    let received = 0;
+    const unsubscribe = subscribeHistorySnapshot(id, () => received++, () => loading);
+    const snapshot = { startOffset: 0, endOffset: 100, chunks: [], reachedEarliest: true };
+    try {
+      applyHistorySnapshot(id, snapshot);
+      expect(received).toBe(0);
+      expect(getSessionMeta(id)).toEqual(before);
+      expect(getRawCacheStart(id)).toBe(100);
+      loading = true;
+      applyHistorySnapshot(id, snapshot);
+      expect(received).toBe(1);
+      expect(getSessionMeta(id)).toMatchObject({ lowestOffset: 0, reachedEarliest: true });
+    } finally {
+      unsubscribe();
+      clearTerminalBuffer(id);
+    }
+  });
+
+  it('does not apply duplicate history metadata while a replay is in progress', () => {
+    const id = 'duplicate-history';
+    let rebuilding = false;
+    const unsubscribe = subscribeHistorySnapshot(id, () => { rebuilding = true; }, () => !rebuilding);
+    try {
+      applyHistorySnapshot(id, { startOffset: 100, endOffset: 200, chunks: [], reachedEarliest: false });
+      applyHistorySnapshot(id, { startOffset: 0, endOffset: 200, chunks: [], reachedEarliest: true });
+      expect(getSessionMeta(id)).toMatchObject({ lowestOffset: 100, reachedEarliest: false });
+    } finally {
+      unsubscribe();
+      clearTerminalBuffer(id);
+    }
+  });
+
   it('delivers buffered output when a writer registers', () => {
     const sessionId = 'terminal-bus-flush';
     const first = b64(16, 65);
@@ -92,6 +131,25 @@ describe('terminalBus', () => {
   });
 
   describe('raw history cache', () => {
+    it('keeps loaded history and renders only new bytes from an overlapping resync', () => {
+      const id = 'history-overlap-resync';
+      const received: Array<{ bin: string; resync?: boolean }> = [];
+      try {
+        registerTerminalWriter(id, (bin, _end, _replay, resync) => received.push({ bin, resync }));
+        writeToTerminal(id, 'recent\r\n', 108);
+        prependRawCache(id, 'older', 95, 100);
+        writeResyncToTerminal(id, '\x1b[!p\x1b[0mrecent\r\nlive\r\n', 100, 114);
+        // A delayed second resync must not move the cache backwards either.
+        writeResyncToTerminal(id, '\x1b[!precent\r\n', 100, 108);
+        expect(received).toEqual([{ bin: 'recent\r\n', resync: undefined }, { bin: 'live\r\n', resync: undefined }]);
+        expect(getRawCacheChunks(id).join('')).toBe('olderrecent\r\nlive\r\n');
+        expect(getRawCacheStart(id)).toBe(95);
+        expect(getRawCacheEnd(id)).toBe(114);
+      } finally {
+        clearTerminalBuffer(id);
+      }
+    });
+
     // The cache exists so "load earlier" fetches only the older delta. Its one
     // invariant: it must stay a contiguous run ending at the newest byte seen —
     // a rebuild renders it, so a gap or a missing tail is a corrupt terminal.

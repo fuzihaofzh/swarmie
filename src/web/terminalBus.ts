@@ -19,6 +19,10 @@ import { clearTerminalSize } from './terminalSize';
 
 type Writer = (binData: string, offsetEnd?: number, isReplay?: boolean, isResync?: boolean) => void;
 type SnapshotListener = (snapshot: HistorySnapshot) => void;
+interface SnapshotSubscription {
+  listener: SnapshotListener;
+  shouldAccept: () => boolean;
+}
 type MetaListener = (meta: SessionMeta) => void;
 
 const MAX_BUFFERED_BYTES_PER_SESSION = 512 * 1024;
@@ -39,7 +43,7 @@ const buffers = new Map<string, {
 }>();
 const meta = new Map<string, SessionMeta>();
 const metaListeners = new Map<string, Set<MetaListener>>();
-const snapshotListeners = new Map<string, Set<SnapshotListener>>();
+const snapshotListeners = new Map<string, Set<SnapshotSubscription>>();
 
 /**
  * Every raw byte this client has seen, kept so "load earlier" can fetch only
@@ -332,6 +336,18 @@ export function writeResyncToTerminal(
   const end = Math.max(start, Math.floor(offsetEnd));
   const rawLength = Math.min(binData.length, end - start);
   const rawTail = rawLength > 0 ? binData.slice(binData.length - rawLength) : '';
+  const cachedEnd = getRawCacheEnd(sessionId);
+  if (cachedEnd !== null) {
+    if (end <= cachedEnd) return writers.has(sessionId);
+    if (end - rawLength <= cachedEnd) {
+      // A large history reply can briefly trigger server backpressure while
+      // live output continues. Its resync tail commonly overlaps bytes we
+      // already have: append ONLY the missing suffix, retaining older history.
+      // Resetting/replaying the whole tail duplicates rows and discards the
+      // loaded prefix even though there was no actual gap in the byte stream.
+      return writeToTerminal(sessionId, rawTail, end, true);
+    }
+  }
   replaceRawCache(sessionId, rawTail, end - rawLength, end);
 
   const m = getOrCreateMeta(sessionId);
@@ -406,26 +422,33 @@ export function subscribeSessionMeta(sessionId: string, listener: MetaListener):
  * subscribeHistorySnapshot to actually rebuild xterm.
  */
 export function applyHistorySnapshot(sessionId: string, snapshot: HistorySnapshot): void {
+  const subscriptions = snapshotListeners.get(sessionId);
+  const accepting = [...(subscriptions ?? [])].filter((entry) => entry.shouldAccept());
+  // Late replies after cancellation (or duplicate replies during replay)
+  // must not advance metadata for history the terminal never accepted.
+  if (subscriptions?.size && accepting.length === 0) return;
   const m = getOrCreateMeta(sessionId);
   m.lowestOffset = snapshot.startOffset;
   if (snapshot.endOffset > m.highestOffset) m.highestOffset = snapshot.endOffset;
   m.reachedEarliest = snapshot.reachedEarliest;
   emitMeta(sessionId);
-  const listeners = snapshotListeners.get(sessionId);
-  if (listeners) {
-    for (const l of listeners) l(snapshot);
-  }
+  for (const entry of accepting) entry.listener(snapshot);
 }
 
-export function subscribeHistorySnapshot(sessionId: string, listener: SnapshotListener): () => void {
+export function subscribeHistorySnapshot(
+  sessionId: string,
+  listener: SnapshotListener,
+  shouldAccept: () => boolean = () => true,
+): () => void {
   let set = snapshotListeners.get(sessionId);
   if (!set) {
     set = new Set();
     snapshotListeners.set(sessionId, set);
   }
-  set.add(listener);
+  const subscription = { listener, shouldAccept };
+  set.add(subscription);
   return () => {
     const s = snapshotListeners.get(sessionId);
-    s?.delete(listener);
+    s?.delete(subscription);
   };
 }

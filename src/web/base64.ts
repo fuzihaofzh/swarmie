@@ -32,6 +32,22 @@ export function binaryStringToBytes(binary: string): Uint8Array {
   return bytes;
 }
 
+/** Decode PTY chunks without depending on xterm 5.5's broken UTF-8 carry. */
+export class TerminalUtf8Decoder {
+  private decoder = new TextDecoder();
+
+  write(binary: string): string {
+    // xterm's byte decoder mistakes an interim 0x80 continuation byte for an
+    // empty slot. Splitting e2 80 a2 (•), for example, can delete the character.
+    // Native streaming decoding preserves codepoints across any byte split.
+    return this.decoder.decode(binaryStringToBytes(binary), { stream: true });
+  }
+
+  reset(): void {
+    this.decoder = new TextDecoder();
+  }
+}
+
 /** Decode and concatenate multiple base64 chunks into one Latin-1/binary string. */
 export function decodeBase64ChunksToBinary(chunks: string[]): string {
   if (chunks.length === 1) return atob(chunks[0]);

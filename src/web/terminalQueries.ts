@@ -1,3 +1,14 @@
+import type { IParser } from '@xterm/xterm';
+
+/** Historical clear-scrollback commands must not delete fetched older rows. */
+export function preserveReplayedScrollback(parser: IParser, isReplaying: () => boolean) {
+  // Register with the parser so an ED(3) split across writes is still caught.
+  // ED(0/1/2) and live ED(3) retain their normal terminal semantics.
+  return parser.registerCsiHandler({ final: 'J' }, (params) =>
+    isReplaying() && params[0] === 3,
+  );
+}
+
 // Device query / report escape sequences.
 //
 // Replayed history contains the queries the running tool emitted over the

@@ -210,7 +210,7 @@ function HeaderActions(_props?: IDockviewHeaderActionsProps) {
         <span className="dv-agents-icon">▦</span>
         {attentionCount > 0 && <span className="dv-agents-count">{attentionCount}</span>}
       </button>
-      <button className="dv-menu-btn" onClick={openSettings} title="Settings">
+      <button className="dv-menu-btn" onMouseDown={(event) => event.preventDefault()} onClick={openSettings} title="Settings">
         <span /><span /><span />
       </button>
     </div>

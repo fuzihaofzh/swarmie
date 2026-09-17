@@ -844,6 +844,10 @@ export abstract class BaseAdapter extends EventEmitter {
     }
 
     if (!isSubmittedInput(meaningfulInput)) {
+      // Editing an answer or navigating a menu does not dismiss its prompt.
+      // Let the next screen update decide when it is gone; otherwise every
+      // key produces waiting -> running -> waiting and another notification.
+      if (this._status === 'waiting_input') return;
       this.markUserInputActive();
       return;
     }

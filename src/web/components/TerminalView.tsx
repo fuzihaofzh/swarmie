@@ -31,10 +31,11 @@ import {
   shouldRestoreTerminalFocusAfterSearchClose,
   shouldShowMobileToolbar,
 } from '../focusPolicy';
-import { binaryStringToBytes } from '../base64';
+import { TerminalUtf8Decoder } from '../base64';
 import {
   AlternateScreenStreamFilter,
   protectStatusLineRedraws,
+  preserveReplayedScrollback,
   stripDeviceQueries,
 } from '../terminalQueries';
 import {
@@ -43,6 +44,7 @@ import {
   resolveTerminalScrollAnchor,
 } from '../terminalScrollAnchor';
 import { getTerminalSize, subscribeTerminalSize } from '../terminalSize';
+import { TerminalFrameBuffer } from '../terminalFrames';
 import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
 
 interface TerminalViewProps {
@@ -103,6 +105,9 @@ const MAX_INLINE_MATH_LINES = 0.95;
 // Kept at 1MB rather than larger so a single delta fetch stays modest over
 // bandwidth-limited remote tunnels.
 const HISTORY_CHUNK_BYTES = 1024 * 1024;
+// A cache entry can be an entire fetched page (1 MB). Bound each atomic
+// xterm write so parsing history leaves room for keyboard and paint events.
+const HISTORY_REPLAY_WRITE_BYTES = 16 * 1024;
 // How long to wait for a history:snapshot before re-sending the request. The
 // reply can be lost (e.g. it raced a WS reconnect, or the socket was briefly
 // not OPEN when we sent) — without a resend the load would just spin until the
@@ -154,7 +159,8 @@ function decodeTerminalBytes(
   chunks: string[],
   term: Terminal,
   alternateScreenFilter: AlternateScreenStreamFilter,
-): Uint8Array {
+  utf8Decoder: TerminalUtf8Decoder,
+): string {
   const binary = chunks.length === 1 ? chunks[0] : chunks.join('');
   // When enabled (default on), strip alternate-screen switches so full-screen
   // apps (tmux/vim/less) render into the normal buffer and their scrolled-off
@@ -166,7 +172,7 @@ function decodeTerminalBytes(
     binary,
     useUIStore.getState().keepAltScreenInScrollback,
   );
-  return binaryStringToBytes(protectStatusLineRedraws(source, term.cols, term.rows));
+  return utf8Decoder.write(protectStatusLineRedraws(source, term.cols, term.rows));
 }
 
 // Dev inspector for client-side freezes: run `__swarmieTerm()` in the browser
@@ -175,7 +181,7 @@ function decodeTerminalBytes(
 // client scrollback is the culprit.
 const mountedTerms = new Map<string, Terminal>();
 if (typeof window !== 'undefined') {
-  (window as unknown as { __swarmieTerm?: () => unknown }).__swarmieTerm = () =>
+  (window as unknown as { __swarmieTerm?: (includeText?: boolean) => unknown }).__swarmieTerm = (includeText = false) =>
     [...mountedTerms.entries()].map(([id, t]) => ({
       session: id,
       bufferLines: t.buffer.active.length,
@@ -183,6 +189,12 @@ if (typeof window !== 'undefined') {
       baseY: t.buffer.active.baseY,
       cols: t.cols,
       rows: t.rows,
+      cursorX: t.buffer.active.cursorX,
+      cursorY: t.buffer.active.cursorY,
+      ...(includeText ? {
+        visibleRows: Array.from({ length: t.rows }, (_, row) =>
+          t.buffer.active.getLine(t.buffer.active.viewportY + row)?.translateToString(true) ?? ''),
+      } : {}),
     }));
 }
 
@@ -206,6 +218,7 @@ export function TerminalView({
   const [termReady, setTermReady] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchNotFound, setSearchNotFound] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const isActiveRef = useRef(isActive);
   const activatedOnceRef = useRef(false);
@@ -225,20 +238,22 @@ export function TerminalView({
   const mathRender = useUIStore((s) => s.mathRender);
   const currentTheme = themes[themeName] ?? themes['github-dark'];
 
-  // History-load state. `historyLoading` drives the UI overlay + input lock.
+  // History-load state. `historyLoading` drives the progress UI and parks output.
   // The refs are used by the writer + auto-trigger paths where reading React
   // state would race with the render cycle.
   const [sessionMeta, setSessionMeta] = useState<SessionMeta>(() => getSessionMeta(sessionId));
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyProgress, setHistoryProgress] = useState<number | null>(null);
+  const historyRebuildingRef = useRef(false);
+  const historyJumpToLiveRef = useRef(false);
   /** xterm viewport is scrolled to the very top with scrollback available.
    *  Used to gate the "Load earlier" button so it only appears as an
    *  affordance once the user has actually scrolled all the way up. */
   const [atTop, setAtTop] = useState(false);
-  /** True while the user is scrolled up reading scrollback, so live output is
-   *  parked (not written) instead of scrolling the view out from under them.
-   *  Drives the "new output ↓" pill. `followingRef` is the imperative twin read
-   *  by the writer/flush paths where React state would race the render cycle. */
-  const [pausedOutput, setPausedOutput] = useState(false);
+  const [scrolledBack, setScrolledBack] = useState(false);
+  /** New output has arrived while the reader is above the live edge.
+   *  Rendering continues; followingRef controls only automatic scrolling. */
+  const [hasNewOutput, setHasNewOutput] = useState(false);
   const followingRef = useRef(true);
   const historyLoadingRef = useRef(false);
   const historyLoadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -343,6 +358,11 @@ export function TerminalView({
       term.loadAddon(fitAddon);
       term.open(el);
 
+      // Replaying a historical ED(3) must not erase the older rows the user
+      // just requested. Keep live clear-scrollback commands working normally.
+      // A parser handler also handles escape sequences split across writes.
+      preserveReplayedScrollback(term.parser, () => historyRebuildingRef.current);
+
       const searchAddon = new SearchAddon();
       term.loadAddon(searchAddon);
       searchRef.current = searchAddon;
@@ -365,10 +385,6 @@ export function TerminalView({
       });
 
       term.attachCustomKeyEventHandler((e) => {
-        // During history rebuild we lock input — swallow keys so they don't
-        // race the snapshot apply.
-        if (historyLoadingRef.current) return false;
-
         const { getBinding } = useKeybindingStore.getState();
         const newLineBinding = getBinding('new-line');
         const searchBinding = getBinding('search');
@@ -425,11 +441,15 @@ export function TerminalView({
 
       if (onInput) {
         term.onData((data) => {
+          // Replaying DECSET 1004 makes xterm report its existing focus. This
+          // is a terminal response, not a keystroke or a request to jump live.
+          if (historyRebuildingRef.current && (data === '\x1b[I' || data === '\x1b[O')) return;
           // Keep typing live during a history load. The echo comes back as raw
           // output that writer() parks in capturedDuringLoadRef, and it always
           // carries offsetEnd > snapshot.endOffset (the snapshot's end was
           // sampled before the keystroke), so afterSnapshot replays it. Dropping
           // input here instead silently ate keystrokes for the whole load.
+          if (historyLoadingRef.current) historyJumpToLiveRef.current = true;
           onInput(data);
         });
       }
@@ -614,9 +634,10 @@ export function TerminalView({
     const term = termRef.current;
     if (!term) return;
     followingRef.current = true;
-    setPausedOutput(false);
+    setScrolledBack(false);
+    setHasNewOutput(false);
     try { term.scrollToBottom(); } catch { /* ignore */ }
-    // Drain whatever accumulated while paused; the flush snaps to bottom itself.
+    // Flush any in-flight output and resume following the live edge.
     scheduleFlushRef.current?.();
   }, []);
 
@@ -691,7 +712,7 @@ export function TerminalView({
       } catch { /* ignore */ }
       if (shouldFollow) {
         followingRef.current = true;
-        setPausedOutput(false);
+        setHasNewOutput(false);
         term.scrollToBottom();
       }
       if (autoFocus) {
@@ -1146,6 +1167,7 @@ export function TerminalView({
       const wasOpen = prevSearchOpenRef.current;
       if (wasOpen) {
         setSearchQuery('');
+        setSearchNotFound(false);
         searchRef.current?.clearDecorations();
         if (shouldRestoreTerminalFocusAfterSearchClose(getFocusPolicyEnv())) {
           termRef.current?.focus();
@@ -1157,11 +1179,16 @@ export function TerminalView({
 
   const handleSearch = useCallback((query: string, direction: 'next' | 'prev' = 'next') => {
     if (!searchRef.current || !query) return;
-    if (direction === 'next') {
-      searchRef.current.findNext(query, { regex: false, caseSensitive: false, decorations: { matchOverviewRuler: '#888', activeMatchColorOverviewRuler: '#ffb',  matchBackground: '#5a5a2a', activeMatchBackground: '#7a7a0a' } });
-    } else {
-      searchRef.current.findPrevious(query, { regex: false, caseSensitive: false, decorations: { matchOverviewRuler: '#888', activeMatchColorOverviewRuler: '#ffb', matchBackground: '#5a5a2a', activeMatchBackground: '#7a7a0a' } });
-    }
+    // Search is a deliberate move into history, just like scrolling. Without
+    // this, tab activation or an output flush can snap away from the match.
+    const wasFollowing = followingRef.current;
+    followingRef.current = false;
+    const options = { regex: false, caseSensitive: false, decorations: { matchOverviewRuler: '#888', activeMatchColorOverviewRuler: '#ffb', matchBackground: '#5a5a2a', activeMatchBackground: '#7a7a0a' } };
+    const found = direction === 'next'
+      ? searchRef.current.findNext(query, options)
+      : searchRef.current.findPrevious(query, options);
+    if (!found) followingRef.current = wasFollowing;
+    setSearchNotFound(!found);
   }, []);
 
   const closeSearch = useCallback(() => {
@@ -1178,12 +1205,32 @@ export function TerminalView({
   const clearHistoryLoading = useCallback(() => {
     clearHistoryLoadTimeout();
     historyLoadingRef.current = false;
+    historyRebuildingRef.current = false;
+    historyJumpToLiveRef.current = false;
     historyLoadAttemptsRef.current = 0;
     historyLoadToOffsetRef.current = null;
     capturedDuringLoadRef.current = [];
     capturedDuringLoadBytesRef.current = 0;
     setHistoryLoading(false);
   }, [clearHistoryLoadTimeout]);
+
+  const cancelHistoryLoad = useCallback(() => {
+    // Once rebuilding starts the old buffer has been reset; finish its small
+    // writes first. Only the network wait can be cancelled.
+    if (historyRebuildingRef.current) return;
+    clearHistoryLoadTimeout();
+    flushCapturedDuringLoadRef.current?.();
+  }, [clearHistoryLoadTimeout]);
+
+  const returnToLatest = useCallback(() => {
+    if (historyRebuildingRef.current) {
+      historyJumpToLiveRef.current = true;
+      return;
+    }
+    if (historyLoadingRef.current) cancelHistoryLoad();
+    jumpToLiveEdge();
+    if (shouldAutoFocusTerminal(getFocusPolicyEnv())) termRef.current?.focus();
+  }, [cancelHistoryLoad, jumpToLiveEdge, getFocusPolicyEnv]);
 
   // Send (or re-send) the in-flight history request and arm a retry. A snapshot
   // reply can go missing — lost to a WS reconnect, or sent while the socket
@@ -1239,6 +1286,9 @@ export function TerminalView({
     const fromOffset = Math.max(0, cacheStart - HISTORY_CHUNK_BYTES);
     if (fromOffset >= toOffset) return;
     historyLoadingRef.current = true;
+    historyRebuildingRef.current = false;
+    historyJumpToLiveRef.current = false;
+    setHistoryProgress(null);
     historyLoadAttemptsRef.current = 0;
     historyLoadToOffsetRef.current = toOffset;
     capturedDuringLoadRef.current = [];
@@ -1276,19 +1326,62 @@ export function TerminalView({
     const markUserScroll = () => {
       userScrollPending = true;
     };
+    let wheelRemainder = 0;
     const onWheel = (e: WheelEvent) => {
+      // xterm's DOM scrollTop and buffer viewport are temporarily unrelated
+      // during reset/replay. A wheel event then can consume xterm's pending
+      // programmatic scroll notification and leave the DOM pinned at 0 while
+      // viewportY still points at the restored anchor. Don't scroll that
+      // intermediate buffer; the next gesture operates on the rebuilt one.
+      if (historyRebuildingRef.current) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
       markUserScroll();
-      if (e.deltaY < 0) scrolledUpAtRef.current = performance.now();
+      // Move xterm's logical viewport synchronously. Its native wheel path
+      // updates scrollTop first and waits for a DOM scroll event; live writes
+      // can follow the bottom again before that event establishes user intent.
+      // Leave application mouse reporting / alternate-screen handling to xterm.
+      if (term.buffer.active.type === 'normal' && term.modes.mouseTrackingMode === 'none'
+        && !e.ctrlKey && !e.shiftKey && e.deltaY !== 0) {
+        const screenHeight = (root.querySelector('.xterm-screen') as HTMLElement | null)?.clientHeight ?? root.clientHeight;
+        const rowHeight = screenHeight / term.rows || 1;
+        const multiplier = e.deltaMode === 1 ? 1 : e.deltaMode === 2 ? term.rows : 1 / rowHeight;
+        const fast = e.altKey && term.options.fastScrollModifier === 'alt'
+          ? term.options.fastScrollSensitivity ?? 5 : 1;
+        wheelRemainder += e.deltaY * multiplier * (term.options.scrollSensitivity ?? 1) * fast;
+        const lines = Math.trunc(wheelRemainder);
+        wheelRemainder -= lines;
+        if (e.deltaY < 0) scrolledUpAtRef.current = performance.now();
+        if (lines !== 0) term.scrollLines(lines);
+        tryAutoLoadEarlier();
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      if (e.deltaY < 0) {
+        scrolledUpAtRef.current = performance.now();
+        tryAutoLoadEarlier();
+      }
     };
     const touchStartY: { y: number } = { y: 0 };
     const onTouchStart = (e: TouchEvent) => {
       touchStartY.y = e.touches[0]?.pageY ?? 0;
     };
     const onTouchMove = (e: TouchEvent) => {
+      if (historyRebuildingRef.current) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
       const y = e.touches[0]?.pageY ?? 0;
       if (Math.abs(y - touchStartY.y) > 2) markUserScroll();
       // Finger moving DOWN reveals OLDER content in xterm scrollback.
-      if (y - touchStartY.y > 8) scrolledUpAtRef.current = performance.now();
+      if (y - touchStartY.y > 8) {
+        scrolledUpAtRef.current = performance.now();
+        tryAutoLoadEarlier();
+      }
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (
@@ -1309,18 +1402,35 @@ export function TerminalView({
     const isAtScrollbackTop = () =>
       term.buffer.active.viewportY === 0 && term.buffer.active.baseY > 0;
 
-    // Follow the live edge only while the viewport is at the bottom. Leaving the
-    // bottom parks output (writer/flush read followingRef); returning to it
-    // resumes and drains the parked bytes. This is what stops new output from
-    // yanking a scrolled-up reader around.
+    const tryAutoLoadEarlier = () => {
+      // A page of TUI redraws can add bytes without adding any scrollback.
+      // Rebuilding then leaves viewportY at 0. Further upward wheel/touch
+      // gestures cannot change scrollTop, so the browser emits no scroll event.
+      // Check those gestures directly as well as actual viewport movement.
+      // A screen with no scrollback yet can still have older raw history.
+      if (term.buffer.active.viewportY !== 0 || historyLoadingRef.current) return;
+      const now = performance.now();
+      if (scrolledUpAtRef.current === 0) return;
+      if (now - scrolledUpAtRef.current > AUTO_LOAD_RECENT_WINDOW_MS) return;
+      if (now - lastAutoLoadAtRef.current < AUTO_LOAD_COOLDOWN_MS) return;
+      scrolledUpAtRef.current = 0;
+      lastAutoLoadAtRef.current = now;
+      handleLoadEarlierRef.current?.();
+    };
+
+    // Follow only at the bottom. Above it, xterm continues parsing output but
+    // retains the reader's viewport instead of scrolling to the live edge.
     const updateFollowing = (userInitiated: boolean) => {
+      // reset()/replay transiently puts the viewport at the bottom.
+      if (historyRebuildingRef.current) return;
       const b = term.buffer.active;
       const atBottom = b.viewportY >= b.baseY;
+      setScrolledBack(!atBottom);
       const next = nextTerminalFollowState(followingRef.current, atBottom, userInitiated);
       if (next === followingRef.current) return;
       followingRef.current = next;
       if (next) {
-        setPausedOutput(false);
+        setHasNewOutput(false);
         scheduleFlushRef.current?.();
       }
     };
@@ -1331,29 +1441,15 @@ export function TerminalView({
       updateFollowing(userInitiated);
       const isTop = isAtScrollbackTop();
       setAtTop(isTop);
-      if (!isTop) return;
-      if (performance.now() - scrolledUpAtRef.current > AUTO_LOAD_RECENT_WINDOW_MS) return;
-      // Cool down between auto-loads. A hard flick-up fires several scroll
-      // notifications and, each time a rebuild lands re-anchored near the top,
-      // the next queued gesture would immediately pull another page — stacking
-      // expensive full-cache rebuilds back to back (the "load history and it
-      // freezes" pile-up). One page per cooldown keeps it responsive; the user
-      // can still scroll again to pull more. Manual Load-earlier button bypasses
-      // this (it calls handleLoadEarlier directly).
-      if (performance.now() - lastAutoLoadAtRef.current < AUTO_LOAD_COOLDOWN_MS) return;
-      // Consume the gesture timestamp so we don't refire each frame while
-      // the viewport sits at the top.
-      scrolledUpAtRef.current = 0;
-      lastAutoLoadAtRef.current = performance.now();
-      handleLoadEarlierRef.current?.();
+      tryAutoLoadEarlier();
     };
 
     // Capture before xterm's own handlers mutate viewportY, so the resulting
     // scroll notification is tagged with the user action that caused it.
-    root.addEventListener('wheel', onWheel, { passive: true, capture: true });
+    root.addEventListener('wheel', onWheel, { passive: false, capture: true });
     root.addEventListener('keydown', onKeyDown, { passive: true, capture: true });
     root.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
-    root.addEventListener('touchmove', onTouchMove, { passive: true, capture: true });
+    root.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
     viewport.addEventListener('pointerdown', markUserScroll, { passive: true });
     viewport.addEventListener('scroll', onScroll, { passive: true });
     // term.onScroll fires on output-driven and programmatic scroll where the
@@ -1414,6 +1510,7 @@ export function TerminalView({
     };
 
     const onTouchEnd = () => {
+      if (historyRebuildingRef.current) return;
       if (samples.length < 2) return;
       const last = samples[samples.length - 1];
       const first = samples[0];
@@ -1436,6 +1533,10 @@ export function TerminalView({
       let prev = performance.now();
 
       const tick = (now: number) => {
+        if (historyRebuildingRef.current) {
+          frame = null;
+          return;
+        }
         const dt = Math.min(50, now - prev);
         prev = now;
 
@@ -1492,6 +1593,16 @@ export function TerminalView({
     let writeInFlight = false;
     let disposed = false;
     const alternateScreenFilter = new AlternateScreenStreamFilter();
+    const utf8Decoder = new TerminalUtf8Decoder();
+    const synchronizedFrames = new TerminalFrameBuffer();
+    let synchronizedTimeout: ReturnType<typeof setTimeout> | null = null;
+    let releaseSynchronizedFrame = false;
+    const resetSynchronizedFrames = () => {
+      synchronizedFrames.reset();
+      if (synchronizedTimeout !== null) clearTimeout(synchronizedTimeout);
+      synchronizedTimeout = null;
+      releaseSynchronizedFrame = false;
+    };
 
     const scheduleFlush = () => {
       if (disposed) return;
@@ -1502,17 +1613,8 @@ export function TerminalView({
         if (disposed) return;
         if (!isActiveRef.current) return;
         if (writeInFlight) return;
-        if (pendingChunks.length === 0) return;
-        // User is reading scrollback: hold live output at the live edge instead
-        // of writing it (which would scroll their view). Bytes stay parked in
-        // pendingChunks until jumpToLiveEdge() resumes. Surface the pill so they
-        // know output is waiting. (A scroll-up can race an already-scheduled
-        // flush, so this guard mirrors the one in writer().)
-        if (!followingRef.current) {
-          setPausedOutput(true);
-          return;
-        }
-
+        if (historyLoadingRef.current) return;
+        if (pendingChunks.length === 0 && !releaseSynchronizedFrame) return;
         // Count how many leading chunks fit this frame's byte budget, then
         // remove them in a single splice. Repeated shift() on a queue that has
         // ballooned to hundreds of thousands of chunks is O(n²) (every shift
@@ -1530,6 +1632,26 @@ export function TerminalView({
         }
         const batch = pendingChunks.splice(0, batchCount);
         pendingBytes -= batchBytes;
+        let frameData = synchronizedFrames.write(batch.join(''));
+        if (releaseSynchronizedFrame) {
+          frameData += synchronizedFrames.flush();
+          releaseSynchronizedFrame = false;
+        }
+        if (!synchronizedFrames.hasPending && synchronizedTimeout !== null) {
+          clearTimeout(synchronizedTimeout);
+          synchronizedTimeout = null;
+        } else if (synchronizedFrames.hasPending && synchronizedTimeout === null) {
+          // A crashed app or a dropped end marker must never stall output.
+          synchronizedTimeout = setTimeout(() => {
+            synchronizedTimeout = null;
+            releaseSynchronizedFrame = true;
+            scheduleFlush();
+          }, 1000);
+        }
+        if (!frameData) {
+          if (pendingChunks.length > 0) scheduleFlush();
+          return;
+        }
 
         // Capture the follow intent, not the instantaneous viewport geometry.
         // With scrollOnOutput disabled, xterm moves baseY before the callback
@@ -1538,8 +1660,8 @@ export function TerminalView({
 
         writeInFlight = true;
         const writeStart = performance.now();
-        const writeBytes = batchBytes;
-        term.write(decodeTerminalBytes(batch, term, alternateScreenFilter), () => {
+        const writeBytes = frameData.length;
+        term.write(decodeTerminalBytes([frameData], term, alternateScreenFilter, utf8Decoder), () => {
           if (disposed) return;
           // Client-side jank visibility: a slow term.write is the main suspect
           // for a "frozen" tab. Log it with buffer size so we can see whether
@@ -1572,7 +1694,7 @@ export function TerminalView({
             term.scrollToBottom();
           }
           writeInFlight = false;
-          if (pendingChunks.length > 0) {
+          if (pendingChunks.length > 0 || releaseSynchronizedFrame) {
             scheduleFlush();
           }
         });
@@ -1587,10 +1709,8 @@ export function TerminalView({
     scheduleFlushRef.current = scheduleFlush;
     cancelScheduledFlushRef.current = cancelScheduledFlush;
 
-    // Timeout fallback: write the parked live tail straight to the terminal and
-    // end the load without a reset, so a snapshot that never arrives can't lose
-    // the latest output or strand the viewport. scrollOnOutput is off, so a
-    // scrolled-up reader stays put while the tail lands at the bottom.
+    // Cancellation/timeout fallback: end the wait without resetting the screen
+    // and put its live tail back in order behind the existing write queue.
     flushCapturedDuringLoadRef.current = () => {
       if (disposed) return;
       if (!historyLoadingRef.current) return;
@@ -1598,11 +1718,17 @@ export function TerminalView({
       capturedDuringLoadRef.current = [];
       capturedDuringLoadBytesRef.current = 0;
       historyLoadToOffsetRef.current = null;
-      for (const c of tail) {
-        term.write(decodeTerminalBytes([c.bin], term, alternateScreenFilter));
-      }
       historyLoadingRef.current = false;
       setHistoryLoading(false);
+      // Preserve order with bytes queued before the request, and keep live
+      // output parked if the reader is still looking at scrollback.
+      for (const c of tail) writer(c.bin, c.offsetEnd);
+      if (historyJumpToLiveRef.current) {
+        historyJumpToLiveRef.current = false;
+        jumpToLiveEdge();
+      } else {
+        scheduleFlush();
+      }
     };
 
     // `binData` is a raw latin1 binary string (live frames decoded at the WS
@@ -1621,6 +1747,8 @@ export function TerminalView({
         pendingChunks.length = 0;
         pendingBytes = 0;
         alternateScreenFilter.reset();
+        utf8Decoder.reset();
+        resetSynchronizedFrames();
         capturedDuringLoadRef.current = [];
         capturedDuringLoadBytesRef.current = 0;
       }
@@ -1653,6 +1781,7 @@ export function TerminalView({
       // an escape sequence, so reset attributes once after a drop — the next
       // statusline redraw repaints cleanly.
       if (pendingBytes > MAX_PENDING_WRITE_BYTES) {
+        resetSynchronizedFrames();
         while (pendingBytes > MAX_PENDING_WRITE_BYTES && pendingChunks.length > 1) {
           const dropped = pendingChunks.shift()!;
           pendingBytes -= dropped.length;
@@ -1664,16 +1793,10 @@ export function TerminalView({
         pendingChunks.unshift(reset);
         pendingBytes += reset.length;
       }
-      // Only push to the terminal while following the live edge. If the user
-      // has scrolled up to read history, park the bytes (they stay in
-      // pendingChunks) and flip the pill on — jumpToLiveEdge() drains them when
-      // the user returns to the bottom. Prevents new output from scrolling the
-      // view out from under a reader.
-      if (followingRef.current) {
-        scheduleFlush();
-      } else {
-        setPausedOutput(true);
-      }
+      // Continue rendering while the user reads older content. xterm retains
+      // its scrolled viewport; only an explicit follow intent scrolls it down.
+      if (!followingRef.current) setHasNewOutput(true);
+      scheduleFlush();
     };
     registerTerminalWriter(sessionId, writer);
 
@@ -1683,6 +1806,7 @@ export function TerminalView({
     const unsubscribeSnapshot = subscribeHistorySnapshot(sessionId, (snapshot) => {
       if (disposed) return;
       if (!historyLoadingRef.current) return;
+      if (historyRebuildingRef.current) return;
       clearHistoryLoadTimeout();
       // A retry response can arrive after a newer page load has started, and a
       // backpressure resync can replace the cache while this request is in
@@ -1740,69 +1864,93 @@ export function TerminalView({
       // replayed against this offset once the rebuild lands.
       const rebuildChunks = getRawCacheChunks(sessionId);
       const rebuiltThrough = getRawCacheEnd(sessionId) ?? snapshot.endOffset;
+      historyRebuildingRef.current = true;
+      setHistoryProgress(0);
 
       const afterSnapshot = () => {
         if (disposed) return;
         const buf = term.buffer.active;
-        const target = resolveTerminalScrollAnchor(buf, scrollAnchor);
+        const jumpToLive = historyJumpToLiveRef.current;
+        const target = jumpToLive ? buf.baseY : resolveTerminalScrollAnchor(buf, scrollAnchor);
         try { term.scrollToLine(target); } catch { /* ignore */ }
-        // Replay live tail at the bottom; with scrollOnOutput off this leaves
-        // the anchored viewport untouched. Filter against what the rebuild
-        // actually covered (the cache's end), NOT snapshot.endOffset — the
-        // snapshot now stops at the old cache start, so everything newer than it
-        // is already in the rebuild and replaying it here would double-write.
-        const tail = capturedDuringLoadRef.current.filter((c) =>
-          typeof c.offsetEnd !== 'number' || c.offsetEnd > rebuiltThrough,
-        );
-        capturedDuringLoadRef.current = [];
-        capturedDuringLoadBytesRef.current = 0;
-        for (const c of tail) {
-          term.write(decodeTerminalBytes([c.bin], term, alternateScreenFilter));
-        }
-        // If the rebuilt buffer already fills xterm's scrollback, older bytes
-        // can't be displayed (they'd be discarded on the next rebuild), so stop
-        // offering "load earlier". Without this, each further load re-renders an
-        // ever-larger [start, END] window whose oldest lines are thrown away —
-        // the "scrolling up keeps getting slower" problem.
-        if (term.buffer.active.baseY >= TERMINAL_SCROLLBACK_LINES) {
-          markReachedEarliest(sessionId);
-        }
-        historyLoadingRef.current = false;
-        setHistoryLoading(false);
+        // scrollToLine updates viewportY synchronously, but xterm synchronizes
+        // native scrollTop on the next animation frame. Keep replay's scroll
+        // guard until that frame AND its native scroll event have settled.
+        // Otherwise a wheel can overwrite scrollTop while xterm still ignores
+        // its next event, permanently desynchronizing the two positions.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (disposed) return;
+          // Replay live tail at the bottom; with scrollOnOutput off this leaves
+          // the anchored viewport untouched. Filter against what the rebuild
+          // actually covered (the cache's end), NOT snapshot.endOffset — the
+          // snapshot now stops at the old cache start, so everything newer than it
+          // is already in the rebuild and replaying it here would double-write.
+          const tail = capturedDuringLoadRef.current.filter((c) =>
+            typeof c.offsetEnd !== 'number' || c.offsetEnd > rebuiltThrough,
+          );
+          capturedDuringLoadRef.current = [];
+          capturedDuringLoadBytesRef.current = 0;
+          for (const c of tail) {
+            term.write(decodeTerminalBytes([c.bin], term, alternateScreenFilter, utf8Decoder));
+          }
+          // If the rebuilt buffer already fills xterm's scrollback, older bytes
+          // can't be displayed (they'd be discarded on the next rebuild), so stop
+          // offering "load earlier". Without this, each further load re-renders an
+          // ever-larger [start, END] window whose oldest lines are thrown away —
+          // the "scrolling up keeps getting slower" problem.
+          if (term.buffer.active.baseY >= TERMINAL_SCROLLBACK_LINES) {
+            markReachedEarliest(sessionId);
+          }
+          historyLoadingRef.current = false;
+          historyRebuildingRef.current = false;
+          const shouldJumpToLive = jumpToLive || historyJumpToLiveRef.current;
+          historyJumpToLiveRef.current = false;
+          setHistoryLoading(false);
+          if (shouldJumpToLive) jumpToLiveEdge();
+        }));
       };
 
       alternateScreenFilter.reset();
+      utf8Decoder.reset();
+      resetSynchronizedFrames();
       term.reset();
       if (rebuildChunks.length > 0) {
-        // Write ONE cached chunk at a time, chained on term.write's callback,
-        // rather than joining and decoding the whole window up front:
-        // protectStatusLineRedraws (a backtracking regex) and binaryStringToBytes
-        // are full synchronous passes, so doing them over a multi-MB window in
-        // one go blocked the page before the first write even started. xterm
-        // parses asynchronously and fires the callback per chunk, so this yields
-        // to the event loop between chunks and input/paint stay responsive.
-        // protectStatusLineRedraws already runs per-batch on the live path, so
-        // per-chunk application is not a new boundary risk. Everything replayed
-        // here is historical, so strip device queries from all of it — the cache
-        // holds raw bytes, live output included.
+        // Strip queries before slicing so our byte budget cannot split a
+        // query and accidentally answer it into the live PTY.
         let chunkIndex = 0;
+        let chunkOffset = 0;
+        let replayChunk = '';
+        let reportedProgress = 0;
+        let replayedBytes = 0;
+        const totalBytes = rebuildChunks.reduce((sum, chunk) => sum + chunk.length, 0);
         const writeNextChunk = () => {
           if (disposed) return;
-          if (chunkIndex >= rebuildChunks.length) {
+          while (chunkOffset >= replayChunk.length && chunkIndex < rebuildChunks.length) {
+            replayChunk = stripDeviceQueries(rebuildChunks[chunkIndex++]);
+            chunkOffset = 0;
+          }
+          if (chunkOffset >= replayChunk.length) {
             afterSnapshot();
             return;
           }
-          let bin = rebuildChunks[chunkIndex++];
-          try { bin = stripDeviceQueries(bin); } catch { /* keep original */ }
-          term.write(decodeTerminalBytes([bin], term, alternateScreenFilter), writeNextChunk);
+          const bin = replayChunk.slice(chunkOffset, chunkOffset + HISTORY_REPLAY_WRITE_BYTES);
+          chunkOffset += bin.length;
+          replayedBytes += bin.length;
+          const progress = Math.min(100, Math.floor(replayedBytes / Math.max(1, totalBytes) * 10) * 10);
+          if (progress !== reportedProgress) {
+            reportedProgress = progress;
+            setHistoryProgress(progress);
+          }
+          term.write(decodeTerminalBytes([bin], term, alternateScreenFilter, utf8Decoder), writeNextChunk);
         };
         writeNextChunk();
       } else {
         afterSnapshot();
       }
-    });
+    }, () => historyLoadingRef.current && !historyRebuildingRef.current);
 
     const cleanupFlush = () => {
+      resetSynchronizedFrames();
       if (flushFrame !== null) {
         cancelAnimationFrame(flushFrame);
         flushFrame = null;
@@ -1857,10 +2005,15 @@ export function TerminalView({
             type="text"
             className="terminal-search-input"
             placeholder="Search..."
+            aria-label="Search terminal history"
             value={searchQuery}
             onChange={(e) => {
               setSearchQuery(e.target.value);
               if (e.target.value) handleSearch(e.target.value, 'next');
+              else {
+                setSearchNotFound(false);
+                searchRef.current?.clearDecorations();
+              }
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
@@ -1872,6 +2025,7 @@ export function TerminalView({
               }
             }}
           />
+          {searchNotFound && <span className="terminal-search-status" role="status">No matches</span>}
           <button className="terminal-search-btn" onClick={() => handleSearch(searchQuery, 'prev')} title="Previous (Shift+Enter)">&#x25B2;</button>
           <button className="terminal-search-btn" onClick={() => handleSearch(searchQuery, 'next')} title="Next (Enter)">&#x25BC;</button>
           <button className="terminal-search-btn" onClick={closeSearch} title="Close (Esc)">&times;</button>
@@ -1881,7 +2035,7 @@ export function TerminalView({
         ref={containerCallbackRef}
         style={{ width: '100%', height: '100%', minHeight: 0 }}
       />
-      {atTop && !sessionMeta.reachedEarliest && (
+      {atTop && !sessionMeta.reachedEarliest && !historyLoading && (
         <button
           type="button"
           className="terminal-load-earlier-btn"
@@ -1892,20 +2046,25 @@ export function TerminalView({
           {historyLoading ? 'Loading…' : '↑ Load earlier'}
         </button>
       )}
-      {pausedOutput && (
+      {(hasNewOutput || scrolledBack) && (
         <button
           type="button"
           className="terminal-new-output-btn"
-          onClick={jumpToLiveEdge}
+          onClick={returnToLatest}
           title="Jump to the latest output"
         >
-          ↓ New output
+          {hasNewOutput ? '↓ New output' : '↓ Back to latest'}
         </button>
       )}
       {historyLoading && (
-        <div className="terminal-history-overlay" aria-busy="true" aria-live="polite">
+        <div className={`terminal-history-overlay${historyProgress === null ? ' terminal-history-waiting' : ''}`} aria-busy="true" role="status">
           <div className="terminal-history-spinner" />
-          <div className="terminal-history-overlay-label">Loading history…</div>
+          <div className="terminal-history-overlay-label">
+            {historyProgress === null ? 'Loading earlier history…' : `Restoring history… ${historyProgress}%`}
+          </div>
+          {historyProgress === null && (
+            <button type="button" className="terminal-history-cancel" onMouseDown={(event) => event.preventDefault()} onClick={cancelHistoryLoad}>Cancel</button>
+          )}
         </div>
       )}
     </div>

@@ -521,6 +521,25 @@ describe('activity detection', () => {
     adapter.feed('Working on it…');
     expect(adapter.status).toBe('idle');
   });
+
+  it('does not re-announce the same waiting prompt on typing or navigation', () => {
+    const adapter = createAdapter();
+    const changes: string[] = [];
+    adapter.on('event', (event) => {
+      if (event.type === 'status:change') changes.push((event.data as { to: string }).to);
+    });
+    adapter.feed('Press enter to confirm or esc to cancel');
+    for (const key of ['a', '\x7f', '\x1b[A', '\x1b[B']) {
+      adapter.write(key);
+      expect(adapter.status).toBe('waiting_input');
+      adapter.feed('\x1b[1;1H');
+    }
+    expect(changes).toEqual(['waiting_input']);
+    adapter.write('\r');
+    expect(adapter.status).toBe('running');
+    adapter.feed('\x1b[2J\x1b[HWorking on it');
+    expect(adapter.status).not.toBe('waiting_input');
+  });
 });
 
 describe('screen sample throttling', () => {

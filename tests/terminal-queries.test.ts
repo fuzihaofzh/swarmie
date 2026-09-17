@@ -1,12 +1,36 @@
 import { describe, expect, it } from 'vitest';
+import { Terminal } from '@xterm/headless';
 import {
   AlternateScreenStreamFilter,
   protectStatusLineRedraws,
+  preserveReplayedScrollback,
   stripDeviceQueries,
   stripAlternateScreen,
 } from '../src/web/terminalQueries.js';
 
 describe('terminal escape preprocessing', () => {
+  it('retains fetched history across split ED(3), while live clears still work', async () => {
+    const term = new Terminal({ cols: 40, rows: 5, scrollback: 1000, allowProposedApi: true });
+    let replaying = true;
+    preserveReplayedScrollback(term.parser, () => replaying);
+    const write = (data: string) => new Promise<void>((resolve) => term.write(data, resolve));
+    try {
+      await write(Array.from({ length: 50 }, (_, i) => `OLDER ${i}\r\n`).join(''));
+      const baseY = term.buffer.active.baseY;
+      await write('\x1b[2J\x1b[');
+      await write('3J\x1b[HRECENT');
+      expect(term.buffer.active.baseY).toBe(baseY);
+      expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe('OLDER 0');
+      expect(term.buffer.active.getLine(baseY)?.translateToString(true)).toBe('RECENT');
+      replaying = false;
+      await write('\x1b[3J');
+      expect(term.buffer.active.baseY).toBe(0);
+      expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe('RECENT');
+    } finally {
+      term.dispose();
+    }
+  });
+
   it('keeps short in-viewport status line redraws unchanged', () => {
     const seq = '\x1b[s\x1b[10;1H\x1b[2K\x1b[7mready\x1b[0m\x1b[u';
 

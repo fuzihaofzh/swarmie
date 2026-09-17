@@ -2977,6 +2977,7 @@ body,
   position: absolute;
   top: 4px;
   right: 20px;
+  max-width: calc(100% - 24px);
   z-index: 10;
   display: flex;
   align-items: center;
@@ -2996,11 +2997,19 @@ body,
   font-size: 12px;
   padding: 3px 8px;
   width: 200px;
+  min-width: 0;
   outline: none;
 }
 
 .terminal-search-input:focus {
   border-color: var(--accent);
+}
+
+.terminal-search-status {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  padding: 0 5px;
 }
 
 .terminal-search-btn {
@@ -3090,6 +3099,43 @@ body,
   font-size: 12px;
   font-family: inherit;
 }
+
+/* Waiting for the network must not cover the terminal or intercept scrolling. */
+.terminal-history-waiting {
+  inset: 10px auto auto 50%;
+  transform: translateX(-50%);
+  flex-direction: row;
+  gap: 10px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--header-bg);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+  cursor: default;
+}
+
+.terminal-history-waiting .terminal-history-spinner {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-width: 2px;
+}
+
+.terminal-history-cancel {
+  border: 0;
+  border-left: 1px solid var(--border);
+  padding: 3px 0 3px 10px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.terminal-history-cancel:hover { color: var(--accent); }
+.terminal-history-cancel:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 .terminal-history-spinner {
   width: 28px;
