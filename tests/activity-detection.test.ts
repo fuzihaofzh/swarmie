@@ -726,8 +726,18 @@ describe('codex idle screen', () => {
         vi.advanceTimersByTime(5_000);
         expect(adapter.status).toBe('idle');
       }
-      render('• Working (12s • esc to interrupt)\r\n› Ask Codex to do anything');
+      for (const particle of ['⠁', '⢀', '⠄']) {
+        vi.advanceTimersByTime(100);
+        render(`Worked for 1m 11s · done 9:27 AM\r\n›${particle}Ask Codex to do anything\r\n${Array(6).fill(`  ${particle}    ${particle}`).join('\r\n')}\r\n  gpt-6-astra medium`);
+        expect(adapter.status).toBe('idle');
+      }
+      adapter.write('Please work\r');
+      render('› Ask Codex to do anything');
       expect(adapter.status).toBe('running');
+      render('• Working (12s • esc to interrupt)\r\n›⠁Ask Codex to do anything');
+      expect(adapter.status).toBe('running');
+      render('Worked for 12s · done 9:28 AM\r\n›⢀Ask Codex to do anything');
+      expect(adapter.status).toBe('idle');
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();

@@ -2,6 +2,7 @@ import { compileManifest, type CompiledManifest, type CompiledMatcherGroup } fro
 import { BUILTIN_AGENT_MANIFESTS } from './manifests/index.js';
 import { genericApprovalManifest } from './manifests/generic-approval.js';
 import { selectDetectionRegion } from './regions.js';
+import { normalizeCodexScreen } from './codex-screen.js';
 import type {
   AgentDetectionResult,
   AgentStateManifest,
@@ -58,6 +59,9 @@ export class AgentStateDetector {
   }
 
   detect(agent: string, input: DetectionInput, options?: { includeText?: boolean; now?: number }): RawDetection {
+    if (agent.toLocaleLowerCase() === 'codex') {
+      input = { ...input, viewport: normalizeCodexScreen(input.viewport), recent: normalizeCodexScreen(input.recent) };
+    }
     const observedAt = options?.now ?? Date.now();
     // Shell, SSH, and tmux sessions may attach to an already-running agent and
     // never expose its startup banner. In that case, evaluate only the narrow

@@ -17,6 +17,7 @@ import * as PROF from '../server/profile.js';
 import { getSystemDisplayHostname, isLocalHostname } from '../session/host.js';
 import { chooseStateSignal, defaultAgentStateDetector, DetectionStabilizer } from '../detection/index.js';
 import { selectNumberedPromptCard } from '../detection/regions.js';
+import { normalizeCodexScreen } from '../detection/codex-screen.js';
 import type {
   AgentLifecycleState,
   DetectionExplanation,
@@ -249,6 +250,7 @@ export abstract class BaseAdapter extends EventEmitter {
   private _screenMovementTimer: ReturnType<typeof setTimeout> | null = null;
   private _userInputActive = false;
   private _commandExecuting = false;
+  private _commandSawVisibleWork = false;
   private _lastActivity = Date.now();
   private _lastScreenFrame = '';
   private _lastScreenChangeAt = 0;
@@ -336,7 +338,8 @@ export abstract class BaseAdapter extends EventEmitter {
    * so normal high-frequency screen sampling keeps its small, cheap window.
    */
   private getDetectionRecentText(): string {
-    const recent = this._screen.getRecentText(DEFAULT_DETECTION_SCROLLBACK_LINES);
+    let recent = this._screen.getRecentText(DEFAULT_DETECTION_SCROLLBACK_LINES);
+    if (this.info.name === 'codex') recent = normalizeCodexScreen(recent);
     if (APPROVAL_FOOTER_RE.test(recent) && !SELECTED_NUMBERED_PROMPT_RE.test(recent)) {
       return this._screen.getRecentText(TALL_PROMPT_SCROLLBACK_LINES);
     }
@@ -548,6 +551,16 @@ export abstract class BaseAdapter extends EventEmitter {
     // below (including title spinners in active detection mode).
     const codexIdlePrompt = this.info.name === 'codex' && idleVisible && !busyVisible;
     const movementBusy = screenMoved && !codexIdlePrompt && this.shouldTreatScreenMovementAsBusy(screen);
+    const explicitWork = busyVisible || (this._detectionMode === 'active' && detection.visibleWorking);
+    if (this._commandExecuting && explicitWork) this._commandSawVisibleWork = true;
+    // A submitted task finishes when Codex returns from its working UI to
+    // the composer. Waiting for output silence never works with an animated
+    // composer. Require a working frame first so the old prompt immediately
+    // after Enter cannot prematurely finish the newly submitted task.
+    if (codexIdlePrompt && !explicitWork && !promptVisible
+        && !detection.visibleBlocker && this._commandSawVisibleWork) {
+      this.stopCommandTracking();
+    }
     if (PROF.profiling) {
       PROF.mark('act.promptRegex', tRe, screen.length, this.sessionId);
       PROF.mark('act.evaluateTotal', tEval, screen.length, this.sessionId);
@@ -858,6 +871,7 @@ export abstract class BaseAdapter extends EventEmitter {
 
     this.stopUserInputTracking();
     this._commandExecuting = true;
+    this._commandSawVisibleWork = false;
     this._lastActivity = Date.now();
     // Deliberately omit submitted text: lifecycle consumers only need the
     // task boundary, and commands/prompts may contain secrets.
@@ -936,6 +950,7 @@ export abstract class BaseAdapter extends EventEmitter {
 
   private stopCommandTracking(): void {
     this._commandExecuting = false;
+    this._commandSawVisibleWork = false;
     this.stopCommandActivityInterval();
   }
 

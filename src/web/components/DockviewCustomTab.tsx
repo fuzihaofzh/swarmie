@@ -8,6 +8,7 @@ import { ToolIcon } from './ToolIcon';
 import { sessionMatchesTagFilter } from '../tagFilter';
 import { shouldShowMobileToolbar } from '../focusPolicy';
 import { sessionDisplayLabel } from '../sessionPresentation';
+import { numberedTabIds } from '../tabNumbering';
 
 function getFocusPolicyEnv() {
   return {
@@ -197,7 +198,7 @@ function isBusyForAutoCompact(status: string): boolean {
   return status !== 'idle' && status !== 'done' && status !== 'completed' && status !== 'error';
 }
 
-export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
+export function DockviewCustomTab({ api, containerApi, params }: IDockviewPanelHeaderProps) {
   const [hovered, setHovered] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -205,12 +206,35 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
   const [repeatDraft, setRepeatDraft] = useState('');
   const [tagDraft, setTagDraft] = useState('');
   const [now, setNow] = useState(Date.now());
+  const [tabOrderRevision, setTabOrderRevision] = useState(0);
   const tabRef = useRef<HTMLDivElement>(null);
   const toolsRef = useRef<HTMLSpanElement>(null);
   const sessionId = (params as { sessionId?: string }).sessionId;
   const session = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId));
   const allSessions = useSessionStore((s) => s.sessions);
+  const archivedSessionIds = useSessionStore((s) => s.archivedSessionIds);
   const tagFilter = useUIStore((s) => s.tagFilter);
+
+  // Dockview changes its internal panel order during drag/drop without
+  // changing the React props supplied to a custom tab. Subscribe to layout
+  // changes so every visible number follows the new order immediately.
+  useEffect(() => {
+    const disposable = containerApi.onDidLayoutChange(() => {
+      setTabOrderRevision((revision) => revision + 1);
+    });
+    return () => disposable.dispose();
+  }, [containerApi]);
+
+  const tabNumber = useMemo(() => {
+    const orderedIds = numberedTabIds(
+      containerApi.panels.map((panel) => panel.id),
+      allSessions,
+      archivedSessionIds,
+      tagFilter,
+    );
+    const index = sessionId ? orderedIds.indexOf(sessionId) : -1;
+    return index >= 0 ? index + 1 : null;
+  }, [allSessions, archivedSessionIds, containerApi, sessionId, tabOrderRevision, tagFilter]);
 
   const availableTags = useMemo(() => {
     const current = new Set(session?.tags ?? []);
@@ -347,6 +371,14 @@ export function DockviewCustomTab({ api, params }: IDockviewPanelHeaderProps) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
+      {tabNumber !== null && (
+        <span
+          className="dv-tab-number"
+          title={tabNumber <= 9 ? `Tab ${tabNumber} (⌘${tabNumber})` : `Tab ${tabNumber}`}
+        >
+          {tabNumber}
+        </span>
+      )}
       <ToolIcon tool={session.tool} status={session.status} />
       <span className="dv-tab-name" title={displayLabel}>{displayLabel}</span>
       <span

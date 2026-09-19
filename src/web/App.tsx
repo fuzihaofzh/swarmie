@@ -18,6 +18,7 @@ import { TagSwitcher } from './components/TagSwitcher';
 import { WorkspaceAgentPanel } from './components/WorkspaceAgentPanel';
 import { sessionMatchesTagFilter } from './tagFilter';
 import { sessionDisplayLabel } from './sessionPresentation';
+import { commandTabNumber, numberedTabIds } from './tabNumbering';
 
 const components = {
   terminal: DockviewTerminalPanel,
@@ -369,6 +370,32 @@ export function App() {
 
   // MRU tracking for Ctrl+Tab switcher
   const mruRef = useMRU();
+
+  // Cmd+number selects the matching visible tab. The same Dockview order is
+  // used by the number rendered in each tab header, including after drag/drop.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tabNumber = commandTabNumber(e);
+      if (tabNumber === null || !api || useUIStore.getState().settingsOpen) return;
+
+      const state = useSessionStore.getState();
+      const orderedIds = numberedTabIds(
+        api.panels.map((panel) => panel.id),
+        state.sessions,
+        state.archivedSessionIds,
+        useUIStore.getState().tagFilter,
+      );
+      const target = api.getPanel(orderedIds[tabNumber - 1]);
+      if (!target) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      target.api.setActive();
+    };
+
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [api]);
 
   // Cmd+Left / Cmd+Right to switch tabs within active group, Ctrl+Cmd+T for new tab
   useEffect(() => {

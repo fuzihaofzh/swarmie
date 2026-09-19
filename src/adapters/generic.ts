@@ -45,8 +45,7 @@ const OSC_SHELL_PROMPT_RE = new RegExp(
 );
 const AGENT_CRUISE_EXIT_LINE = 'AgentCruise exited.';
 const INTERACTIVE_SHELLS = new Set(['sh', 'bash', 'zsh', 'fish', 'tcsh', 'csh', 'ksh', 'dash']);
-const SHELL_RETURN_PROBE_INTERVAL_MS = 250;
-const SHELL_RETURN_PROBE_WINDOW_MS = 3_000;
+const SHELL_RETURN_PROBE_INTERVAL_MS = 1_000;
 
 function basename(command: string): string {
   return command.split('/').filter(Boolean).pop() ?? command;
@@ -71,13 +70,11 @@ export class GenericAdapter extends BaseAdapter {
   private _shellReturnRawTail = '';
   private _shellReturnTextTail = '';
   /**
-   * Ctrl+C can either interrupt work inside an agent or exit the agent itself.
-   * While that distinction is unresolved, briefly poll the PTY foreground
-   * process group. The agent has really exited only once the parent shell owns
-   * the terminal again.
+   * Poll while an agent owns an interactive shell, including normal exits
+   * without OSC prompt integration. Only return to shell mode once the parent
+   * shell actually owns the terminal foreground process group again.
    */
   private _shellReturnProbeTimer: ReturnType<typeof setInterval> | null = null;
-  private _shellReturnProbeUntil = 0;
   private _shellReturnProbeInFlight = false;
   /**
    * Whether we're still scanning output for a startup banner. Active from launch
@@ -259,13 +256,13 @@ export class GenericAdapter extends BaseAdapter {
 
   private startShellReturnProbe(): void {
     if (!this._detectedTool || !this.ptyProcess || !isInteractiveShellCommand(this.command)) return;
-    this._shellReturnProbeUntil = Date.now() + SHELL_RETURN_PROBE_WINDOW_MS;
     if (this._shellReturnProbeTimer) return;
     void this.probeForShellReturn();
     this._shellReturnProbeTimer = setInterval(
       () => void this.probeForShellReturn(),
       SHELL_RETURN_PROBE_INTERVAL_MS,
     );
+    this._shellReturnProbeTimer.unref?.();
   }
 
   private stopShellReturnProbe(): void {
@@ -273,12 +270,11 @@ export class GenericAdapter extends BaseAdapter {
       clearInterval(this._shellReturnProbeTimer);
       this._shellReturnProbeTimer = null;
     }
-    this._shellReturnProbeUntil = 0;
   }
 
   private async probeForShellReturn(): Promise<void> {
     if (this._shellReturnProbeInFlight) return;
-    if (!this._detectedTool || !this.ptyProcess || Date.now() > this._shellReturnProbeUntil) {
+    if (!this._detectedTool || !this.ptyProcess) {
       this.stopShellReturnProbe();
       return;
     }
@@ -299,7 +295,7 @@ export class GenericAdapter extends BaseAdapter {
       const shellOwnsTerminal = processGroupId > 0
         && terminalForegroundGroupId > 0
         && processGroupId === terminalForegroundGroupId;
-      if (shellOwnsTerminal && this._detectedTool === detectedTool) {
+      if (shellOwnsTerminal && this.ptyProcess?.pid === shellPid && this._detectedTool === detectedTool) {
         this.resetDetectedToolAtShellPrompt();
       }
     } catch {
@@ -345,6 +341,7 @@ export class GenericAdapter extends BaseAdapter {
       if (sig.pattern.test(this._detectBuf)) {
         if (this._detectedTool !== sig.tool) {
           this._detectedTool = sig.tool;
+          this.startShellReturnProbe();
           this.emitEvent('tool:detect', {
             tool: sig.tool,
             displayName: sig.displayName,
