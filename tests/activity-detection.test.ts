@@ -705,6 +705,36 @@ describe('tab switch repaint', () => {
 });
 
 describe('codex idle screen', () => {
+  it.each(['active', 'shadow', 'legacy'])('keeps animated idle prompts idle in %s mode', (mode) => {
+    vi.stubEnv('SWARMIE_DETECTION_MODE', mode);
+    vi.useFakeTimers();
+    try {
+      class CodexActivityAdapter extends ActivityDetectionAdapter {
+        get info(): AdapterInfo {
+          return { ...super.info, name: 'codex', command: 'codex' };
+        }
+      }
+      const adapter = new CodexActivityAdapter({ sessionId: 'codex-animation', toolArgs: [] });
+      adapter.start();
+      const render = (text: string) => adapter.feed(`\x1b[2J\x1b[H${text}`);
+      render('Worked for 1m 11s · done 9:27 AM\r\n› Ask Codex to do anything');
+      expect(adapter.status).toBe('idle');
+      for (const hint of ['Find and fix a bug', 'Explain this codebase', 'Ask Codex to do anything']) {
+        vi.advanceTimersByTime(100);
+        render(`Worked for 1m 11s · done 9:27 AM\r\n› ${hint}`);
+        expect(adapter.status).toBe('idle');
+        vi.advanceTimersByTime(5_000);
+        expect(adapter.status).toBe('idle');
+      }
+      render('• Working (12s • esc to interrupt)\r\n› Ask Codex to do anything');
+      expect(adapter.status).toBe('running');
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
   // Captured from a real `codex` process. Codex renders a rotating placeholder
   // after its "›" prompt, so a bare-prompt-only idle pattern matched nothing:
   // Codex had no idle marker at all and every visible screen fell through to

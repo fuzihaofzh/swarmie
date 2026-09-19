@@ -543,7 +543,11 @@ export abstract class BaseAdapter extends EventEmitter {
           ? 'idle'
           : 'unknown';
     const detection = this.runAgentDetection(viewport, screen, legacyState, false, true);
-    const movementBusy = screenMoved && this.shouldTreatScreenMovementAsBusy(screen);
+    // Codex animates its idle composer and rotates placeholder text. Those
+    // redraws are not a new work cycle; explicit busy evidence still wins
+    // below (including title spinners in active detection mode).
+    const codexIdlePrompt = this.info.name === 'codex' && idleVisible && !busyVisible;
+    const movementBusy = screenMoved && !codexIdlePrompt && this.shouldTreatScreenMovementAsBusy(screen);
     if (PROF.profiling) {
       PROF.mark('act.promptRegex', tRe, screen.length, this.sessionId);
       PROF.mark('act.evaluateTotal', tEval, screen.length, this.sessionId);
