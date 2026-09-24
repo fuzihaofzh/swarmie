@@ -19,11 +19,14 @@ function statusLabel(status: string): string {
   return status;
 }
 
-function agentMatches(session: SessionSummary, query: string, allSessions: SessionSummary[]): boolean {
-  const value = query.trim().toLocaleLowerCase();
-  if (!value) return true;
-  return [sessionDisplayLabel(session, allSessions), session.displayName, session.name, session.tool, session.cwd, session.status, ...(session.tags ?? [])]
-    .some((part) => part.toLocaleLowerCase().includes(value));
+// Sections follow the agent state groups. Running folds in blocked so agents
+// needing attention stay on top, matching the green segment in workspace counts.
+type AgentSection = 'running' | 'done' | 'idle';
+
+function agentSection(session: SessionSummary): AgentSection {
+  const group = agentStateGroup(session.status);
+  if (group === 'working' || group === 'blocked') return 'running';
+  return group;
 }
 
 function elapsedLabel(startTime: number, now: number): string {
@@ -48,9 +51,6 @@ export function WorkspaceAgentPanel() {
   const workspacePanelWidth = useUIStore((state) => state.workspacePanelWidth);
   const setWorkspacePanelWidth = useUIStore((state) => state.setWorkspacePanelWidth);
   const { createSession, getConnection } = useWsContext();
-  const [query, setQuery] = useState('');
-  const [stateFilter, setStateFilter] = useState('all');
-  const [sortMode, setSortMode] = useState<'attention' | 'recent' | 'name'>('attention');
   const [now, setNow] = useState(Date.now());
   const [explanations, setExplanations] = useState<Record<string, string>>({});
   const [resizing, setResizing] = useState(false);
@@ -106,19 +106,22 @@ export function WorkspaceAgentPanel() {
       setTagFilter([selectedWorkspace]);
     }
   }, [rawWorkspace, selectedWorkspace, setTagFilter]);
-  const visibleAgents = useMemo(() => {
-    const workspaceAgents = selectedWorkspace
-      ? activeSessions.filter((session) => sessionWorkspaceKey(session, activeSessions) === selectedWorkspace)
-      : activeSessions;
-    return workspaceAgents
-      .filter((session) => agentMatches(session, query, activeSessions))
-      .filter((session) => stateFilter === 'all' || agentStateGroup(session.status) === stateFilter)
-      .sort((a, b) => {
-        if (sortMode === 'name') return sessionDisplayLabel(a, activeSessions).localeCompare(sessionDisplayLabel(b, activeSessions));
-        if (sortMode === 'recent') return b.startTime - a.startTime;
-        return agentStatePriority(a.status) - agentStatePriority(b.status) || b.startTime - a.startTime;
-      });
-  }, [activeSessions, query, selectedWorkspace, sortMode, stateFilter]);
+  // Running and Done span every workspace so live and finished agents are never
+  // hidden behind the workspace selection; Idle follows the selected workspace.
+  const agentSections = useMemo(() => {
+    const byPriority = (a: SessionSummary, b: SessionSummary) =>
+      agentStatePriority(a.status) - agentStatePriority(b.status) || b.startTime - a.startTime;
+    const inSection = (section: AgentSection, crossWorkspace: boolean) => activeSessions
+      .filter((session) => agentSection(session) === section
+        && (crossWorkspace || !selectedWorkspace || sessionWorkspaceKey(session, activeSessions) === selectedWorkspace))
+      .sort(byPriority);
+    return [
+      { key: 'running', label: 'Running', agents: inSection('running', true) },
+      { key: 'done', label: 'Done', agents: inSection('done', true) },
+      { key: 'idle', label: 'Idle', agents: inSection('idle', false) },
+    ];
+  }, [activeSessions, selectedWorkspace]);
+  const visibleAgents = useMemo(() => agentSections.flatMap((section) => section.agents), [agentSections]);
   const workspaceSummary = useMemo(() => countAgentStates(visibleAgents), [visibleAgents]);
 
   const selectWorkspace = (workspace: string | null) => {
@@ -190,7 +193,6 @@ export function WorkspaceAgentPanel() {
     }
   };
 
-  const filterOptions = ['all', 'working', 'blocked', 'done', 'idle'];
   // Compact count: running(green) / done(blue) / total(gray). Running folds in
   // blocked (waiting_input) so agents needing attention still surface; total is
   // always the rightmost segment. Zero segments are dropped, colour disambiguates.
@@ -255,46 +257,43 @@ export function WorkspaceAgentPanel() {
         <span className="done">✓ {workspaceSummary.done}</span>
         <span className="idle">○ {workspaceSummary.idle}</span>
       </div>
-      <div className="workspace-agent-search">
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find an agent" aria-label="Find an agent" />
-        <select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)} aria-label="Filter agent state">
-          {filterOptions.map((filter) => <option key={filter} value={filter}>{filter === 'all' ? 'All states' : filter}</option>)}
-        </select>
-        <select value={sortMode} onChange={(event) => setSortMode(event.target.value as typeof sortMode)} aria-label="Sort agents">
-          <option value="attention">Priority</option>
-          <option value="recent">Recent</option>
-          <option value="name">Name</option>
-        </select>
-      </div>
       <div className="workspace-agent-list">
-        {visibleAgents.map((session) => (
-          <div
-            className={`workspace-agent-row ${session.id === activeSessionId ? 'selected' : ''}`}
-            key={session.id}
-            onClick={() => openAgent(session)}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(event) => {
-              if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
-                event.preventDefault();
-                openAgent(session);
-              }
-            }}
-          >
-            <span className={`workspace-status-dot ${session.status === 'error' ? 'error' : agentStateGroup(session.status)}`} />
-            <span className="workspace-agent-icon"><ToolIcon tool={session.tool} status={session.status} /></span>
-            <span className="workspace-agent-copy">
-              <span className="workspace-agent-name">{sessionDisplayLabel(session, sessions)}</span>
-              <span className="workspace-agent-meta">{statusLabel(session.status)} · {elapsedLabel(session.startTime, now)} · {session.tool} · {sessionWorkspacePath(session, sessions)} · {sessionHostLabel(session, sessions) ?? session.hostname}</span>
-              {explanations[session.id] && <span className="workspace-agent-explanation">{explanations[session.id]}</span>}
-            </span>
-            <span className="workspace-agent-actions" onClick={(event) => event.stopPropagation()}>
-              <button onClick={() => markSeen(session)} title="Mark seen">✓</button>
-              <button onClick={() => void explainState(session)} title="Explain state">?</button>
-            </span>
-          </div>
+        {agentSections.filter((section) => section.agents.length > 0).map((section) => (
+          <section className={`workspace-agent-section ${section.key}`} key={section.key} aria-label={`${section.label} agents`}>
+            <div className="workspace-agent-section-heading">
+              <span>{section.label}</span>
+              <span>{section.agents.length}</span>
+            </div>
+            {section.agents.map((session) => (
+              <div
+                className={`workspace-agent-row ${session.id === activeSessionId ? 'selected' : ''}`}
+                key={session.id}
+                onClick={() => openAgent(session)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                    event.preventDefault();
+                    openAgent(session);
+                  }
+                }}
+              >
+                <span className={`workspace-status-dot ${session.status === 'error' ? 'error' : agentStateGroup(session.status)}`} />
+                <span className="workspace-agent-icon"><ToolIcon tool={session.tool} status={session.status} /></span>
+                <span className="workspace-agent-copy">
+                  <span className="workspace-agent-name">{sessionDisplayLabel(session, sessions)}</span>
+                  <span className="workspace-agent-meta">{statusLabel(session.status)} · {elapsedLabel(session.startTime, now)} · {session.tool} · {sessionWorkspacePath(session, sessions)} · {sessionHostLabel(session, sessions) ?? session.hostname}</span>
+                  {explanations[session.id] && <span className="workspace-agent-explanation">{explanations[session.id]}</span>}
+                </span>
+                <span className="workspace-agent-actions" onClick={(event) => event.stopPropagation()}>
+                  <button onClick={() => markSeen(session)} title="Mark seen">✓</button>
+                  <button onClick={() => void explainState(session)} title="Explain state">?</button>
+                </span>
+              </div>
+            ))}
+          </section>
         ))}
-        {visibleAgents.length === 0 && <div className="workspace-agent-empty">{query || stateFilter !== 'all' ? 'No agents match your filters' : 'No agents in this workspace'}</div>}
+        {visibleAgents.length === 0 && <div className="workspace-agent-empty">No agents in this workspace</div>}
       </div>
       <div
         className={`workspace-panel-resizer ${resizing ? 'active' : ''}`}
