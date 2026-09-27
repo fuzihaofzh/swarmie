@@ -521,6 +521,9 @@ export function App() {
   );
 }
 
+/** Injected by vite.config.ts from package.json. */
+declare const __SWARMIE_VERSION__: string;
+
 function SettingsModal({
   onClose,
   onApplyTileLayout,
@@ -567,7 +570,10 @@ function SettingsModal({
     <div className="settings-modal-overlay" onClick={onClose}>
       <div ref={dialogRef} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(e) => e.stopPropagation()}>
         <div className="settings-modal-header">
-          <h2 id="settings-title">Settings</h2>
+          <div className="settings-modal-title">
+            <h2 id="settings-title">Settings</h2>
+            <span className="settings-version" title="swarmie version">v{__SWARMIE_VERSION__}</span>
+          </div>
           <button className="settings-modal-close" aria-label="Close settings" onClick={onClose}>&times;</button>
         </div>
         <div className="settings-modal-body">

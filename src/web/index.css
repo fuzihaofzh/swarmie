@@ -1833,6 +1833,17 @@ body,
   font-weight: 700;
 }
 
+.settings-modal-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.settings-version {
+  font-size: 12px;
+  color: var(--text-secondary, #8b949e);
+}
+
 .settings-modal-close {
   background: none;
   border: none;
