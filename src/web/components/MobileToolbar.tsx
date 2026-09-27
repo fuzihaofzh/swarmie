@@ -52,11 +52,24 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
 
     const vv = window.visualViewport;
     let maxHeight = vv.height;
+    const layoutHeight = () => document.documentElement.clientHeight;
+    let maxLayoutHeight = layoutHeight();
 
     const apply = () => {
       const root = document.getElementById('root');
       if (!root) return;
       if (vv.height > maxHeight) maxHeight = vv.height;
+      if (layoutHeight() > maxLayoutHeight) maxLayoutHeight = layoutHeight();
+      // With `interactive-widget=resizes-content` (index.html) Android shrinks
+      // the layout itself to the real space above the keyboard, and 100dvh
+      // already fits (iOS never resizes the layout
+      // viewport, so it keeps using the vv path below). Don't override it with vv.height: Brave with its bottom
+      // toolbar reports vv.height short by that toolbar's height, which left
+      // an empty band between this toolbar and the keyboard.
+      if (layoutHeight() < maxLayoutHeight * 0.8) {
+        if (root.style.height) root.style.height = '';
+        return;
+      }
       // Treat as "keyboard is open" only if viewport is at least 20% shorter
       // than the largest height we've seen this session. URL-bar transitions
       // are typically <10% and should be ignored.
@@ -73,10 +86,12 @@ export function MobileToolbar({ onInput }: MobileToolbarProps) {
 
     vv.addEventListener('resize', apply);
     vv.addEventListener('scroll', onScroll);
+    window.addEventListener('resize', apply);
     apply();
 
     return () => {
       vv.removeEventListener('resize', apply);
+      window.removeEventListener('resize', apply);
       vv.removeEventListener('scroll', onScroll);
       const root = document.getElementById('root');
       if (root) root.style.height = '';
