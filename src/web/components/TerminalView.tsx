@@ -46,6 +46,7 @@ import {
 import { getTerminalSize, subscribeTerminalSize } from '../terminalSize';
 import { TerminalFrameBuffer } from '../terminalFrames';
 import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
+import { useTouchSelection } from '../hooks/useTouchSelection';
 
 interface TerminalViewProps {
   sessionId: string;
@@ -235,6 +236,8 @@ export function TerminalView({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const initStartedRef = useRef(false);
   const [termReady, setTermReady] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const touchSelection = useTouchSelection(termRef, wrapperRef, termReady);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchNotFound, setSearchNotFound] = useState(false);
@@ -2024,7 +2027,7 @@ export function TerminalView({
       className={`terminal-view${isActive ? ' terminal-view-active' : ''}`}
       style={{ display: 'flex', flexDirection: 'column', flex: 1, width: '100%', height: '100%', minHeight: 0 }}
     >
-    <div style={{ flex: 1, minHeight: 0, position: 'relative', padding: '4px' }}>
+    <div ref={wrapperRef} style={{ flex: 1, minHeight: 0, position: 'relative', padding: '4px' }}>
       {searchOpen && (
         <div className="terminal-search-bar">
           <input
@@ -2091,6 +2094,44 @@ export function TerminalView({
           </div>
           {historyProgress === null && (
             <button type="button" className="terminal-history-cancel" onMouseDown={(event) => event.preventDefault()} onClick={cancelHistoryLoad}>Cancel</button>
+          )}
+        </div>
+      )}
+      {(['start', 'end'] as const).map((which) => {
+        const handle = touchSelection.handles[which];
+        return handle && (
+          <div
+            key={which}
+            className={`terminal-touch-handle ${which}`}
+            style={{ left: handle.x, top: handle.y, height: handle.height }}
+            onPointerDown={(event) => touchSelection.handlePointerDown(which, event)}
+          />
+        );
+      })}
+      {touchSelection.menu && (
+        <div
+          className={`terminal-touch-menu${touchSelection.menu.below ? ' below' : ''}`}
+          style={{ left: touchSelection.menu.x, top: touchSelection.menu.y }}
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          {touchSelection.pasteInputOpen ? (
+            <>
+              <input
+                className="terminal-touch-paste-input"
+                placeholder="Long-press here, tap Paste"
+                autoFocus
+                onPaste={(event) => {
+                  event.preventDefault();
+                  touchSelection.pasteText(event.clipboardData.getData('text'));
+                }}
+              />
+              <button type="button" onClick={touchSelection.dismiss}>&times;</button>
+            </>
+          ) : (
+            <>
+              <button type="button" onClick={() => void touchSelection.copy()}>Copy</button>
+              <button type="button" onClick={() => void touchSelection.paste()}>Paste</button>
+            </>
           )}
         </div>
       )}
