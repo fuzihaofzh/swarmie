@@ -12,6 +12,7 @@ export interface TerminalPanelParams {
 export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<TerminalPanelParams>) {
   const sessionId = params.sessionId;
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const tool = useSessionStore((s) => s.sessions.find((session) => session.id === sessionId)?.tool);
   const tileLayoutEnabled = useUIStore((s) => s.tileLayoutEnabled);
   const [dockActive, setDockActive] = useState(api.isActive);
   // Zustand is the cross-component source of truth; fall back to dockview
@@ -36,6 +37,7 @@ export function DockviewTerminalPanel({ api, params }: IDockviewPanelProps<Termi
   return (
     <TerminalView
       sessionId={sessionId}
+      tool={tool}
       isActive={active}
       onInput={sendInput}
       onResize={sendResize}

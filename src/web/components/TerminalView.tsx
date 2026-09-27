@@ -49,6 +49,7 @@ import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
 
 interface TerminalViewProps {
   sessionId: string;
+  tool?: string;
   isActive?: boolean;
   onInput?: (data: string) => void;
   onResize?: (cols: number, rows: number) => void;
@@ -200,6 +201,7 @@ if (typeof window !== 'undefined') {
 
 export function TerminalView({
   sessionId,
+  tool,
   isActive,
   onInput,
   onResize,
@@ -281,6 +283,7 @@ export function TerminalView({
   const themeRef = useRef(currentTheme);
   const fontSizeRef = useRef(fontSize);
   const fontFamilyRef = useRef(fontFamily);
+  const toolRef = useRef(tool);
 
   // Report the space this viewer offers, separately from the shared PTY grid.
   // Reporting term.cols after applying the shared minimum would pin every
@@ -307,6 +310,7 @@ export function TerminalView({
     themeRef.current = currentTheme;
     fontSizeRef.current = fontSize;
     fontFamilyRef.current = fontFamily;
+    toolRef.current = tool;
     isActiveRef.current = isActive;
     reportResizeRef.current = reportResize;
   });
@@ -361,7 +365,11 @@ export function TerminalView({
       // Replaying a historical ED(3) must not erase the older rows the user
       // just requested. Keep live clear-scrollback commands working normally.
       // A parser handler also handles escape sequences split across writes.
-      preserveReplayedScrollback(term.parser, () => historyRebuildingRef.current);
+      preserveReplayedScrollback(
+        term.parser,
+        () => historyRebuildingRef.current,
+        () => toolRef.current === 'codex' || toolRef.current === 'claude',
+      );
 
       const searchAddon = new SearchAddon();
       term.loadAddon(searchAddon);

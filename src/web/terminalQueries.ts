@@ -1,12 +1,74 @@
-import type { IParser } from '@xterm/xterm';
+import type { IDisposable, IParser } from '@xterm/xterm';
 
-/** Historical clear-scrollback commands must not delete fetched older rows. */
-export function preserveReplayedScrollback(parser: IParser, isReplaying: () => boolean) {
-  // Register with the parser so an ED(3) split across writes is still caught.
-  // ED(0/1/2) and live ED(3) retain their normal terminal semantics.
-  return parser.registerCsiHandler({ final: 'J' }, (params) =>
-    isReplaying() && params[0] === 3,
-  );
+/**
+ * Historical clear-scrollback commands must not delete fetched older rows.
+ *
+ * Codex and Claude Code are deliberate exceptions. On a width change their
+ * inline TUIs clear the old, hard-wrapped transcript and re-emit it from their
+ * own semantic history at the new width. Swallowing that particular ED(3)
+ * keeps the phone-width copy and then appends the desktop-width copy below it.
+ * Recognize their exact synchronized resize-clear prelude and let only that
+ * source-backed replacement through; an ordinary shell `clear` remains
+ * suppressed while history is being rebuilt.
+ */
+export function preserveReplayedScrollback(
+  parser: IParser,
+  isReplaying: () => boolean,
+  allowAgentResizeReflow: () => boolean = () => false,
+): IDisposable {
+  // Codex and Claude Code resize reflow emit this exact CSI sequence before ED(3):
+  //   ?2026l  r  0m  H  2J  3J
+  // Tracking parser tokens (rather than matching strings per write) keeps the
+  // recognition correct when the PTY or replay writer splits the sequence at
+  // any byte boundary.
+  let agentResizeClearStep = 0;
+  const scalar = (params: (number | number[])[], index = 0): number | undefined => {
+    const value = params[index];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const active = () => isReplaying() && allowAgentResizeReflow();
+  const disposables: IDisposable[] = [];
+
+  disposables.push(parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
+    agentResizeClearStep = active() && scalar(params) === 2026 ? 1 : 0;
+    return false;
+  }));
+  disposables.push(parser.registerCsiHandler({ final: 'r' }, (params) => {
+    agentResizeClearStep = active() && agentResizeClearStep === 1 && scalar(params) === 0 ? 2 : 0;
+    return false;
+  }));
+  disposables.push(parser.registerCsiHandler({ final: 'm' }, (params) => {
+    agentResizeClearStep = active() && agentResizeClearStep === 2 && scalar(params) === 0 ? 3 : 0;
+    return false;
+  }));
+  disposables.push(parser.registerCsiHandler({ final: 'H' }, (params) => {
+    agentResizeClearStep = active() && agentResizeClearStep === 3 && scalar(params) === 0 ? 4 : 0;
+    return false;
+  }));
+  disposables.push(parser.registerCsiHandler({ final: 'J' }, (params) => {
+    const operation = scalar(params);
+    if (!isReplaying()) {
+      agentResizeClearStep = 0;
+      return false;
+    }
+    if (operation === 2) {
+      agentResizeClearStep = active() && agentResizeClearStep === 4 ? 5 : 0;
+      return false;
+    }
+    if (operation === 3) {
+      const isAgentResizeClear = active() && agentResizeClearStep === 5;
+      agentResizeClearStep = 0;
+      return !isAgentResizeClear;
+    }
+    agentResizeClearStep = 0;
+    return false;
+  }));
+
+  return {
+    dispose: () => {
+      for (const disposable of disposables) disposable.dispose();
+    },
+  };
 }
 
 // Device query / report escape sequences.

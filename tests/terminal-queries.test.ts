@@ -31,6 +31,45 @@ describe('terminal escape preprocessing', () => {
     }
   });
 
+  it('lets an agent replace a narrow replayed transcript during resize reflow', async () => {
+    const term = new Terminal({ cols: 80, rows: 5, scrollback: 1000, allowProposedApi: true });
+    preserveReplayedScrollback(term.parser, () => true, () => true);
+    const write = (data: string) => new Promise<void>((resolve) => term.write(data, resolve));
+    try {
+      await write(Array.from({ length: 20 }, (_, i) => `PHONE ${i}\r\n`).join(''));
+      expect(term.buffer.active.baseY).toBeGreaterThan(0);
+
+      const resizeClear = '\x1b[?2026l\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H';
+      // Exercise parser-level recognition across every possible write split.
+      for (const byte of resizeClear) await write(byte);
+      await write('DESKTOP REFLOW');
+
+      expect(term.buffer.active.baseY).toBe(0);
+      expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe('DESKTOP REFLOW');
+      expect(Array.from({ length: term.buffer.active.length }, (_, i) =>
+        term.buffer.active.getLine(i)?.translateToString(true) ?? '',
+      ).join('\n')).not.toContain('PHONE');
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it('does not treat an ordinary replayed clear as agent resize reflow', async () => {
+    const term = new Terminal({ cols: 40, rows: 5, scrollback: 1000, allowProposedApi: true });
+    preserveReplayedScrollback(term.parser, () => true, () => true);
+    const write = (data: string) => new Promise<void>((resolve) => term.write(data, resolve));
+    try {
+      await write(Array.from({ length: 20 }, (_, i) => `OLDER ${i}\r\n`).join(''));
+      const baseY = term.buffer.active.baseY;
+      await write('\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[HRECENT');
+
+      expect(term.buffer.active.baseY).toBe(baseY);
+      expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe('OLDER 0');
+    } finally {
+      term.dispose();
+    }
+  });
+
   it('keeps short in-viewport status line redraws unchanged', () => {
     const seq = '\x1b[s\x1b[10;1H\x1b[2K\x1b[7mready\x1b[0m\x1b[u';
 
