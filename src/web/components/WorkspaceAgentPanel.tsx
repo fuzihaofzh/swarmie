@@ -129,6 +129,13 @@ export function WorkspaceAgentPanel() {
   };
 
   const openAgent = (session: SessionSummary) => {
+    // Running/Done list agents from every workspace, but Dockview only shows
+    // tabs of the selected one; follow the agent into its workspace so its
+    // tab actually becomes visible and active.
+    const agentWorkspace = sessionWorkspaceKey(session, activeSessions);
+    if (selectedWorkspace && agentWorkspace && agentWorkspace !== selectedWorkspace) {
+      setTagFilter([agentWorkspace]);
+    }
     setActiveSession(session.id);
     setShowNewSession(false);
     if (window.matchMedia('(max-width: 760px)').matches) toggleWorkspacePanel();

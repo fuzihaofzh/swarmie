@@ -5,6 +5,7 @@ import { useUIStore } from './useUI';
 import { NEW_SESSION_PANEL_ID } from '../components/DockviewCustomTab';
 import { sessionMatchesTagFilter } from '../tagFilter';
 import { sessionWorkspaceKey } from '../sessionPresentation';
+import { mostRecentSession } from '../sessionRecency';
 
 const LAYOUT_KEY_DESKTOP = 'swarmie-dockview-layout';
 const LAYOUT_KEY_MOBILE = 'swarmie-dockview-layout-mobile';
@@ -81,10 +82,13 @@ export function useDockviewSync(api: DockviewApi | null) {
     const activeId = useSessionStore.getState().activeSessionId;
     const activeSession = activeId ? workspaceSessions.find((s) => s.id === activeId) : undefined;
     if (activeSession && !sessionMatchesTagFilter(activeSession, tagFilter, workspaceSessions)) {
-      const firstVisible = workspaceSessions.find((s) => sessionMatchesTagFilter(s, tagFilter, workspaceSessions));
-      useSessionStore.getState().setActiveSession(firstVisible?.id ?? null);
-      if (firstVisible) {
-        const panel = api.getPanel(firstVisible.id);
+      // Land on the tab last worked in within this filter, not the first one.
+      const target = mostRecentSession(
+        workspaceSessions.filter((s) => sessionMatchesTagFilter(s, tagFilter, workspaceSessions)),
+      );
+      useSessionStore.getState().setActiveSession(target?.id ?? null);
+      if (target) {
+        const panel = api.getPanel(target.id);
         if (panel && !panel.api.isActive) {
           suppressZustandSync.current = true;
           panel.api.setActive();

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { useUIStore } from './useUI';
 import { playBellSound } from '../bellSound';
 import { saveRecentDir, setLocalHostname } from '../recentDirs';
+import { noteSessionActivated } from '../sessionRecency';
 
 export interface SessionSummary {
   id: string;
@@ -569,5 +570,6 @@ export const useSessionStore = create<SessionState>((set) => ({
 useSessionStore.subscribe((state, previous) => {
   if (state.activeSessionId !== previous.activeSessionId) {
     saveActiveSessionId(state.activeSessionId);
+    noteSessionActivated(state.activeSessionId);
   }
 });
