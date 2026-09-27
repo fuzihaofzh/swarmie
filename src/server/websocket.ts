@@ -36,6 +36,7 @@ const BROWSER_MESSAGE_TYPES = new Set([
   'set:tags',
   'set:autoCompactMinutes',
   'mark:seen',
+  'claim:size',
 ]);
 
 /** Tracks a CLI client connected via WebSocket for remote session registration */
@@ -121,10 +122,15 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   const terminalSockets = new WeakSet<WebSocket>();
   // Per-(client, sessionId) reported viewport size. Clients are WebSockets,
   // plus a single CLI_SIZE_KEY entry for the owning local terminal (if any).
-  // The PTY runs at MIN across all clients (tmux-style) so TUI apps render
-  // correctly on the smallest attached viewport; larger clients just get
-  // letterboxed.
-  const clientSizes = new Map<WebSocket | typeof CLI_SIZE_KEY, Map<string, { cols: number; rows: number }>>();
+  // A PTY has exactly one grid, so browsers follow the viewer that was used
+  // most recently (tmux `window-size latest`): the phone gets phone size while
+  // someone types on it, the desktop gets desktop size once it is used again,
+  // and the idle viewer scales the shared grid to fit. `claimedAt` records that
+  // last use. CLI terminals cannot rescale, so they stay a hard MIN cap.
+  const clientSizes = new Map<WebSocket | typeof CLI_SIZE_KEY, Map<string, { cols: number; rows: number; claimedAt: number }>>();
+  // Sockets of remote CLIs reporting their owning terminal via `cli:size`.
+  const cliSizeSockets = new WeakSet<WebSocket>();
+  let claimSeq = 0;
   // Last applied PTY size per session — used to dedup so we don't fire
   // SIGWINCH (which makes ink-based apps redraw) when nothing changed.
   const appliedSize = new Map<string, { cols: number; rows: number }>();
@@ -143,10 +149,30 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   /** Remote CLI clients indexed by sessionId */
   const remoteClients = new Map<string, RemoteCLIClient>();
 
+  const isCliSizeKey = (key: WebSocket | typeof CLI_SIZE_KEY): boolean =>
+    key === CLI_SIZE_KEY || cliSizeSockets.has(key);
+
+  /** The browser viewer whose size currently drives the session's PTY. */
+  function sizeOwner(sessionId: string): WebSocket | undefined {
+    let owner: WebSocket | undefined;
+    let ownerClaim = -Infinity;
+    for (const [key, perSession] of clientSizes) {
+      if (isCliSizeKey(key)) continue;
+      const entry = perSession.get(sessionId);
+      if (entry && entry.claimedAt > ownerClaim) {
+        owner = key as WebSocket;
+        ownerClaim = entry.claimedAt;
+      }
+    }
+    return owner;
+  }
+
   function applyMinSizeForSession(sessionId: string): void {
     let minCols = Infinity;
     let minRows = Infinity;
-    for (const perSession of clientSizes.values()) {
+    const owner = sizeOwner(sessionId);
+    for (const [key, perSession] of clientSizes) {
+      if (!isCliSizeKey(key) && key !== owner) continue;
       const entry = perSession.get(sessionId);
       if (!entry) continue;
       if (entry.cols < minCols) minCols = entry.cols;
@@ -177,8 +203,21 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
       perSession = new Map();
       clientSizes.set(key, perSession);
     }
-    perSession.set(sessionId, { cols, rows });
+    // A viewer that newly (re)joins a session — tab switched to, phone woken
+    // up — is being used, so it claims the grid. Later resizes from the same
+    // viewer (iOS URL bar, window drag) keep its place in line.
+    const claimedAt = perSession.get(sessionId)?.claimedAt ?? ++claimSeq;
+    perSession.set(sessionId, { cols, rows, claimedAt });
     applyMinSizeForSession(sessionId);
+  }
+
+  /** Input or a pointer/focus on this viewer makes it drive the PTY size. */
+  function claimSize(socket: WebSocket, sessionId: string): void {
+    const entry = clientSizes.get(socket)?.get(sessionId);
+    if (!entry) return;
+    const owned = sizeOwner(sessionId) === socket;
+    entry.claimedAt = ++claimSeq;
+    if (!owned) applyMinSizeForSession(sessionId);
   }
 
   function dropSessionSize(socket: WebSocket, sessionId: string): void {
@@ -336,6 +375,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
         const cols = msg.cols as number;
         const rows = msg.rows as number;
         if (sessionId && cols && rows) {
+          cliSizeSockets.add(socket);
           recordClientSize(socket, sessionId, cols, rows);
         }
         return;
@@ -360,6 +400,9 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
       ensureSessionList();
       if (msg.type === 'unsubscribe' && typeof msg.sessionId === 'string') {
         dropSessionSize(socket, msg.sessionId);
+      }
+      if ((msg.type === 'input' || msg.type === 'claim:size') && typeof msg.sessionId === 'string') {
+        claimSize(socket, msg.sessionId);
       }
       if (msg.type === 'subscribe' && typeof msg.sessionId === 'string') {
         const size = appliedSize.get(msg.sessionId);
@@ -866,9 +909,8 @@ function handleMessage(
       const cols = msg.cols as number;
       const rows = msg.rows as number;
       if (sessionId && cols && rows) {
-        // Record this client's reported size and re-apply MIN across all
-        // connected clients (tmux-style) so TUI apps render correctly on
-        // the smallest attached viewport.
+        // Record this client's reported size; the most recently used viewer
+        // (capped by any CLI terminal) drives the PTY.
         recordClientSize(socket, sessionId, cols, rows);
       }
       break;

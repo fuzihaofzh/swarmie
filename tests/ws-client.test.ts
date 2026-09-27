@@ -143,6 +143,19 @@ describe('WebSocket observability', () => {
       await vi.waitFor(() => expect(resize).toHaveBeenLastCalledWith(35, 18));
       await vi.waitFor(() => expect(desktopMessages).toContainEqual({ type: 'terminal:size', sessionId: id, cols: 35, rows: 18 }));
 
+      // Using the desktop again takes the grid back while the phone stays attached.
+      send(desktop, { type: 'claim:size' });
+      await vi.waitFor(() => expect(resize).toHaveBeenLastCalledWith(140, 45));
+      // A resize from the idle phone (URL bar) must not steal it back...
+      send(phone, { type: 'resize', cols: 35, rows: 17 });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(resize).toHaveBeenLastCalledWith(140, 45);
+      // ...but typing on the phone does.
+      send(phone, { type: 'input', data: 'x' });
+      await vi.waitFor(() => expect(resize).toHaveBeenLastCalledWith(35, 17));
+      send(phone, { type: 'resize', cols: 35, rows: 18 });
+      await vi.waitFor(() => expect(resize).toHaveBeenLastCalledWith(35, 18));
+
       send(phone, { type: 'unsubscribe' });
       await vi.waitFor(() => expect(resize).toHaveBeenLastCalledWith(140, 45));
       expect(phone.readyState).toBe(WebSocket.OPEN);

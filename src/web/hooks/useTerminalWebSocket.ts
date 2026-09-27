@@ -189,6 +189,26 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
     }
   }, [isActive, subscribe, unsubscribe]);
 
+  // The PTY follows whichever device was used last. Typing claims it on the
+  // server; a click or window focus claims it too, so clicking into the
+  // desktop after using the phone brings the desktop size back immediately.
+  useEffect(() => {
+    let lastClaim = 0;
+    const claim = () => {
+      if (!activeRef.current || !subscribedRef.current || document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      if (now - lastClaim < 500) return;
+      lastClaim = now;
+      send({ type: 'claim:size', sessionId });
+    };
+    window.addEventListener('focus', claim);
+    document.addEventListener('pointerdown', claim, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener('focus', claim);
+      document.removeEventListener('pointerdown', claim, { capture: true });
+    };
+  }, [send, sessionId]);
+
   useEffect(() => {
     const visibilityChanged = () => {
       if (document.visibilityState === 'hidden') unsubscribe();

@@ -199,6 +199,23 @@ if (typeof window !== 'undefined') {
     }));
 }
 
+/**
+ * While another device drives the PTY its grid can be larger than this
+ * viewport; shrink it to fit rather than clip it. Using this device claims
+ * the grid back, so the scale returns to 1 as soon as the user interacts.
+ */
+function fitSharedGrid(term: Terminal, available: { cols: number; rows: number }): void {
+  const el = term.element;
+  if (!el) return;
+  const scale = Math.min(1, available.cols / term.cols, available.rows / term.rows);
+  if (scale < 1) {
+    el.style.transform = `scale(${scale})`;
+    el.style.transformOrigin = 'top left';
+  } else {
+    el.style.transform = '';
+  }
+}
+
 export function TerminalView({
   sessionId,
   tool,
@@ -298,6 +315,7 @@ export function TerminalView({
     }
     const grid = getTerminalSize(sessionId) ?? desired;
     term.resize(grid.cols, grid.rows);
+    fitSharedGrid(term, desired);
   }, [onResize, sessionId]);
 
   // Latest reportResize via ref so the active-tab effect doesn't re-run every
@@ -785,6 +803,7 @@ export function TerminalView({
     return subscribeTerminalSize(sessionId, (size) => {
       const follow = followingRef.current;
       term.resize(size.cols, size.rows);
+      if (lastReportedSizeRef.current) fitSharedGrid(term, lastReportedSizeRef.current);
       if (follow) term.scrollToBottom();
       term.refresh(0, term.rows - 1);
     });
