@@ -190,10 +190,14 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
   }, [isActive, subscribe, unsubscribe]);
 
   // The PTY follows whichever device was used last. Typing claims it on the
-  // server; a click or window focus claims it too, so clicking into the
+  // server; a tap/click or window focus claims it too, so clicking into the
   // desktop after using the phone brings the desktop size back immediately.
+  // Only a short, still press counts: claiming resizes the PTY and makes the
+  // agent redraw, which would wipe a long-press or drag text selection that
+  // is still in progress.
   useEffect(() => {
     let lastClaim = 0;
+    let press: { x: number; y: number; t: number } | null = null;
     const claim = () => {
       if (!activeRef.current || !subscribedRef.current || document.visibilityState === 'hidden') return;
       const now = Date.now();
@@ -201,11 +205,27 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
       lastClaim = now;
       send({ type: 'claim:size', sessionId });
     };
+    const onPointerDown = (e: PointerEvent) => {
+      press = e.isPrimary ? { x: e.clientX, y: e.clientY, t: Date.now() } : null;
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      const start = press;
+      press = null;
+      if (!start || !e.isPrimary) return;
+      if (Date.now() - start.t > 400) return;
+      if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) return;
+      claim();
+    };
+    const onPointerCancel = () => { press = null; };
     window.addEventListener('focus', claim);
-    document.addEventListener('pointerdown', claim, { capture: true, passive: true });
+    document.addEventListener('pointerdown', onPointerDown, { capture: true, passive: true });
+    document.addEventListener('pointerup', onPointerUp, { capture: true, passive: true });
+    document.addEventListener('pointercancel', onPointerCancel, { capture: true, passive: true });
     return () => {
       window.removeEventListener('focus', claim);
-      document.removeEventListener('pointerdown', claim, { capture: true });
+      document.removeEventListener('pointerdown', onPointerDown, { capture: true });
+      document.removeEventListener('pointerup', onPointerUp, { capture: true });
+      document.removeEventListener('pointercancel', onPointerCancel, { capture: true });
     };
   }, [send, sessionId]);
 
