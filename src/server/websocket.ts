@@ -56,6 +56,63 @@ export interface WebSocketHandle {
 /** Sentinel key for the local CLI terminal's reported size in clientSizes. */
 const CLI_SIZE_KEY: unique symbol = Symbol('cli-size');
 
+const RAW_RESYNC_TAIL_BYTES = 256 * 1024;
+// Reset before the resync tail. It must clear the dangling escape state left by
+// cutting the stream mid-sequence, but must NOT clear content — neither the
+// scrollback NOR the visible screen:
+//   - RIS (`\x1bc`) wiped the whole buffer incl. scrollback → all history gone
+//     on every resync over a slow/remote link ("codex -p hpc flooded, earlier
+//     output vanished").
+//   - Adding `\x1b[2J` (erase display) fixed scrollback but still blanked the
+//     VISIBLE screen. codex/Claude Code redraw incrementally — after an erase
+//     they only repaint the bits that change next (the ticking "Working…"
+//     line), leaving the rest of the screen empty until a full redraw. That was
+//     the "codex TUI sometimes goes blank" bug.
+// So: soft reset only. `\x1b[!p` (DECSTR) resets scroll region, origin mode,
+// charset, saved cursor and attributes WITHOUT erasing the screen, moving the
+// cursor, or touching any buffer; `\x1b[0m` explicitly drops dangling SGR. The
+// stale visible screen stays put and the tail's own cursor-addressed redraws
+// paint over it — briefly stale beats blank, and codex's next frame (or a tab-
+// focus SIGWINCH) fully repaints. Only the dropped middle gap is lost.
+const TERMINAL_RESET = '\x1b[!p\x1b[0m';
+const RAW_RESYNC_FRAME_TYPE = 0x02;
+
+// A resync payload has terminal-control bytes before the raw tail. Carry the
+// raw start explicitly so the browser does not count that reset prefix as
+// session history or append a post-backpressure gap as if it were contiguous.
+const encodeRawResyncFrame = (
+  sessionId: string,
+  payload: Buffer,
+  rawStartOffset: number,
+  offsetEnd: number,
+): Buffer => {
+  const sid = Buffer.from(sessionId, 'utf8');
+  const header = Buffer.allocUnsafe(2 + sid.length + 16);
+  header[0] = RAW_RESYNC_FRAME_TYPE;
+  header[1] = sid.length;
+  sid.copy(header, 2);
+  header.writeDoubleLE(rawStartOffset, 2 + sid.length);
+  header.writeDoubleLE(offsetEnd, 2 + sid.length + 8);
+  return Buffer.concat([header, payload]);
+};
+
+/** Reset + latest raw tail, framed for a terminal socket (type 0x02). */
+function buildRawResyncFrame(
+  session: NonNullable<ReturnType<SessionManager['getSession']>>,
+  sessionId: string,
+): { frame: Buffer; payload: Buffer; offsetEnd: number } {
+  const tail = session.getRawResyncTail(RAW_RESYNC_TAIL_BYTES);
+  const rawTail = Buffer.from(tail.data, 'base64');
+  const payload = Buffer.concat([Buffer.from(TERMINAL_RESET), rawTail]);
+  const frame = encodeRawResyncFrame(
+    sessionId,
+    payload,
+    Math.max(0, tail.offsetEnd - rawTail.length),
+    tail.offsetEnd,
+  );
+  return { frame, payload, offsetEnd: tail.offsetEnd };
+}
+
 export function setupWebSocket(app: FastifyInstance, manager: SessionManager): WebSocketHandle {
   const clients = new Set<WebSocket>();
   const dashboardClients = new Set<WebSocket>();
@@ -501,25 +558,6 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   // reset + tail), so trigger early and often rather than letting latency build.
   const RAW_BEHIND_HIGH = 256 * 1024; // queued bytes → client is behind
   const RAW_BEHIND_LOW = 32 * 1024;   // drained below → safe to resync
-  const RAW_RESYNC_TAIL_BYTES = 256 * 1024;
-  // Reset before the resync tail. It must clear the dangling escape state left by
-  // cutting the stream mid-sequence, but must NOT clear content — neither the
-  // scrollback NOR the visible screen:
-  //   - RIS (`\x1bc`) wiped the whole buffer incl. scrollback → all history gone
-  //     on every resync over a slow/remote link ("codex -p hpc flooded, earlier
-  //     output vanished").
-  //   - Adding `\x1b[2J` (erase display) fixed scrollback but still blanked the
-  //     VISIBLE screen. codex/Claude Code redraw incrementally — after an erase
-  //     they only repaint the bits that change next (the ticking "Working…"
-  //     line), leaving the rest of the screen empty until a full redraw. That was
-  //     the "codex TUI sometimes goes blank" bug.
-  // So: soft reset only. `\x1b[!p` (DECSTR) resets scroll region, origin mode,
-  // charset, saved cursor and attributes WITHOUT erasing the screen, moving the
-  // cursor, or touching any buffer; `\x1b[0m` explicitly drops dangling SGR. The
-  // stale visible screen stays put and the tail's own cursor-addressed redraws
-  // paint over it — briefly stale beats blank, and codex's next frame (or a tab-
-  // focus SIGWINCH) fully repaints. Only the dropped middle gap is lost.
-  const TERMINAL_RESET = '\x1b[!p\x1b[0m';
 
   const behindRaw = new WeakMap<WebSocket, Set<string>>();
 
@@ -536,7 +574,6 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
   //   type 02: [.. +8] = rawStartOffset, [.. +8] = offsetEnd, then a terminal
   //            reset prefix + the raw tail in [rawStartOffset, offsetEnd)
   const RAW_FRAME_TYPE = 0x01;
-  const RAW_RESYNC_FRAME_TYPE = 0x02;
   const encodeRawFrame = (sessionId: string, payload: Buffer, offsetEnd: number): Buffer => {
     const sid = Buffer.from(sessionId, 'utf8');
     const header = Buffer.allocUnsafe(2 + sid.length + 8);
@@ -546,25 +583,6 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
     header.writeDoubleLE(offsetEnd, 2 + sid.length);
     return Buffer.concat([header, payload]);
   };
-  // A resync payload has terminal-control bytes before the raw tail. Carry the
-  // raw start explicitly so the browser does not count that reset prefix as
-  // session history or append a post-backpressure gap as if it were contiguous.
-  const encodeRawResyncFrame = (
-    sessionId: string,
-    payload: Buffer,
-    rawStartOffset: number,
-    offsetEnd: number,
-  ): Buffer => {
-    const sid = Buffer.from(sessionId, 'utf8');
-    const header = Buffer.allocUnsafe(2 + sid.length + 16);
-    header[0] = RAW_RESYNC_FRAME_TYPE;
-    header[1] = sid.length;
-    sid.copy(header, 2);
-    header.writeDoubleLE(rawStartOffset, 2 + sid.length);
-    header.writeDoubleLE(offsetEnd, 2 + sid.length + 8);
-    return Buffer.concat([header, payload]);
-  };
-
   const flushRawPending = (sessionId: string): void => {
     const pending = rawPending.get(sessionId);
     if (!pending) return;
@@ -628,24 +646,14 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
         behind.delete(sessionId);
         const session = manager.getSession(sessionId);
         if (session) {
-          const tail = session.getRawResyncTail(RAW_RESYNC_TAIL_BYTES);
-          const resyncBuf = Buffer.concat([
-            Buffer.from(TERMINAL_RESET),
-            Buffer.from(tail.data, 'base64'),
-          ]);
+          const resync = buildRawResyncFrame(session, sessionId);
           if (PROF.profiling) {
             // Resync cost: how many bytes we re-send to snap a "behind" client
             // back to the live edge, vs the ~4KB the visible screen actually is.
-            PROF.markMs('resync.sent', 0, resyncBuf.length, sessionId);
+            PROF.markMs('resync.sent', 0, resync.payload.length, sessionId);
           }
           if (isTerminal) {
-            const rawTailBytes = Buffer.from(tail.data, 'base64').length;
-            sendRaw(ws, encodeRawResyncFrame(
-              sessionId,
-              resyncBuf,
-              Math.max(0, tail.offsetEnd - rawTailBytes),
-              tail.offsetEnd,
-            ));
+            sendRaw(ws, resync.frame);
           } else {
             sendRaw(ws, JSON.stringify({
               type: 'event',
@@ -653,7 +661,7 @@ export function setupWebSocket(app: FastifyInstance, manager: SessionManager): W
                 type: 'raw:output',
                 sessionId,
                 timestamp: pending.timestamp,
-                data: { data: resyncBuf.toString('base64'), offsetEnd: tail.offsetEnd },
+                data: { data: resync.payload.toString('base64'), offsetEnd: resync.offsetEnd },
               },
             }));
           }
@@ -791,6 +799,21 @@ function handleMessage(
           const fromOffset = typeof msg.fromOffset === 'number'
             ? msg.fromOffset
             : Number(msg.fromOffset);
+          // Re-activating a tab that sat hidden behind a busy agent can leave a
+          // multi-MB catch-up gap (up to the whole 16MB ring). Streaming all of
+          // it as base64 JSON — and having the browser parse every redraw frame
+          // — is what made switching to such a tab hang for seconds. Past one
+          // resync tail's worth, jump straight to the live edge instead; the
+          // client pages the skipped bytes back in via "Load earlier".
+          if (
+            isTerminalSocket &&
+            Number.isFinite(fromOffset) &&
+            fromOffset > 0 &&
+            session.getBufferStats().rawBytesEverWritten - fromOffset > RAW_RESYNC_TAIL_BYTES
+          ) {
+            sendRaw(socket, buildRawResyncFrame(session, sessionId).frame);
+            break;
+          }
           const events = Number.isFinite(fromOffset) && fromOffset > 0
             ? [
                 ...session.getRawEventsSince(fromOffset),

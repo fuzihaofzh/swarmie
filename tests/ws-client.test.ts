@@ -436,7 +436,7 @@ describe('WebSocket observability', () => {
     });
   });
 
-  it('replays terminal catch-up from the full raw ring after an offset', async () => {
+  it('jumps a terminal to the live edge instead of replaying a large catch-up gap', async () => {
     const sessionId = `raw-ring-${Date.now()}`;
     const adapter = new RemoteAdapter(
       { sessionId, toolArgs: [], cwd: '/tmp' },
@@ -468,41 +468,38 @@ describe('WebSocket observability', () => {
     const rawEvents = session?.getRawEventsSince(0) ?? [];
     const firstOffset = (rawEvents[0]?.data as { offsetEnd?: number } | undefined)?.offsetEnd;
     expect(typeof firstOffset).toBe('number');
+    const totalBytes = chunks.reduce((sum, chunk) => sum + Buffer.byteLength(chunk), 0);
 
     const ws = trackSocket(new WebSocket(`${wsUrl}?terminal=1`, [WS_PROTOCOL]));
-    const receivedEvents: Array<{ type: string; data: { data: string } }> = [];
-    let batchCount = 0;
-    const replayPromise = new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Replay timeout')), 3000);
-      ws.on('message', (raw: WebSocket.RawData) => {
-        const payload = JSON.parse(raw.toString()) as {
-          type?: string;
-          sessionId?: string;
-          events?: Array<{ type: string; data: { data: string } }>;
-        };
-        if (payload.type === 'event:batch' && payload.sessionId === sessionId) {
-          batchCount += 1;
-          receivedEvents.push(...(payload.events ?? []));
-          const replayText = receivedEvents
-            .filter((event) => event.type === 'raw:output')
-            .map((event) => Buffer.from(event.data.data, 'base64').toString('utf-8'))
-            .join('');
-          if (replayText.includes('chunk-three:')) {
-            clearTimeout(timer);
-            resolve(replayText);
-          }
+    let jsonReplays = 0;
+    const framePromise = new Promise<Buffer>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Resync timeout')), 3000);
+      ws.on('message', (raw: WebSocket.RawData, isBinary: boolean) => {
+        if (!isBinary) {
+          if ((JSON.parse(raw.toString()) as { type?: string }).type === 'event:batch') jsonReplays += 1;
+          return;
         }
+        clearTimeout(timer);
+        resolve(raw as Buffer);
       });
     });
 
     await waitForSocketOpen(ws);
     ws.send(JSON.stringify({ type: 'subscribe', sessionId, fromOffset: firstOffset }));
-    const replayText = await replayPromise;
+    const frame = await framePromise;
 
-    expect(batchCount).toBeGreaterThan(1);
-    expect(replayText).not.toContain('chunk-one:');
-    expect(replayText).toContain('chunk-two:');
-    expect(replayText).toContain('chunk-three:');
+    // [0x02][sidLen][sid][rawStartOffset f64][offsetEnd f64][reset + raw tail]
+    expect(frame[0]).toBe(0x02);
+    const sidLen = frame[1];
+    const rawStart = frame.readDoubleLE(2 + sidLen);
+    const offsetEnd = frame.readDoubleLE(2 + sidLen + 8);
+    expect(offsetEnd).toBe(totalBytes);
+    expect(offsetEnd - rawStart).toBeLessThanOrEqual(256 * 1024);
+    const text = frame.subarray(2 + sidLen + 16).toString('utf8');
+    expect(text).not.toContain('chunk-one:');
+    expect(text).toContain('chunk-three:');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(jsonReplays).toBe(0);
     ws.close();
     await new Promise<void>((resolve) => {
       ws.once('close', () => resolve());
