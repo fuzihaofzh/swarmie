@@ -31,6 +31,13 @@ const SUPPRESS_CLICK_MS = 700;
  * before the finger has moved. For touch pointers we intercept that event in
  * the capture phase, then activate the tab ourselves only if the gesture ends
  * as a tap.
+ *
+ * Listeners live on `document` (capture) and claim an event only when it
+ * lands in the `.dv-tab` cell that currently hosts this tab. Binding to the
+ * tab element itself missed touches on the cell outside it, and missed every
+ * touch when the tab first rendered `null` (session not yet in the store);
+ * binding to the `.dv-tab` directly breaks when Dockview rebuilds that cell
+ * on a layout change.
  */
 function useSwipeSafeTabActivate(
   tabRef: React.RefObject<HTMLElement | null>,
@@ -51,8 +58,11 @@ function useSwipeSafeTabActivate(
   }, [onTap]);
 
   useEffect(() => {
-    const el = tabRef.current;
-    if (!el) return;
+    const ownsEvent = (event: Event): boolean => {
+      const inner = tabRef.current;
+      const cell = event.target instanceof Element ? event.target.closest('.dv-tab') : null;
+      return !!inner && !!cell && cell.contains(inner);
+    };
 
     const isInteractiveTarget = (target: EventTarget | null): boolean =>
       target instanceof HTMLElement &&
@@ -94,6 +104,7 @@ function useSwipeSafeTabActivate(
 
     const onPointerDown = (event: PointerEvent) => {
       if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return;
+      if (!ownsEvent(event)) return;
       gestureRef.current = {
         x: event.clientX,
         y: event.clientY,
@@ -124,6 +135,7 @@ function useSwipeSafeTabActivate(
 
     const onTouchStart = (event: TouchEvent) => {
       if (gestureRef.current?.pointerId !== undefined) return;
+      if (!ownsEvent(event)) return;
       const touch = event.touches[0];
       if (!touch) return;
       gestureRef.current = {
@@ -136,7 +148,7 @@ function useSwipeSafeTabActivate(
     };
 
     const onTouchMove = (event: TouchEvent) => {
-      if (gestureRef.current?.pointerId !== undefined) return;
+      if (!gestureRef.current || gestureRef.current.pointerId !== undefined) return;
       const touch = event.touches[0];
       if (!touch) return;
       updateMovement(touch.clientX, touch.clientY);
@@ -152,29 +164,29 @@ function useSwipeSafeTabActivate(
       // post-gesture suppression window exists only to cancel Dockview's own
       // tab-activation synthetic click, not the user's tap on a child control.
       if (isInteractiveTarget(event.target)) return;
-      if (Date.now() < suppressClickUntilRef.current) {
+      if (Date.now() < suppressClickUntilRef.current && ownsEvent(event)) {
         stopSyntheticClick(event);
       }
     };
 
-    el.addEventListener('pointerdown', onPointerDown, { capture: true });
-    el.addEventListener('pointermove', onPointerMove, { capture: true });
-    el.addEventListener('pointerup', onPointerUp, { capture: true });
-    el.addEventListener('pointercancel', onPointerCancel, { capture: true });
-    el.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
-    el.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
-    el.addEventListener('touchend', onTouchEnd, { capture: true });
-    el.addEventListener('click', onClick, { capture: true });
+    document.addEventListener('pointerdown', onPointerDown, { capture: true });
+    document.addEventListener('pointermove', onPointerMove, { capture: true });
+    document.addEventListener('pointerup', onPointerUp, { capture: true });
+    document.addEventListener('pointercancel', onPointerCancel, { capture: true });
+    document.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+    document.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
+    document.addEventListener('touchend', onTouchEnd, { capture: true });
+    document.addEventListener('click', onClick, { capture: true });
 
     return () => {
-      el.removeEventListener('pointerdown', onPointerDown, { capture: true });
-      el.removeEventListener('pointermove', onPointerMove, { capture: true });
-      el.removeEventListener('pointerup', onPointerUp, { capture: true });
-      el.removeEventListener('pointercancel', onPointerCancel, { capture: true });
-      el.removeEventListener('touchstart', onTouchStart, { capture: true });
-      el.removeEventListener('touchmove', onTouchMove, { capture: true });
-      el.removeEventListener('touchend', onTouchEnd, { capture: true });
-      el.removeEventListener('click', onClick, { capture: true });
+      document.removeEventListener('pointerdown', onPointerDown, { capture: true });
+      document.removeEventListener('pointermove', onPointerMove, { capture: true });
+      document.removeEventListener('pointerup', onPointerUp, { capture: true });
+      document.removeEventListener('pointercancel', onPointerCancel, { capture: true });
+      document.removeEventListener('touchstart', onTouchStart, { capture: true });
+      document.removeEventListener('touchmove', onTouchMove, { capture: true });
+      document.removeEventListener('touchend', onTouchEnd, { capture: true });
+      document.removeEventListener('click', onClick, { capture: true });
     };
   }, [tabRef]);
 }
