@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { readlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { decodeWindowsFileUri, isPowerShell } from '../cli/shell.js';
 import type {
   NormalizedEvent,
   NormalizedEventType,
@@ -256,6 +257,8 @@ export abstract class BaseAdapter extends EventEmitter {
   private _lastScreenChangeAt = 0;
   private _repaintSuppressedUntil = 0;
   private _cwdTimer: ReturnType<typeof setInterval> | null = null;
+  private _cwdOscTail = '';
+  private _powerShellLocalPrompt = false;
   /** Headless terminal that mirrors the rendered screen. */
   private _screen: HeadlessScreen;
   /**
@@ -358,6 +361,15 @@ export abstract class BaseAdapter extends EventEmitter {
    */
   protected shouldSettleVisibleOutputToIdle(_screenText: string): boolean {
     return true;
+  }
+
+  /** An integrated owning shell reported completion, regardless of stale agent output. */
+  protected markShellPrompt(): void {
+    if (this._status === 'completed' || this._status === 'error') return;
+    this.stopCommandTracking();
+    this.stopUserInputTracking();
+    this.stopScreenMovementTimer();
+    this.setStatus('idle');
   }
 
   /** Whether the currently rendered screen explicitly says the tool is busy. */
@@ -640,21 +652,48 @@ export abstract class BaseAdapter extends EventEmitter {
    * OSC 0/2: window title, often "user@host:path" — fallback for SSH.
    */
   protected parseOSC(chunk: string): void {
-    if (!this.shouldTrackOscCwd()) return;
+    if (!this.shouldTrackOscCwd()) {
+      this._cwdOscTail = '';
+      this._powerShellLocalPrompt = false;
+      return;
+    }
+    chunk = this._cwdOscTail + chunk;
+    const lastOsc = chunk.lastIndexOf(`${ESC_CHAR}]`);
+    const suffix = lastOsc < 0 ? '' : chunk.slice(lastOsc);
+    this._cwdOscTail = suffix && !suffix.includes(BEL_CHAR) && !suffix.includes(`${ESC_CHAR}\\`)
+      ? suffix.slice(-4096) : chunk.endsWith(ESC_CHAR) ? ESC_CHAR : '';
 
     let match: RegExpExecArray | null;
+    const promptMarkerRe = new RegExp(`${ESC_CHAR}\\]133;A([^${BEL_CHAR}${ESC_CHAR}]*)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`, 'g');
+    const trackPromptMarker = (text: string) => {
+      for (const marker of text.matchAll(promptMarkerRe)) {
+        this._powerShellLocalPrompt = marker[1].includes(';swarmie=powershell') && marker[1].includes(';cwd=filesystem');
+      }
+    };
+    let previousCwdEnd = 0;
 
     // OSC 7: authoritative cwd + hostname
     OSC7_RE.lastIndex = 0;
     while ((match = OSC7_RE.exec(chunk)) !== null) {
+      trackPromptMarker(chunk.slice(previousCwdEnd, match.index));
+      previousCwdEnd = OSC7_RE.lastIndex;
       const reportedHost = match[1];
       // A local shell may report this box by its short name, `.local` name, or
       // an interface IP. Keep one canonical local identity; only a genuinely
       // different host should make the UI label the tab as SSH/remote.
-      const host = !reportedHost || isLocalHostname(reportedHost)
+      // Distinguish our local UNC prompt from a remote SSH shell's OSC 7.
+      const windowsPowerShell = process.platform === 'win32' && isPowerShell(this.info.command)
+        && (this._powerShellLocalPrompt || /^\/[a-z]:\//i.test(match[2]));
+      this._powerShellLocalPrompt = false;
+      const host = windowsPowerShell || !reportedHost || isLocalHostname(reportedHost)
         ? this._initialHostname
         : reportedHost;
-      const newCwd = decodeURIComponent(match[2]);
+      let newCwd: string;
+      try {
+        newCwd = windowsPowerShell
+          ? decodeWindowsFileUri(reportedHost, match[2])
+          : decodeURIComponent(match[2]);
+      } catch { continue; } // A malformed terminal sequence must not crash a session.
       const changed = (newCwd && newCwd !== this.cwd) || (host !== this.hostname);
       if (changed) {
         if (newCwd) this.cwd = newCwd;
@@ -662,6 +701,7 @@ export abstract class BaseAdapter extends EventEmitter {
         this.emitEvent('cwd:change', { cwd: this.cwd, hostname: this.hostname } satisfies CwdChangeData);
       }
     }
+    trackPromptMarker(chunk.slice(previousCwdEnd));
 
     // OSC 0/2: fallback for shells that do not emit OSC 7 after SSH. A title
     // such as "user@remote:~" is the common signal in that case. Only accept

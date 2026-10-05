@@ -11,6 +11,7 @@ import type {
 } from './types.js';
 import { ESC_CHAR, BEL_CHAR, OSC_ANY_RE, CSI_RE, ESC_OTHER_RE, CONTROL_CHARS_RE } from './ansi.js';
 import * as PROF from '../server/profile.js';
+import { findWindowsShell, isPowerShell, powerShellArgs, powerShellPromptMarker, shellBasename } from '../cli/shell.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -44,15 +45,11 @@ const OSC_SHELL_PROMPT_RE = new RegExp(
   `${ESC_CHAR}\\](?:133;A(?:;[^${BEL_CHAR}${ESC_CHAR}]*)?|7;file://[^${BEL_CHAR}${ESC_CHAR}]*)(?:${BEL_CHAR}|${ESC_CHAR}\\\\)`,
 );
 const AGENT_CRUISE_EXIT_LINE = 'AgentCruise exited.';
-const INTERACTIVE_SHELLS = new Set(['sh', 'bash', 'zsh', 'fish', 'tcsh', 'csh', 'ksh', 'dash']);
+const INTERACTIVE_SHELLS = new Set(['sh', 'bash', 'zsh', 'fish', 'tcsh', 'csh', 'ksh', 'dash', 'pwsh', 'powershell', 'cmd']);
 const SHELL_RETURN_PROBE_INTERVAL_MS = 1_000;
 
-function basename(command: string): string {
-  return command.split('/').filter(Boolean).pop() ?? command;
-}
-
 function isInteractiveShellCommand(command: string): boolean {
-  return INTERACTIVE_SHELLS.has(basename(command));
+  return INTERACTIVE_SHELLS.has(shellBasename(command));
 }
 
 /**
@@ -69,6 +66,8 @@ export class GenericAdapter extends BaseAdapter {
    *  any byte, including in the middle of an OSC sequence or exit line). */
   private _shellReturnRawTail = '';
   private _shellReturnTextTail = '';
+  private _powerShellPromptTail = '';
+  private _atPowerShellPrompt = false;
   /**
    * Poll while an agent owns an interactive shell, including normal exits
    * without OSC prompt integration. Only return to shell mode once the parent
@@ -95,7 +94,9 @@ export class GenericAdapter extends BaseAdapter {
     const sig = TOOL_SIGNATURES.find((s) => s.tool === this._detectedTool);
     return {
       name: this._detectedTool ?? this.command,
-      displayName: sig?.displayName ?? this.command,
+      displayName: sig?.displayName ?? (isPowerShell(this.command)
+        ? shellBasename(this.command) === 'pwsh' ? 'PowerShell 7' : 'Windows PowerShell'
+        : this.command),
       icon: this._detectedTool ? '' : '\u{1F527}',
       command: this.command,
       supportsStructured: false,
@@ -108,17 +109,20 @@ export class GenericAdapter extends BaseAdapter {
 
   start(): void {
     this._startTime = Date.now();
-    const args = this.toolArgs;
+    const args = isPowerShell(this.command) ? powerShellArgs(this.toolArgs, this.sessionId) : this.toolArgs;
+    const command = process.platform === 'win32' && isPowerShell(this.command) && !/[\\/]/.test(this.command)
+      ? findWindowsShell(shellBasename(this.command) as 'pwsh' | 'powershell')
+      : this.command;
 
     this.emitEvent('session:start', {
       tool: this.command,
-      command: [this.command, ...args],
+      command: [command, ...args],
       cwd: this.cwd,
     } satisfies SessionStartData);
 
     this.setStatus('running');
 
-    this.ptyProcess = pty.spawn(this.command, args, {
+    this.ptyProcess = pty.spawn(command, args, {
       name: 'xterm-256color',
       cols: this.cols,
       rows: this.rows,
@@ -143,6 +147,7 @@ export class GenericAdapter extends BaseAdapter {
   }
 
   write(data: string): void {
+    this._atPowerShellPrompt = false;
     this.ptyProcess?.write(data);
     this.handleUserInput(data);
     if (this._detectedTool && data.includes('\x03')) {
@@ -172,6 +177,11 @@ export class GenericAdapter extends BaseAdapter {
     return this._detectedTool === null;
   }
 
+  protected shouldTreatScreenAsBusy(screenText: string): boolean {
+    if (this._atPowerShellPrompt && !this._detectedTool) return false;
+    return super.shouldTreatScreenAsBusy(screenText);
+  }
+
   kill(signal?: string): void {
     this.ptyProcess?.kill(signal);
   }
@@ -179,6 +189,11 @@ export class GenericAdapter extends BaseAdapter {
   /** Process one PTY output chunk. Kept as one unit so lifecycle boundaries
    *  are evaluated in the same order as screen and OSC state. */
   private handlePtyData(data: string): void {
+    const promptCandidate = this._powerShellPromptTail + data;
+    const ownPowerShellPrompt = isPowerShell(this.command)
+      && (promptCandidate.includes(powerShellPromptMarker(this.sessionId))
+        || promptCandidate.includes(powerShellPromptMarker(this.sessionId, false)));
+    this._powerShellPromptTail = ownPowerShellPrompt ? '' : promptCandidate.slice(-512);
     const tChunk = PROF.profiling ? PROF.nowNs() : 0n;
     const hadDetectedTool = this._detectedTool !== null;
     this.detectTool(data);
@@ -192,8 +207,12 @@ export class GenericAdapter extends BaseAdapter {
     // commonly put the prompt marker and its authoritative cwd in one PTY
     // write; parsing first would discard that cwd while the adapter still
     // believes the agent owns the terminal.
-    if (hadDetectedTool && this.didReturnToShell(data)) {
+    if (hadDetectedTool && (ownPowerShellPrompt || (!isPowerShell(this.command) && this.didReturnToShell(data)))) {
       this.resetDetectedToolAtShellPrompt();
+    }
+    if (ownPowerShellPrompt) {
+      this._atPowerShellPrompt = true;
+      this.markShellPrompt();
     }
 
     const tOsc = PROF.profiling ? PROF.nowNs() : 0n;
@@ -255,6 +274,8 @@ export class GenericAdapter extends BaseAdapter {
   }
 
   private startShellReturnProbe(): void {
+    // Windows has no POSIX foreground process groups; PowerShell emits OSC 133.
+    if (process.platform === 'win32') return;
     if (!this._detectedTool || !this.ptyProcess || !isInteractiveShellCommand(this.command)) return;
     if (this._shellReturnProbeTimer) return;
     void this.probeForShellReturn();

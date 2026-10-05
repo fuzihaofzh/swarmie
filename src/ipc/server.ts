@@ -20,7 +20,7 @@ export class IPCServer extends EventEmitter {
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
       // Remove stale socket file
-      if (existsSync(this.socketPath)) {
+      if (process.platform !== 'win32' && existsSync(this.socketPath)) {
         try {
           unlinkSync(this.socketPath);
         } catch {
@@ -60,7 +60,7 @@ export class IPCServer extends EventEmitter {
         this.server.close(() => {
           // Clean up socket file
           try {
-            if (existsSync(this.socketPath)) {
+            if (process.platform !== 'win32' && existsSync(this.socketPath)) {
               unlinkSync(this.socketPath);
             }
           } catch {

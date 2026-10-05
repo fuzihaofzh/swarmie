@@ -8,6 +8,7 @@ interface NewSessionPageProps {
   onCreateSession: (opts: {
     serverUrl?: string;
     cwd?: string;
+    tool?: string;
   }) => Promise<{ id: string }>;
   onCancel?: () => void;
   initialCwd?: string;
@@ -28,6 +29,7 @@ export function NewSessionPage({
   const [showAll, setShowAll] = useState(false);
   const [selectedServer, setSelectedServer] = useState(initialServerUrl ?? LOCAL_SERVER);
   const [cwd, setCwd] = useState(initialCwd ?? '');
+  const [tool, setTool] = useState('shell');
   const formId = useId();
   const sessions = useSessionStore((s) => s.sessions);
 
@@ -59,6 +61,7 @@ export function NewSessionPage({
       await onCreateSession({
         serverUrl: targetServer || undefined,
         cwd: targetCwd,
+        tool,
       });
       // A failed path must not poison the recent-directory list.
       if (targetCwd) saveRecentDir({ dir: targetCwd, hostname });
@@ -96,6 +99,16 @@ export function NewSessionPage({
         </div>
 
         <div className="form-group">
+          <label htmlFor={`${formId}-tool`}>Shell</label>
+          <select id={`${formId}-tool`} value={tool} onChange={(event) => setTool(event.target.value)} disabled={creating}>
+            <option value="shell">Server default</option>
+            <option value="pwsh">PowerShell 7</option>
+            <option value="powershell">Windows PowerShell 5.1</option>
+            <option value="bash">Bash</option>
+          </select>
+        </div>
+
+        <div className="form-group">
           <label htmlFor={`${formId}-cwd`}>Working directory</label>
           <input type="text" id={`${formId}-cwd`} value={cwd} onChange={(event) => setCwd(event.target.value)} disabled={creating} placeholder="Server home directory" autoComplete="off" spellCheck={false} />
         </div>
@@ -106,8 +119,8 @@ export function NewSessionPage({
             <div className="recent-list">
               {recentEntries.slice(0, showAll ? undefined : 5).map((entry) => {
                 const short = entry.dir.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
-                const name = entry.dir.split('/').pop() || entry.dir;
-                const parent = short.split('/').slice(0, -1).join('/');
+                const name = entry.dir.split(/[\\/]/).pop() || entry.dir;
+                const parent = short.split(/[\\/]/).slice(0, -1).join('/');
                 const host = entry.hostname && entry.hostname !== 'local' ? entry.hostname : '';
                 return (
                   <button

@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { getConfigDir } from '../cli/config.js';
 
 const MAX_CLIPBOARD_IMAGE_BYTES = 16 * 1024 * 1024;
 
@@ -40,7 +40,7 @@ function decodeImage(dataBase64: string, mimeType: string): Buffer | null {
 
 function saveClipboardImage(sessionId: string, mimeType: string, buffer: Buffer): string {
   const ext = IMAGE_EXTENSIONS[mimeType] ?? 'png';
-  const dir = join(homedir(), '.swarmie', 'clipboard', safePathPart(sessionId));
+  const dir = join(getConfigDir(), 'clipboard', safePathPart(sessionId));
   mkdirSync(dir, { recursive: true });
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');

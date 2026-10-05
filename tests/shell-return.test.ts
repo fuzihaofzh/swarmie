@@ -29,7 +29,10 @@ function launch() {
 }
 
 describe('agent exit without shell integration', () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
   beforeEach(() => {
+    // These tests exercise the POSIX foreground-process-group fallback.
+    Object.defineProperty(process, 'platform', { value: 'linux' });
     vi.useFakeTimers();
     mock.inspect.mockReset();
     mock.inspect.mockResolvedValue({ stdout: '100 200\n' });
@@ -38,6 +41,7 @@ describe('agent exit without shell integration', () => {
     mock.exit({ exitCode: 0 });
     vi.clearAllTimers();
     vi.useRealTimers();
+    Object.defineProperty(process, 'platform', platformDescriptor);
   });
 
   it('detects a normal exit long after launch without Ctrl+C or OSC markers', async () => {

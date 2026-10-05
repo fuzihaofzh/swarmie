@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 export interface SwarmieConfig {
   port: number;
@@ -10,7 +11,7 @@ export interface SwarmieConfig {
   passwordHash?: string;
 }
 
-const CONFIG_DIR = join(homedir(), '.swarmie');
+const CONFIG_DIR = process.env.SWARMIE_CONFIG_DIR || join(homedir(), '.swarmie');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 
 const DEFAULT_CONFIG: SwarmieConfig = {
@@ -52,6 +53,11 @@ export function getConfigDir(): string {
 }
 
 export function getSocketPath(port: number): string {
+  if (process.platform === 'win32') {
+    // Pipes are not filesystem entries. Namespace by user/config and port.
+    const namespace = createHash('sha256').update(CONFIG_DIR.toLowerCase()).digest('hex').slice(0, 16);
+    return `\\\\.\\pipe\\swarmie-${namespace}-${port}`;
+  }
   return join(CONFIG_DIR, `server-${port}.sock`);
 }
 

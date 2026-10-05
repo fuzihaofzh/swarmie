@@ -28,7 +28,7 @@ Terminal-based AI agents are powerful, but managing many of them across machines
 
 ## Install
 
-**CLI (npm)**
+**CLI (npm, Windows / macOS / Linux)**
 
 ```bash
 npm install -g swarmie
@@ -50,6 +50,11 @@ open dist/electron/Swarmie-darwin-*/Swarmie.app
 # Opens a web dashboard at http://localhost:3200
 swarmie
 ```
+
+The same command starts Swarmie on Windows, macOS and Linux. Windows selects
+PowerShell 7 when available, falling back to Windows PowerShell 5.1;
+macOS/Linux use the server's `SHELL`, falling back to bash.
+See [Windows / PowerShell details](docs/windows.md) for native terminal checks.
 
 ![swarmie screenshot](https://raw.githubusercontent.com/fuzihaofzh/swarmie/main/docs/screenshot-dark.png)
 
@@ -115,8 +120,12 @@ First swarmie process becomes the **coordinator** — it owns the web server and
 
 ## Development
 
+From a source checkout, use the same commands on all three platforms:
+
 ```bash
+npm ci
 npm run build          # TypeScript + Vite
+npm start              # Dashboard at http://127.0.0.1:3200
 npm test               # Vitest
 ```
 

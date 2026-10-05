@@ -56,7 +56,7 @@ export async function startCoordinator(
   const lockPath = getLockPath(options.port);
 
   // Check if a coordinator is already running
-  if (existsSync(socketPath) && existsSync(lockPath)) {
+  if (existsSync(lockPath) && (process.platform === 'win32' || existsSync(socketPath))) {
     const pid = parseInt(readFileSync(lockPath, 'utf-8').trim(), 10);
     if (isProcessRunning(pid)) {
       if (!adapter || !sessionId || !sessionName) {
@@ -67,7 +67,9 @@ export async function startCoordinator(
     }
     // Stale lock — clean up
     try { unlinkSync(lockPath); } catch { /* ignore */ }
-    try { unlinkSync(socketPath); } catch { /* ignore */ }
+    if (process.platform !== 'win32') {
+      try { unlinkSync(socketPath); } catch { /* ignore */ }
+    }
   }
 
   // Become the coordinator
@@ -89,7 +91,20 @@ async function startAsCoordinator(
 
   // Start IPC server
   const ipcServer = new IPCServer(socketPath);
-  await ipcServer.start();
+  try {
+    await ipcServer.start();
+  } catch (error) {
+    try { unlinkSync(lockPath); } catch { /* ignore */ }
+    throw error;
+  }
+
+  const abortStartup = async () => {
+    for (const session of manager.getAllSessions()) {
+      try { session.kill(); } catch { /* ignore */ }
+    }
+    await ipcServer.close();
+    try { unlinkSync(lockPath); } catch { /* ignore */ }
+  };
 
   // Handle remote sessions registering via IPC
   ipcServer.on('session:registered', (info: {
@@ -154,7 +169,12 @@ async function startAsCoordinator(
   if (adapter && sessionId && sessionName) {
     const session = manager.addSession(sessionId, sessionName, adapter);
     session.isLocal = true;
-    session.start();
+    try {
+      session.start();
+    } catch (error) {
+      await abortStartup();
+      throw error;
+    }
 
     // Start recording if requested
     if (options.record) {
@@ -165,7 +185,14 @@ async function startAsCoordinator(
   }
 
   // Start web server
-  const server = await createServer(manager, { port: options.port, host: options.host, password: options.password });
+  let server: Awaited<ReturnType<typeof createServer>>;
+  try {
+    server = await createServer(manager, { port: options.port, host: options.host, password: options.password });
+  } catch (error) {
+    recorder?.close();
+    await abortStartup();
+    throw error;
+  }
   console.error(`[swarmie] Web server listening at ${server.address}`);
   console.error(`[swarmie] IPC server listening at ${socketPath}`);
 

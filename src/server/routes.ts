@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import type { SessionManager } from '../session/manager.js';
 import { loadRecording } from '../session/replayer.js';
 import { loadConfig } from '../cli/config.js';
+import { getDefaultShell, isPowerShell, shellBasename } from '../cli/shell.js';
 import { createAdapter, getAdapterNames } from '../adapters/registry.js';
 import { nanoid } from 'nanoid';
 import { logObservabilityEvent, resolveRequestId } from './observability.js';
@@ -388,11 +389,11 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
   }>('/api/sessions', async (request, reply) => {
     const requestId = resolveRequestId(request);
     const { tool: rawTool, args, cwd, sessionName, cols, rows } = request.body;
-    const tool = rawTool || process.env.SHELL || 'bash';
+    const tool = !rawTool || rawTool === 'shell' ? getDefaultShell() : rawTool;
     const sessionCwd = resolveSessionWorkingDirectory(cwd);
 
     const sessionId = nanoid(12);
-    const name = sessionName || `${tool}-${sessionId.slice(0, 6)}`;
+    const name = sessionName || `${isPowerShell(tool) ? shellBasename(tool) : tool}-${sessionId.slice(0, 6)}`;
 
     try {
       const cwdStat = statSync(sessionCwd);
@@ -421,6 +422,12 @@ export function setupRoutes(app: FastifyInstance, manager: SessionManager): void
 
       return { id: sessionId, name, tool, status: session.status };
     } catch (err) {
+      // A spawn failure must not leave a phantom session in the dashboard.
+      const failedSession = manager.getSession(sessionId);
+      if (failedSession) {
+        try { failedSession.kill(); } catch { /* ignore */ }
+        manager.removeSession(sessionId);
+      }
       const message = err instanceof Error ? err.message : String(err);
       logObservabilityEvent('session.create.failed', {
         level: 'error',

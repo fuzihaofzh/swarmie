@@ -722,7 +722,10 @@ function AutomationSettings() {
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
           <option value="gemini">Gemini</option>
-          <option value="bash">Shell (bash)</option>
+          <option value="shell">Shell (server default)</option>
+          <option value="pwsh">PowerShell 7</option>
+          <option value="powershell">Windows PowerShell 5.1</option>
+          <option value="bash">Bash</option>
         </select>
         <p className="setting-hint">The Workspace + button uses this tool for new agents.</p>
       </div>

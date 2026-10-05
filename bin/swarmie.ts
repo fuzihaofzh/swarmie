@@ -3,10 +3,12 @@
 import { parseArgs } from '../src/cli/index.js';
 import { createAdapter } from '../src/adapters/index.js';
 import { nanoid } from 'nanoid';
+import { getDefaultShell } from '../src/cli/shell.js';
 
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv);
-  const { tool, swarmieOptions, toolArgs } = parsed;
+  const { swarmieOptions, toolArgs } = parsed;
+  const tool = parsed.tool === 'shell' ? getDefaultShell() : parsed.tool;
 
   // Server-only mode: no tool specified
   if (!tool) {
