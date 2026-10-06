@@ -57,7 +57,9 @@ function getHostnameCandidates(): string[] {
   }
 
   candidates.push(cleanHostname(osHostname()));
-  candidates.push(readCommand('hostname', ['-s']));
+  if (platform() !== 'win32') {
+    candidates.push(readCommand('hostname', ['-s']));
+  }
   candidates.push(readCommand('hostname', []));
 
   cachedHostnameCandidates = candidates.filter((candidate): candidate is string => !!candidate);
