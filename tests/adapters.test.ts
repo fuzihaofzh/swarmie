@@ -55,6 +55,15 @@ describe('adapter registry', () => {
     expect(adapter.info.name).toBe('codex');
   });
 
+  it('runs Codex inline so its transcript reaches terminal scrollback', () => {
+    const spawnArgs = (toolArgs: string[]) =>
+      (createAdapter('codex', { sessionId: 'codex-inline', toolArgs }) as unknown as { spawnArgs: string[] }).spawnArgs;
+    expect(spawnArgs(['-p', 'hpc'])).toEqual(['-c', 'tui.alternate_screen=never', '-p', 'hpc']);
+    // An explicit user choice wins.
+    expect(spawnArgs(['--no-alt-screen'])).toEqual(['--no-alt-screen']);
+    expect(spawnArgs(['-c', 'tui.alternate_screen=always'])).toEqual(['-c', 'tui.alternate_screen=always']);
+  });
+
   it('does not treat OSC paths in direct Codex output as cwd metadata', () => {
     const adapter = createAdapter('codex', {
       sessionId: 'codex-output-cwd',

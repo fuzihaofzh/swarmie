@@ -107,6 +107,15 @@ const MAX_INLINE_MATH_LINES = 0.95;
 // Kept at 1MB rather than larger so a single delta fetch stays modest over
 // bandwidth-limited remote tunnels.
 const HISTORY_CHUNK_BYTES = 1024 * 1024;
+// A page of pure TUI redraws (spinners, status-line animation) adds bytes but
+// no lines. When a page brings back less than a screen, the next one doubles,
+// up to this cap, and is fetched without waiting for another gesture — so an
+// animation-heavy stretch of the ring is crossed in a few loads instead of a
+// "load earlier" per megabyte of nothing.
+const HISTORY_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
+// Start fetching older history while the reader is still this many screens
+// below the top, so the page is usually rebuilt before they get there.
+const HISTORY_PREFETCH_SCREENS = 10;
 // A cache entry can be an entire fetched page (1 MB). Bound each atomic
 // xterm write so parsing history leaves room for keyboard and paint events.
 const HISTORY_REPLAY_WRITE_BYTES = 16 * 1024;
@@ -281,6 +290,7 @@ export function TerminalView({
   const historyLoadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyLoadAttemptsRef = useRef(0);
   const historyLoadToOffsetRef = useRef<number | null>(null);
+  const historyChunkBytesRef = useRef(HISTORY_CHUNK_BYTES);
   const armHistoryLoadRef = useRef<((fromOffset: number, toOffset?: number) => void) | null>(null);
   const capturedDuringLoadRef = useRef<Array<{ bin: string; offsetEnd?: number }>>([]);
   const capturedDuringLoadBytesRef = useRef(0);
@@ -538,16 +548,47 @@ export function TerminalView({
             mobileInput([...key].length === 1 ? resolveKeyWithMods(key, ctrl, alt) || raw : raw);
             clear();
           };
+          // With Ctrl/Alt armed, a pinyin/CJK IME holds the typed "c" in a
+          // composition and only commits on Space — and what it commits is a
+          // candidate (才/从…) or, on iOS, an empty textarea, never the bare
+          // letter. Fire the chord from the composition's first Latin letter
+          // instead, then drop whatever that composition eventually commits.
+          let chordComposition = false;
+          let droppedCommit: string | null = null;
+          const onCompositionUpdate = (e: CompositionEvent) => {
+            if (!isTextarea(e)) return;
+            e.stopImmediatePropagation();
+            if (chordComposition) return;
+            const { ctrl, alt } = useMobileModifiers.getState();
+            if ((ctrl || alt) && /^[A-Za-z@[\\\]^_]$/.test(e.data ?? '')) {
+              chordComposition = true;
+              sendKey(e.data, e.data);
+            }
+          };
           const onCompositionEnd = (e: CompositionEvent) => {
             if (!isTextarea(e)) return;
             e.stopImmediatePropagation();
-            if (textarea.value) sendKey(textarea.value, textarea.value);
+            if (chordComposition) {
+              chordComposition = false;
+              droppedCommit = e.data || textarea.value || null;
+              // Some engines follow compositionend with a plain input event
+              // carrying the same commit; swallow only that immediate echo.
+              setTimeout(() => { droppedCommit = null; }, 0);
+            } else if (textarea.value) {
+              sendKey(textarea.value, textarea.value);
+            }
             textarea.value = '';
           };
           const onInputEvent = (e: Event) => {
             if (!isTextarea(e)) return;
             e.stopImmediatePropagation();
             const ie = e as InputEvent;
+            if (chordComposition) return;
+            if (droppedCommit !== null && ie.data === droppedCommit) {
+              droppedCommit = null;
+              textarea.value = '';
+              return;
+            }
             // Intermediate composition states accumulate in the textarea and
             // are sent on compositionend; don't send them character-by-character.
             if (ie.isComposing || ie.inputType === 'insertCompositionText') return;
@@ -564,7 +605,7 @@ export function TerminalView({
           el.addEventListener('keypress', onKeyPress, true);
           el.addEventListener('keydown', onKeyDown, true);
           el.addEventListener('compositionstart', swallow, true);
-          el.addEventListener('compositionupdate', swallow, true);
+          el.addEventListener('compositionupdate', onCompositionUpdate, true);
           el.addEventListener('compositionend', onCompositionEnd, true);
           el.addEventListener('input', onInputEvent, true);
         }
@@ -1292,7 +1333,9 @@ export function TerminalView({
 
   const handleLoadEarlier = useCallback(() => {
     if (historyLoadingRef.current) return;
-    if (sessionMeta.reachedEarliest) return;
+    // Read the bus directly: a chained load runs before React re-renders with
+    // the snapshot's reachedEarliest, and must not page past the ring start.
+    if (sessionMeta.reachedEarliest || getSessionMeta(sessionId).reachedEarliest) return;
     if (!onLoadHistory) return;
     // Anchor on the raw cache, not on lowestOffset. The client holds
     // [cacheStart, live edge], so it only needs the page BELOW cacheStart —
@@ -1313,7 +1356,7 @@ export function TerminalView({
       return;
     }
     const toOffset = cacheStart;
-    const fromOffset = Math.max(0, cacheStart - HISTORY_CHUNK_BYTES);
+    const fromOffset = Math.max(0, cacheStart - historyChunkBytesRef.current);
     if (fromOffset >= toOffset) return;
     historyLoadingRef.current = true;
     historyRebuildingRef.current = false;
@@ -1438,7 +1481,9 @@ export function TerminalView({
       // gestures cannot change scrollTop, so the browser emits no scroll event.
       // Check those gestures directly as well as actual viewport movement.
       // A screen with no scrollback yet can still have older raw history.
-      if (term.buffer.active.viewportY !== 0 || historyLoadingRef.current) return;
+      // Prefetch a few screens early so reading upward rarely hits the top.
+      if (term.buffer.active.viewportY > term.rows * HISTORY_PREFETCH_SCREENS) return;
+      if (historyLoadingRef.current) return;
       const now = performance.now();
       if (scrolledUpAtRef.current === 0) return;
       if (now - scrolledUpAtRef.current > AUTO_LOAD_RECENT_WINDOW_MS) return;
@@ -1889,6 +1934,7 @@ export function TerminalView({
       // diff is 0 and the view jumps to the top, the original bug). During the
       // load live chunks are parked, so this reading is stable.
       const scrollAnchor = captureTerminalScrollAnchor(term.buffer.active);
+      const baseYBefore = term.buffer.active.baseY;
 
       // Render the cache as of now; bytes still streaming in are parked and
       // replayed against this offset once the rebuild lands.
@@ -1931,12 +1977,28 @@ export function TerminalView({
           if (term.buffer.active.baseY >= TERMINAL_SCROLLBACK_LINES) {
             markReachedEarliest(sessionId);
           }
+          // Less than a screen of new lines means this page was mostly redraw
+          // frames: widen the next page and keep going while the reader is
+          // still up near the top, instead of making them scroll for each one.
+          const thinPage = term.buffer.active.baseY - baseYBefore < term.rows;
+          historyChunkBytesRef.current = thinPage
+            ? Math.min(HISTORY_MAX_CHUNK_BYTES, historyChunkBytesRef.current * 2)
+            : HISTORY_CHUNK_BYTES;
           historyLoadingRef.current = false;
           historyRebuildingRef.current = false;
           const shouldJumpToLive = jumpToLive || historyJumpToLiveRef.current;
           historyJumpToLiveRef.current = false;
           setHistoryLoading(false);
-          if (shouldJumpToLive) jumpToLiveEdge();
+          if (shouldJumpToLive) {
+            jumpToLiveEdge();
+          } else if (
+            thinPage
+            && term.buffer.active.viewportY <= term.rows * HISTORY_PREFETCH_SCREENS
+          ) {
+            setTimeout(() => {
+              if (!disposed) handleLoadEarlierRef.current?.();
+            }, 0);
+          }
         }));
       };
 

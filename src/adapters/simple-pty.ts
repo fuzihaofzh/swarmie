@@ -12,6 +12,11 @@ export abstract class SimplePtyAdapter extends BaseAdapter {
 
   abstract get info(): AdapterInfo;
 
+  /** Arguments passed to `info.command`; subclasses may add tool defaults. */
+  protected get spawnArgs(): string[] {
+    return this.toolArgs;
+  }
+
   get isRunning(): boolean {
     return this.ptyProcess !== null && this._status !== 'completed' && this._status !== 'error';
   }
@@ -19,7 +24,7 @@ export abstract class SimplePtyAdapter extends BaseAdapter {
   start(): void {
     this._startTime = Date.now();
     const command = this.info.command;
-    const args = this.toolArgs;
+    const args = this.spawnArgs;
 
     this.emitEvent('session:start', {
       tool: this.info.name,
