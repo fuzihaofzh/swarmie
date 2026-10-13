@@ -102,6 +102,11 @@ export function isLocalHostname(value: string | undefined): boolean {
     }
     cachedLocalNameIdentities = identities;
   }
+  // macOS rewrites the kernel hostname as networks change (e.g. "Mac", then an
+  // IP), and shells started later report whatever it was at their launch. Keep
+  // every name this box has held while we ran, not just the startup snapshot.
+  const liveHostname = normalizeHostnameIdentity(osHostname());
+  if (liveHostname) cachedLocalNameIdentities.add(liveHostname);
   if (cachedLocalNameIdentities.has(identity)) return true;
 
   // A laptop's addresses can change while the coordinator stays alive, so do
