@@ -114,8 +114,10 @@ const HISTORY_CHUNK_BYTES = 1024 * 1024;
 // "load earlier" per megabyte of nothing.
 const HISTORY_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
 // Start fetching older history while the reader is still this many screens
-// below the top, so the page is usually rebuilt before they get there.
-const HISTORY_PREFETCH_SCREENS = 10;
+// below the top, so the page is usually rebuilt before they get there. Every
+// load resets and rewrites xterm behind a blocking overlay, so keep this small:
+// at 10 a fresh tab sat inside the zone and any upward scroll triggered a load.
+const HISTORY_PREFETCH_SCREENS = 2;
 // A cache entry can be an entire fetched page (1 MB). Bound each atomic
 // xterm write so parsing history leaves room for keyboard and paint events.
 const HISTORY_REPLAY_WRITE_BYTES = 16 * 1024;

@@ -47,8 +47,9 @@ const RAW_EVICT_LOW_WATER_BYTES = Math.floor(MAX_RAW_BYTES * 0.9);
 // Cap on raw bytes returned by getRecentEvents() (initial subscribe / route
 // replay). Kept small so opening a tab on a large session is fast — over a
 // remote tunnel the transfer of this blob dominates open latency. Older
-// history is fetched on demand via history:load.
-const INITIAL_RAW_REPLAY_BYTES = 256 * 1024; // 256KB
+// history is fetched on demand via history:load. 1MB gives a fresh tab a few
+// thousand lines to scroll before the first history load interrupts reading.
+const INITIAL_RAW_REPLAY_BYTES = 1024 * 1024; // 1MB
 // Target size for the coalesced chunks getRawHistorySnapshot() returns. A busy
 // session accumulates 100k+ tiny raw events (a redrawing statusline emits
 // dozens/sec); shipping them one-per-array element makes the history:snapshot

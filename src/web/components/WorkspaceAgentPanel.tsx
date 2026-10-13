@@ -23,9 +23,29 @@ function statusLabel(status: string): string {
 // needing attention stay on top, matching the green segment in workspace counts.
 type AgentSection = 'running' | 'done' | 'idle';
 
-function agentSection(session: SessionSummary): AgentSection {
+// Opening a finished agent acknowledges it (done -> idle) at once. Keep it under
+// Done for a while afterwards so it can be revisited without hunting through
+// Idle, which also only shows the selected workspace.
+const ACKED_DONE_LINGER_MS = 60 * 60 * 1000;
+const ACKED_DONE_STORAGE_KEY = 'swarmie.ackedDoneAt';
+
+function loadAckedDoneAt(): Record<string, number> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ACKED_DONE_STORAGE_KEY) ?? '{}') as unknown;
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, number> : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveAckedDoneAt(value: Record<string, number>): void {
+  try { localStorage.setItem(ACKED_DONE_STORAGE_KEY, JSON.stringify(value)); } catch { /* ignore */ }
+}
+
+function agentSection(session: SessionSummary, ackedDoneAt: number | undefined, now: number): AgentSection {
   const group = agentStateGroup(session.status);
   if (group === 'working' || group === 'blocked') return 'running';
+  if (group === 'idle' && ackedDoneAt !== undefined && now - ackedDoneAt < ACKED_DONE_LINGER_MS) return 'done';
   return group;
 }
 
@@ -58,6 +78,8 @@ export function WorkspaceAgentPanel() {
   const creatingRef = useRef(false);
   const [createError, setCreateError] = useState('');
   const toggleWorkspacePanel = useUIStore((state) => state.toggleWorkspacePanel);
+  const [ackedDoneAt, setAckedDoneAt] = useState<Record<string, number>>(loadAckedDoneAt);
+  const prevStatusRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -84,6 +106,34 @@ export function WorkspaceAgentPanel() {
     () => sessions.filter((session) => !archivedIds.includes(session.id)),
     [archivedIds, sessions],
   );
+
+  // Stamp done -> idle transitions; drop stamps once the agent works again or
+  // the linger has expired. Missing sessions just expire: the list is empty
+  // while a reload reconnects, which must not wipe the stamps.
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    const current: Record<string, string> = {};
+    const at = Date.now();
+    let next: Record<string, number> | null = null;
+    const edit = () => (next ??= { ...ackedDoneAt });
+    for (const session of activeSessions) {
+      current[session.id] = session.status;
+      const group = agentStateGroup(session.status);
+      if (prev[session.id] !== undefined && agentStateGroup(prev[session.id]) === 'done' && group === 'idle') {
+        edit()[session.id] = at;
+      } else if (group !== 'idle' && ackedDoneAt[session.id] !== undefined) {
+        delete edit()[session.id];
+      }
+    }
+    for (const [id, stamp] of Object.entries(ackedDoneAt)) {
+      if (at - stamp >= ACKED_DONE_LINGER_MS) delete edit()[id];
+    }
+    prevStatusRef.current = current;
+    if (next) {
+      setAckedDoneAt(next);
+      saveAckedDoneAt(next);
+    }
+  }, [activeSessions, ackedDoneAt]);
   const workspaces = useMemo(() => {
     const groups = new Map<string, SessionSummary[]>();
     for (const session of activeSessions) {
@@ -106,21 +156,20 @@ export function WorkspaceAgentPanel() {
       setTagFilter([selectedWorkspace]);
     }
   }, [rawWorkspace, selectedWorkspace, setTagFilter]);
-  // Running and Done span every workspace so live and finished agents are never
-  // hidden behind the workspace selection; Idle follows the selected workspace.
+  // The agent list is a global status board: every section spans all
+  // workspaces, independent of which tab group is selected above.
   const agentSections = useMemo(() => {
     const byPriority = (a: SessionSummary, b: SessionSummary) =>
       agentStatePriority(a.status) - agentStatePriority(b.status) || b.startTime - a.startTime;
-    const inSection = (section: AgentSection, crossWorkspace: boolean) => activeSessions
-      .filter((session) => agentSection(session) === section
-        && (crossWorkspace || !selectedWorkspace || sessionWorkspaceKey(session, activeSessions) === selectedWorkspace))
+    const inSection = (section: AgentSection) => activeSessions
+      .filter((session) => agentSection(session, ackedDoneAt[session.id], now) === section)
       .sort(byPriority);
     return [
-      { key: 'running', label: 'Running', agents: inSection('running', true) },
-      { key: 'done', label: 'Done', agents: inSection('done', true) },
-      { key: 'idle', label: 'Idle', agents: inSection('idle', false) },
+      { key: 'running', label: 'Running', agents: inSection('running') },
+      { key: 'done', label: 'Done', agents: inSection('done') },
+      { key: 'idle', label: 'Idle', agents: inSection('idle') },
     ];
-  }, [activeSessions, selectedWorkspace]);
+  }, [activeSessions, ackedDoneAt, now]);
   const visibleAgents = useMemo(() => agentSections.flatMap((section) => section.agents), [agentSections]);
   const workspaceSummary = useMemo(() => countAgentStates(visibleAgents), [visibleAgents]);
 
@@ -129,7 +178,7 @@ export function WorkspaceAgentPanel() {
   };
 
   const openAgent = (session: SessionSummary) => {
-    // Running/Done list agents from every workspace, but Dockview only shows
+    // The list spans every workspace, but Dockview only shows
     // tabs of the selected one; follow the agent into its workspace so its
     // tab actually becomes visible and active.
     const agentWorkspace = sessionWorkspaceKey(session, activeSessions);
@@ -255,7 +304,7 @@ export function WorkspaceAgentPanel() {
       </div>
 
       <div className="workspace-agents-heading">
-        <span>{selectedWorkspace ? workspaces.find(([key]) => key === selectedWorkspace)?.[2] ?? 'Workspace' : 'All agents'}</span>
+        <span>All agents</span>
         <span>{visibleAgents.length}</span>
       </div>
       <div className="workspace-state-summary" aria-label="Workspace agent state summary">
@@ -300,7 +349,7 @@ export function WorkspaceAgentPanel() {
             ))}
           </section>
         ))}
-        {visibleAgents.length === 0 && <div className="workspace-agent-empty">No agents in this workspace</div>}
+        {visibleAgents.length === 0 && <div className="workspace-agent-empty">No agents</div>}
       </div>
       <div
         className={`workspace-panel-resizer ${resizing ? 'active' : ''}`}
