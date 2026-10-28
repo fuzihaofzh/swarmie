@@ -44,6 +44,7 @@ import {
   resolveTerminalScrollAnchor,
 } from '../terminalScrollAnchor';
 import { getTerminalSize, subscribeTerminalSize } from '../terminalSize';
+import { resizeTerminalPreservingScroll } from '../terminalResize';
 import { TerminalFrameBuffer } from '../terminalFrames';
 import type { ClipboardImagePaste } from '../hooks/useTerminalWebSocket';
 import { useTouchSelection } from '../hooks/useTouchSelection';
@@ -74,7 +75,9 @@ const MIN_TERMINAL_WRITE_BYTES_PER_FRAME = 4 * 1024;
 // ring — that is the most history a fresh replay could ever produce anyway, so
 // dropping older queued bytes loses nothing the backend can still show.
 const MAX_PENDING_WRITE_BYTES = 16 * 1024 * 1024;
-// How many lines of local scrollback each terminal retains. The server owns the
+// Baseline local scrollback capacity. Resize temporarily expands it to retain
+// existing content when a narrower grid creates more wrapped rows.
+// The server owns the
 // deep history (16MB raw ring), but the client cap is what actually decides how
 // far back the user can scroll WITHOUT a round-trip — and, because every history
 // render keeps only the last N lines, it's also the ceiling on what "Load
@@ -228,6 +231,22 @@ function fitSharedGrid(term: Terminal, available: { cols: number; rows: number }
   }
 }
 
+function resizeGrid(term: Terminal, cols: number, rows: number, following: boolean): void {
+  if (term.cols === cols && term.rows === rows) return;
+  resizeTerminalPreservingScroll(term, cols, rows, following, TERMINAL_SCROLLBACK_LINES);
+  // Wider rows shrink scrollHeight, so the browser clamps the old scrollTop
+  // and queues a native scroll event. Align it now, before that event can
+  // overwrite the restored buffer position (xterm otherwise waits one frame).
+  const viewport = term.element?.querySelector<HTMLElement>('.xterm-viewport');
+  const screen = term.element?.querySelector<HTMLElement>('.xterm-screen');
+  if (viewport && screen) {
+    // clientHeight rounds fractional CSS pixels at non-integer device scales;
+    // that small error becomes many rows deep into a long scrollback.
+    const height = parseFloat(screen.style.height) || screen.clientHeight;
+    viewport.scrollTop = term.buffer.active.viewportY * height / term.rows;
+  }
+}
+
 export function TerminalView({
   sessionId,
   tool,
@@ -288,6 +307,7 @@ export function TerminalView({
    *  Rendering continues; followingRef controls only automatic scrolling. */
   const [hasNewOutput, setHasNewOutput] = useState(false);
   const followingRef = useRef(true);
+  const resizingRef = useRef(false);
   const historyLoadingRef = useRef(false);
   const historyLoadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyLoadAttemptsRef = useRef(0);
@@ -329,7 +349,12 @@ export function TerminalView({
       onResize?.(desired.cols, desired.rows);
     }
     const grid = getTerminalSize(sessionId) ?? desired;
-    term.resize(grid.cols, grid.rows);
+    resizingRef.current = true;
+    try {
+      resizeGrid(term, grid.cols, grid.rows, followingRef.current);
+    } finally {
+      resizingRef.current = false;
+    }
     fitSharedGrid(term, desired);
   }, [onResize, sessionId]);
 
@@ -847,10 +872,13 @@ export function TerminalView({
     // output reaches the writer. A larger viewer is letterboxed instead of
     // interpreting the same cursor controls against a different grid.
     return subscribeTerminalSize(sessionId, (size) => {
-      const follow = followingRef.current;
-      term.resize(size.cols, size.rows);
+      resizingRef.current = true;
+      try {
+        resizeGrid(term, size.cols, size.rows, followingRef.current);
+      } finally {
+        resizingRef.current = false;
+      }
       if (lastReportedSizeRef.current) fitSharedGrid(term, lastReportedSizeRef.current);
-      if (follow) term.scrollToBottom();
       term.refresh(0, term.rows - 1);
     });
   }, [sessionId, termReady]);
@@ -1499,7 +1527,7 @@ export function TerminalView({
     // retains the reader's viewport instead of scrolling to the live edge.
     const updateFollowing = (userInitiated: boolean) => {
       // reset()/replay transiently puts the viewport at the bottom.
-      if (historyRebuildingRef.current) return;
+      if (historyRebuildingRef.current || resizingRef.current) return;
       const b = term.buffer.active;
       const atBottom = b.viewportY >= b.baseY;
       setScrolledBack(!atBottom);
@@ -1976,7 +2004,7 @@ export function TerminalView({
           // offering "load earlier". Without this, each further load re-renders an
           // ever-larger [start, END] window whose oldest lines are thrown away —
           // the "scrolling up keeps getting slower" problem.
-          if (term.buffer.active.baseY >= TERMINAL_SCROLLBACK_LINES) {
+          if (term.buffer.active.baseY >= (term.options.scrollback ?? TERMINAL_SCROLLBACK_LINES)) {
             markReachedEarliest(sessionId);
           }
           // Less than a screen of new lines means this page was mostly redraw
@@ -2089,6 +2117,7 @@ export function TerminalView({
   return (
     <div
       className={`terminal-view${isActive ? ' terminal-view-active' : ''}`}
+      data-terminal-session={sessionId}
       style={{ display: 'flex', flexDirection: 'column', flex: 1, width: '100%', height: '100%', minHeight: 0 }}
     >
     <div ref={wrapperRef} style={{ flex: 1, minHeight: 0, position: 'relative', padding: '4px' }}>

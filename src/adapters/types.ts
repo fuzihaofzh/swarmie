@@ -99,6 +99,7 @@ export interface StatusChangeData {
   to: SessionStatus;
   /** Monotonic sequence for user-visible lifecycle transitions. */
   stateChangeSeq?: number;
+  statusChangedAt?: number;
   seen?: boolean;
 }
 

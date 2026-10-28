@@ -249,6 +249,7 @@ export class Session extends EventEmitter {
   private _nextWorkCycleIsUserWork = false;
   private _acknowledgingDone = false;
   private _stateChangeSeq = 0;
+  private _statusChangedAt = Date.now();
 
   constructor(id: string, name: string, adapter: BaseAdapter, opts?: { cwd?: string; hostname?: string }) {
     super();
@@ -275,6 +276,7 @@ export class Session extends EventEmitter {
       status: this._publishedStatus,
       seen: this._seen,
       stateChangeSeq: this._stateChangeSeq,
+      statusChangedAt: this._statusChangedAt,
       startTime: this.adapter.startTime,
       endTime: this._endTime,
       cwd: this._cwd,
@@ -293,6 +295,7 @@ export class Session extends EventEmitter {
       status: this._publishedStatus,
       seen: this._seen,
       stateChangeSeq: this._stateChangeSeq,
+      statusChangedAt: this._statusChangedAt,
       startTime: this.adapter.startTime,
       endTime: this._endTime,
       displayName: this.adapter.info.displayName,
@@ -649,6 +652,7 @@ export class Session extends EventEmitter {
 
       if (next !== previous) {
         this._stateChangeSeq++;
+        this._statusChangedAt = Date.now();
         if (next === 'waiting_input' || next === 'done' || next === 'completed' || next === 'error') {
           this._seen = false;
         }
@@ -661,6 +665,7 @@ export class Session extends EventEmitter {
           from: previous,
           to: next,
           stateChangeSeq: this._stateChangeSeq,
+          statusChangedAt: this._statusChangedAt,
           seen: this._seen,
         },
       };

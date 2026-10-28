@@ -190,14 +190,17 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
   }, [isActive, subscribe, unsubscribe]);
 
   // The PTY follows whichever device was used last. Typing claims it on the
-  // server; a tap/click or window focus claims it too, so clicking into the
-  // desktop after using the phone brings the desktop size back immediately.
+  // server; reading by wheel/touch or a tap/click claims it too, so returning
+  // to desktop history after using the phone restores the desktop grid.
   // Only a short, still press counts: claiming resizes the PTY and makes the
   // agent redraw, which would wipe a long-press or drag text selection that
   // is still in progress.
   useEffect(() => {
     let lastClaim = 0;
     let press: { x: number; y: number; t: number } | null = null;
+    let touch: { x: number; y: number; t: number } | null = null;
+    const inTerminal = (event: Event) => event.target instanceof Element
+      && event.target.closest('[data-terminal-session]')?.getAttribute('data-terminal-session') === sessionId;
     const claim = () => {
       if (!activeRef.current || !subscribedRef.current || document.visibilityState === 'hidden') return;
       const now = Date.now();
@@ -205,8 +208,32 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
       lastClaim = now;
       send({ type: 'claim:size', sessionId });
     };
+    const onFocus = () => {
+      // Tiled panes are all subscribed. Only the selected pane should claim
+      // its size on window focus; pointer/scroll events target their own pane.
+      if (useSessionStore.getState().activeSessionId === sessionId) claim();
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (inTerminal(e) && !e.ctrlKey && !e.shiftKey && e.deltaY !== 0) claim();
+    };
+    const onTouchStart = (e: TouchEvent) => {
+      const point = e.touches.length === 1 && inTerminal(e)
+        && e.target instanceof Element && e.target.closest('.xterm') ? e.touches[0] : null;
+      touch = point ? { x: point.clientX, y: point.clientY, t: Date.now() } : null;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const point = e.touches.length === 1 ? e.touches[0] : null;
+      if (!touch || !point) return;
+      // A long press belongs to text selection, including subsequent dragging.
+      if (Date.now() - touch.t > 400) { touch = null; return; }
+      if (Math.abs(point.clientY - touch.y) > 10 && Math.abs(point.clientY - touch.y) > Math.abs(point.clientX - touch.x)) {
+        claim();
+        touch = null;
+      }
+    };
+    const onTouchEnd = () => { touch = null; };
     const onPointerDown = (e: PointerEvent) => {
-      press = e.isPrimary ? { x: e.clientX, y: e.clientY, t: Date.now() } : null;
+      press = e.isPrimary && inTerminal(e) ? { x: e.clientX, y: e.clientY, t: Date.now() } : null;
     };
     const onPointerUp = (e: PointerEvent) => {
       const start = press;
@@ -217,12 +244,22 @@ export function useTerminalWebSocket(sessionId: string, isActive: boolean) {
       claim();
     };
     const onPointerCancel = () => { press = null; };
-    window.addEventListener('focus', claim);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('wheel', onWheel, { capture: true, passive: true });
+    document.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+    document.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
+    document.addEventListener('touchend', onTouchEnd, { capture: true, passive: true });
+    document.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true });
     document.addEventListener('pointerdown', onPointerDown, { capture: true, passive: true });
     document.addEventListener('pointerup', onPointerUp, { capture: true, passive: true });
     document.addEventListener('pointercancel', onPointerCancel, { capture: true, passive: true });
     return () => {
-      window.removeEventListener('focus', claim);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('wheel', onWheel, true);
+      document.removeEventListener('touchstart', onTouchStart, true);
+      document.removeEventListener('touchmove', onTouchMove, true);
+      document.removeEventListener('touchend', onTouchEnd, true);
+      document.removeEventListener('touchcancel', onTouchEnd, true);
       document.removeEventListener('pointerdown', onPointerDown, { capture: true });
       document.removeEventListener('pointerup', onPointerUp, { capture: true });
       document.removeEventListener('pointercancel', onPointerCancel, { capture: true });

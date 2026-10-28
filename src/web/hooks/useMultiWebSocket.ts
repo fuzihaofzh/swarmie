@@ -43,6 +43,8 @@ export function useMultiWebSocket() {
     let lastSeenKey = '';
     const markActiveSeen = (force = false) => {
       if (document.hidden) return;
+      const ui = useUIStore.getState();
+      if (ui.showNewSession || ui.settingsOpen) return;
       const state = useSessionStore.getState();
       const session = state.sessions.find((item) => item.id === state.activeSessionId);
       if (!session || session.seen !== false) return;
@@ -53,6 +55,11 @@ export function useMultiWebSocket() {
     };
     const unsubscribeSessions = useSessionStore.subscribe((state, previous) => {
       if (state.activeSessionId !== previous.activeSessionId || state.sessions !== previous.sessions) {
+        markActiveSeen();
+      }
+    });
+    const unsubscribeUI = useUIStore.subscribe((state, previous) => {
+      if (state.showNewSession !== previous.showNewSession || state.settingsOpen !== previous.settingsOpen) {
         markActiveSeen();
       }
     });
@@ -73,6 +80,7 @@ export function useMultiWebSocket() {
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
       unsubscribeSessions();
+      unsubscribeUI();
       registerAutoApproveSync(null);
       registerSessionSettingsSync(null);
       registerAutoCompactMinutesSync(null);

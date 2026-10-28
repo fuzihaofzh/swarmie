@@ -148,9 +148,9 @@ describe('activity detection', () => {
       if (event.type === 'cwd:change') cwdChanges.push(event.data as { cwd: string; hostname?: string });
     });
 
-    adapter.feedOsc('\x1b]0;maple@cuhkling:~\x07');
+    adapter.feedOsc('\x1b]0;maple@remote-worker.invalid:~\x07');
 
-    expect(cwdChanges.at(-1)?.hostname).toBe('cuhkling');
+    expect(cwdChanges.at(-1)?.hostname).toBe('remote-worker.invalid');
   });
 
   it('recognizes an SSH target from submitted input when the remote shell emits no metadata', () => {
@@ -160,9 +160,9 @@ describe('activity detection', () => {
       if (event.type === 'cwd:change') cwdChanges.push(event.data as { cwd: string; hostname?: string });
     });
 
-    adapter.write('ssh maple@cuhkling\r');
+    adapter.write('ssh maple@remote-worker.invalid\r');
 
-    expect(cwdChanges.at(-1)?.hostname).toBe('cuhkling');
+    expect(cwdChanges.at(-1)?.hostname).toBe('remote-worker.invalid');
   });
 
   it('fingerprints changed approval cards but ignores the selection cursor', () => {
@@ -315,6 +315,34 @@ describe('activity detection', () => {
     adapter.feed('startup complete');
 
     expect(adapter.status).toBe('idle');
+  });
+
+  it('does not treat tmux clock ticks at a shell prompt as new agent work', () => {
+    vi.useFakeTimers();
+    try {
+      // A shell adapter can still carry the agent identity detected in a
+      // different tmux window. Unknown screen text is not a ready agent prompt.
+      class AttachedAgentAdapter extends AgentMovementDetectionAdapter {
+        protected shouldSettleVisibleOutputToIdle(text: string): boolean {
+          return matchesAgentIdleScreen(text);
+        }
+      }
+      const adapter = new AttachedAgentAdapter({ sessionId: 'tmux-clock', toolArgs: [] });
+      adapter.start();
+      adapter.feed('maple@worker ~/project\r\n>\x1b[24;1Hserver 1:htop 2:zsh 3:claude- 22:00');
+      vi.advanceTimersByTime(32_000);
+      expect(adapter.status).toBe('idle');
+      for (let minute = 1; minute <= 3; minute++) {
+        vi.advanceTimersByTime(60_000);
+        adapter.feed(`\x1b[24;1H\x1b[Kserver 1:htop 2:zsh 3:claude- 22:0${minute}`);
+        expect(adapter.status).toBe('idle');
+      }
+      adapter.feed('\x1b[3;1HWorking (1s · esc to interrupt)');
+      expect(adapter.status).toBe('running');
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it('keeps direct command output running without submitted user input', () => {

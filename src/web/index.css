@@ -355,6 +355,22 @@ body,
 .workspace-agent-section.done .workspace-agent-section-heading { color: var(--accent, #58a6ff); }
 .workspace-agent-section.idle .workspace-agent-section-heading { color: var(--text-secondary, #8b949e); }
 
+.workspace-long-idle-toggle {
+  width: 100%;
+  padding: 8px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.workspace-long-idle-toggle:hover { background: var(--selected-bg); color: var(--fg); }
+.workspace-long-idle-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 .workspace-agent-list {
   min-height: 0;
   overflow-y: auto;

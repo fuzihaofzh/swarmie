@@ -25,6 +25,35 @@ function createMockAdapter(sessionId: string, tool = 'claude') {
 }
 
 describe('Session', () => {
+  it('keeps unread Done indefinitely and starts the idle clock only when seen', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-24T00:00:00Z'));
+    const adapter = createMockAdapter('idle-clock');
+    const session = new Session('idle-clock', 'idle clock', adapter);
+    const transition = (to: 'idle' | 'running') => adapter.pushEvent({
+      type: 'status:change', sessionId: session.id, timestamp: Date.now(), data: { from: adapter.status, to },
+    });
+    try {
+      session.start();
+      transition('idle');
+      adapter.pushEvent({ type: 'user:input', sessionId: session.id, timestamp: Date.now(), data: { text: 'work' } });
+      transition('running');
+      transition('idle');
+      expect(session.summary).toMatchObject({ status: 'done', seen: false });
+      const completedAt = session.summary.statusChangedAt;
+      vi.advanceTimersByTime(2 * 60 * 60 * 1000);
+      transition('idle');
+      expect(session.summary).toMatchObject({ status: 'done', seen: false, statusChangedAt: completedAt });
+      session.markSeen();
+      const acknowledgedAt = Date.now();
+      expect(session.summary).toMatchObject({ status: 'idle', seen: true, statusChangedAt: acknowledgedAt });
+      vi.advanceTimersByTime(10 * 60 * 1000);
+      transition('idle');
+      expect(session.summary.statusChangedAt).toBe(acknowledgedAt);
+      expect(session.info.statusChangedAt).toBe(acknowledgedAt);
+    } finally { session.kill(); vi.useRealTimers(); }
+  });
+
   it('detects IP-like hostnames for default tag fallback', () => {
     expect(isAddressLikeHostname('192.168.124.20')).toBe(true);
     expect(isAddressLikeHostname('192')).toBe(true);

@@ -41,7 +41,7 @@ export abstract class SimplePtyAdapter extends BaseAdapter {
       cwd: this.cwd,
       env: buildSpawnEnv(),
     });
-    this.startCwdPolling(this.ptyProcess.pid);
+    this.startCwdTracking(this.ptyProcess.pid);
 
     this.ptyProcess.onData((data: string) => {
       this.handleActivityDetection(data);

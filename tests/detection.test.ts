@@ -240,6 +240,12 @@ describe('agent state detector', () => {
     expect(idle.result.visibleIdle).toBe(true);
   });
 
+  it('keeps Claude working when its input box remains visible below the live work line', () => {
+    const screen = '✳ Working… (12s · esc to interrupt)\n────────────\n❯ \n────────────\n? for shortcuts';
+    const detection = detector.detect('claude', input(screen, { oscTitle: '✳ explore' }));
+    expect(detection.result).toMatchObject({ state: 'working', visibleWorking: true });
+  });
+
   it('uses OSC title as an independent Codex signal', () => {
     const blocked = detector.detect('codex', input('', { oscTitle: 'Action Required' }));
     expect(blocked.result.state).toBe('blocked');
@@ -514,6 +520,25 @@ describe('adapter detection integration', () => {
       if (previousMode === undefined) delete process.env.SWARMIE_DETECTION_MODE;
       else process.env.SWARMIE_DETECTION_MODE = previousMode;
     }
+  });
+
+  it('does not oscillate between working and idle on cursor-only Claude redraws', () => {
+    const adapter = new IntegratedDetectionAdapter({ sessionId: 'working-composer', toolArgs: [] });
+    adapter.start();
+    const transitions: string[] = [];
+    adapter.on('event', (event) => {
+      if (event.type === 'status:change') transitions.push(event.data.to);
+    });
+    for (let seconds = 1; seconds <= 10; seconds++) {
+      adapter.feed(`\x1b[2J\x1b[H✳ Working… (${seconds}s · esc to interrupt)\r\n────────────\r\n❯ \r\n────────────\r\n? for shortcuts`);
+      expect(adapter.status).toBe('running');
+      adapter.feed('\x1b[?25l');
+      expect(adapter.status).toBe('running');
+    }
+    expect(transitions).not.toContain('idle');
+    adapter.feed('\x1b[2J\x1b[H────────────\r\n❯ \r\n────────────\r\n? for shortcuts');
+    adapter.feed('\x1b[?25h');
+    expect(adapter.status).toBe('idle');
   });
 
   it('preserves the published status for skip-state rules in active mode', () => {

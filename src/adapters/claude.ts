@@ -60,7 +60,7 @@ export class ClaudeAdapter extends BaseAdapter {
       // strip CLAUDECODE to avoid the nested-detection guard.
       env: buildSpawnEnv(['CLAUDECODE']),
     });
-    this.startCwdPolling(this.ptyProcess.pid);
+    this.startCwdTracking(this.ptyProcess.pid);
 
     this.ptyProcess.onData((data: string) => {
       if (this.structuredMode) {

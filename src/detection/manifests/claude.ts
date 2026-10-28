@@ -2,7 +2,7 @@ import type { AgentStateManifest } from '../types.js';
 
 export const claudeManifest: AgentStateManifest = {
   id: 'claude',
-  version: 4,
+  version: 5,
   aliases: ['claude-code'],
   rules: [
     {
@@ -95,7 +95,9 @@ export const claudeManifest: AgentStateManifest = {
     {
       id: 'ready-prompt-box',
       state: 'idle',
-      priority: 950,
+      // Claude keeps its composer visible while working. The live work line
+      // and approval controls must win over the mere presence of an input box.
+      priority: 650,
       region: { kind: 'prompt_box_body' },
       lineRegex: ['^\\s*[│┃]?\\s*❯(?:\\s|$)(?!\\s*\\d+\\.)'],
       not: [

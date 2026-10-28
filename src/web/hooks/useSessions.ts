@@ -3,6 +3,7 @@ import { useUIStore } from './useUI';
 import { playBellSound } from '../bellSound';
 import { saveRecentDir, setLocalHostname } from '../recentDirs';
 import { noteSessionActivated } from '../sessionRecency';
+import { rememberAgentStatus } from '../agentIdle';
 
 export interface SessionSummary {
   id: string;
@@ -11,6 +12,7 @@ export interface SessionSummary {
   status: string;
   seen?: boolean;
   stateChangeSeq?: number;
+  statusChangedAt?: number;
   startTime: number;
   endTime?: number;
   displayName: string;
@@ -56,6 +58,7 @@ interface SessionState {
   addEvent: (event: NormalizedEvent) => void;
   addEventBatch: (sessionId: string, events: NormalizedEvent[]) => void;
   updateSessionStatus: (sessionId: string, status: string) => void;
+  _restoreIdleTime: (expected: SessionSummary, since: number) => void;
   setSessionAutoApprove: (sessionId: string, value: boolean) => void;
   setSessionAutoCompact: (sessionId: string, value: boolean) => void;
   setSessionRepeat: (sessionId: string, patch: RepeatSettingsPatch) => void;
@@ -198,6 +201,7 @@ function activeSessionIdFor(
 }
 
 function applySavedSettings(session: SessionSummary, saved: SavedSessionSettings): SessionSummary {
+  session = rememberAgentStatus(session);
   const patch = saved[session.id] ?? {};
   return {
     ...session,
@@ -334,18 +338,19 @@ export const useSessionStore = create<SessionState>((set) => ({
 
       let sessions = state.sessions;
       if (event.type === 'status:change') {
-        const statusData = event.data as { to: string; seen?: boolean; stateChangeSeq?: number };
+        const statusData = event.data as { to: string; seen?: boolean; stateChangeSeq?: number; statusChangedAt?: number };
         const newStatus = statusData.to;
         sessions = sessions.map((s) =>
           s.id === event.sessionId
-            ? {
+            ? rememberAgentStatus({
                 ...s,
                 status: newStatus,
+                statusChangedAt: statusData.statusChangedAt ?? (s.status === newStatus ? s.statusChangedAt : event.timestamp),
                 ...(statusData.seen !== undefined ? { seen: statusData.seen } : {}),
                 ...(statusData.stateChangeSeq !== undefined
                   ? { stateChangeSeq: statusData.stateChangeSeq }
                   : {}),
-              }
+              })
             : s,
         );
         if (newStatus === 'waiting_input') {
@@ -398,18 +403,19 @@ export const useSessionStore = create<SessionState>((set) => ({
       let sessions = state.sessions;
       const statusEvt = newEvents.findLast((e) => e.type === 'status:change');
       if (statusEvt) {
-        const statusData = statusEvt.data as { to: string; seen?: boolean; stateChangeSeq?: number };
+        const statusData = statusEvt.data as { to: string; seen?: boolean; stateChangeSeq?: number; statusChangedAt?: number };
         const newStatus = statusData.to;
         sessions = sessions.map((s) =>
           s.id === sessionId
-            ? {
+            ? rememberAgentStatus({
                 ...s,
                 status: newStatus,
+                statusChangedAt: statusData.statusChangedAt ?? (s.status === newStatus ? s.statusChangedAt : statusEvt.timestamp),
                 ...(statusData.seen !== undefined ? { seen: statusData.seen } : {}),
                 ...(statusData.stateChangeSeq !== undefined
                   ? { stateChangeSeq: statusData.stateChangeSeq }
                   : {}),
-              }
+              })
             : s,
         );
       }
@@ -444,7 +450,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   updateSessionStatus: (sessionId, status) =>
     set((state) => ({
       sessions: state.sessions.map((s) =>
-        s.id === sessionId ? { ...s, status } : s,
+        s.id === sessionId ? rememberAgentStatus({ ...s, status, statusChangedAt: s.status === status ? s.statusChangedAt : Date.now() }) : s,
       ),
     })),
 
@@ -504,6 +510,16 @@ export const useSessionStore = create<SessionState>((set) => ({
       return { sessions };
     });
   },
+
+  _restoreIdleTime: (expected, since) =>
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === expected.id && session.serverUrl === expected.serverUrl
+        && session.status === 'idle' && session.stateChangeSeq === expected.stateChangeSeq
+        && session.statusChangedAt === expected.statusChangedAt
+          ? rememberAgentStatus({ ...session, statusChangedAt: since }) : session,
+      ),
+    })),
 
   _setAutoApproveLocal: (sessionId, value) =>
     set((state) => {

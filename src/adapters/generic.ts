@@ -129,7 +129,7 @@ export class GenericAdapter extends BaseAdapter {
       cwd: this.cwd,
       env: buildSpawnEnv(),
     });
-    this.startCwdPolling(this.ptyProcess.pid);
+    this.startCwdTracking(this.ptyProcess.pid);
 
     this.ptyProcess.onData((data: string) => this.handlePtyData(data));
 
@@ -300,12 +300,22 @@ export class GenericAdapter extends BaseAdapter {
       return;
     }
 
+    // Cheap gate first: node-pty reads the terminal's foreground group leader
+    // with tcgetpgrp + sysctl, no spawn. While an agent is in the foreground it
+    // never carries the shell's name, so only confirm with `ps` when it does —
+    // the name alone cannot tell the shell from a wrapper script in that shell.
+    try {
+      if (shellBasename(this.ptyProcess.process) !== shellBasename(this.command)) return;
+    } catch {
+      // Fall through to the authoritative process-group check.
+    }
+
     const detectedTool = this._detectedTool;
     const shellPid = this.ptyProcess.pid;
     this._shellReturnProbeInFlight = true;
     try {
       const { stdout } = await execFileAsync(
-        'ps',
+        '/bin/ps',
         ['-o', 'pgid=', '-o', 'tpgid=', '-p', String(shellPid)],
         { timeout: 1_000 },
       );

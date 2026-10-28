@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mock = vi.hoisted(() => ({
   inspect: vi.fn(),
+  foreground: 'zsh',
   data: (_data: string) => {},
   exit: (_event: { exitCode: number }) => {},
 }));
@@ -17,6 +18,7 @@ vi.mock('node-pty', () => ({
     onData: (handler: typeof mock.data) => { mock.data = handler; },
     onExit: (handler: typeof mock.exit) => { mock.exit = handler; },
     write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+    get process() { return mock.foreground; },
   }),
 }));
 import { GenericAdapter } from '../src/adapters/generic.js';
@@ -35,6 +37,7 @@ describe('agent exit without shell integration', () => {
     Object.defineProperty(process, 'platform', { value: 'linux' });
     vi.useFakeTimers();
     mock.inspect.mockReset();
+    mock.foreground = 'zsh';
     mock.inspect.mockResolvedValue({ stdout: '100 200\n' });
   });
   afterEach(() => {
@@ -62,6 +65,8 @@ describe('agent exit without shell integration', () => {
   it('does not treat exit-like tool output as an exit while the agent owns the terminal', async () => {
     const adapter = launch();
     mock.data('\r\nTo continue this session, run codex resume\r\n');
+    // A wrapper script run by the same shell shares its name; only the
+    // process-group check can tell them apart.
     await vi.advanceTimersByTimeAsync(4_000);
     expect(adapter.info.name).toBe('codex');
     expect(adapter.status).toBe('running');
@@ -75,5 +80,13 @@ describe('agent exit without shell integration', () => {
     resolve({ stdout: '100 100\n' });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(adapter.status).toBe('completed');
+  });
+
+  it('does not spawn ps while an agent owns the terminal', async () => {
+    mock.foreground = 'node';
+    const adapter = launch();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(mock.inspect).not.toHaveBeenCalled();
+    expect(adapter.info.name).toBe('codex');
   });
 });

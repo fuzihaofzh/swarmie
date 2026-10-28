@@ -2,6 +2,7 @@ import { useSessionStore, type SessionSummary, type NormalizedEvent, type Sessio
 import { clearTerminalBuffer } from '../terminalBus';
 import { useServerStore, LOCAL_SERVER } from './useServers';
 import { useUIStore } from './useUI';
+import { idleTimeFromHistory } from '../agentIdle';
 
 type WSMessage = {
   type: string;
@@ -31,6 +32,7 @@ export class ServerConnection {
   private pendingSessionSettings = new Map<string, SessionSettingsPatch>();
   private pendingAutoCompactMinutes: number | null = null;
   private pendingSeenSessions = new Set<string>();
+  private idleHistoryRequests = new Set<string>();
   constructor(serverUrl: string, token?: string) {
     this.serverUrl = serverUrl;
     this.token = token;
@@ -152,8 +154,41 @@ export class ServerConnection {
         serverUrl: this.serverUrl,
       }));
       useSessionStore.getState().setServerSessions(this.serverUrl, sessions);
+      void this.restoreLegacyIdleTimes(sessions);
     } catch {
       // The websocket remains the live source; REST reconciliation is best effort.
+    }
+  }
+
+  private async restoreLegacyIdleTimes(sessions: SessionSummary[]): Promise<void> {
+    // Sequential requests keep legacy history downloads bounded. Claim all
+    // candidates up front so simultaneous REST/WS lists cannot duplicate them.
+    const candidates = sessions.flatMap((session) => {
+      if (session.status !== 'idle' || session.statusChangedAt !== undefined) return [];
+      const expected = useSessionStore.getState().sessions.find((s) =>
+        s.id === session.id && s.serverUrl === this.serverUrl && s.status === 'idle');
+      if (!expected) return [];
+      const key = `${session.id}:${session.stateChangeSeq ?? expected.statusChangedAt}`;
+      if (this.idleHistoryRequests.has(key)) return [];
+      this.idleHistoryRequests.add(key);
+      return [{ expected, key }];
+    });
+    for (const { expected, key } of candidates) {
+      if (this.disposed || this.shutdown) return;
+      try {
+        const res = await fetch(`${this.apiBase()}/api/sessions/${encodeURIComponent(expected.id)}`, {
+          headers: this.authHeaders(),
+        });
+        if (!res.ok) { this.idleHistoryRequests.delete(key); continue; }
+        const detail = await res.json() as SessionSummary & { recentEvents?: NormalizedEvent[] };
+        if (this.disposed || this.shutdown) return;
+        if (detail.id !== expected.id || detail.stateChangeSeq !== expected.stateChangeSeq) continue;
+        const since = idleTimeFromHistory(detail);
+        if (since !== undefined) useSessionStore.getState()._restoreIdleTime(expected, since);
+      } catch {
+        this.idleHistoryRequests.delete(key);
+        // Preserve the observation clock when legacy history is unavailable.
+      }
     }
   }
 
@@ -395,6 +430,7 @@ export class ServerConnection {
           serverUrl,
         }));
         store.setServerSessions(serverUrl, sessions);
+        void this.restoreLegacyIdleTimes(sessions);
         this.sendAutoCompactMinutes(useUIStore.getState().autoCompactMinutes);
         for (const session of useSessionStore.getState().sessions.filter((s) => s.serverUrl === serverUrl)) {
           this.sendSessionSettings(session.id, {

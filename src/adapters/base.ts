@@ -19,6 +19,7 @@ import { getSystemDisplayHostname, isLocalHostname } from '../session/host.js';
 import { chooseStateSignal, defaultAgentStateDetector, DetectionStabilizer } from '../detection/index.js';
 import { selectNumberedPromptCard } from '../detection/regions.js';
 import { normalizeCodexScreen } from '../detection/codex-screen.js';
+import { stripTmuxStatusLine } from '../detection/terminal-chrome.js';
 import type {
   AgentLifecycleState,
   DetectionExplanation,
@@ -28,6 +29,8 @@ import type {
 const execFileAsync = promisify(execFile);
 
 const COMMAND_IDLE_TIMEOUT_MS = 30_000;
+// Settle time before re-reading a PTY owner's cwd after a command boundary.
+const CWD_REFRESH_DELAY_MS = 300;
 const ACTIVITY_CHECK_INTERVAL_MS = 2_000;
 const USER_INPUT_ACTIVE_MS = 3_000;
 const SCREEN_MOVEMENT_REPEAT_WINDOW_MS = 10_000;
@@ -254,9 +257,13 @@ export abstract class BaseAdapter extends EventEmitter {
   private _commandSawVisibleWork = false;
   private _lastActivity = Date.now();
   private _lastScreenFrame = '';
+  private _lastSampleContent = '';
+  private _lastSampleSignals = '';
+  private _lastSampleHadTmuxFooter = false;
   private _lastScreenChangeAt = 0;
   private _repaintSuppressedUntil = 0;
-  private _cwdTimer: ReturnType<typeof setInterval> | null = null;
+  private _cwdTimer: ReturnType<typeof setTimeout> | null = null;
+  private _cwdPid: number | null = null;
   private _cwdOscTail = '';
   private _powerShellLocalPrompt = false;
   /** Headless terminal that mirrors the rendered screen. */
@@ -457,6 +464,7 @@ export abstract class BaseAdapter extends EventEmitter {
       this.stopCommandTracking();
       this.stopUserInputTracking();
       this.stopScreenMovementTimer();
+      if (newStatus === 'idle') this.scheduleCwdRefresh();
     } else if (isBusyStatus(newStatus) && !this._activityCheckInterval) {
       // Every route into a busy status arms the idle watchdog, not just
       // submitted commands — otherwise a session marked busy by a screen
@@ -503,13 +511,6 @@ export abstract class BaseAdapter extends EventEmitter {
     this._screen.write(chunk);
     if (PROF.profiling) PROF.mark('act.screenWrite', tScreen, chunk.length, this.sessionId);
 
-    // Any output is activity, including pure ANSI redraws — that's what keeps
-    // long-running work marked busy. This is not gated on commandExecuting:
-    // the idle sweep now watches every busy session, not just submitted
-    // commands, so a session streaming output must refresh its timer whether
-    // or not the user pressed Enter to start it.
-    this._lastActivity = Date.now();
-
     if (this._status === 'completed' || this._status === 'error') return;
 
     const now = Date.now();
@@ -544,6 +545,20 @@ export abstract class BaseAdapter extends EventEmitter {
     const tRead = PROF.profiling ? PROF.nowNs() : 0n;
     const screen = this.getDetectionRecentText();
     const viewport = this._screen.getViewportText();
+    const withoutFooter = stripTmuxStatusLine(viewport);
+    const hasTmuxFooter = withoutFooter !== viewport;
+    const content = normalizeScreenForMovement(withoutFooter).trimEnd();
+    const signals = JSON.stringify([this._oscTitle, this._oscProgress]);
+    const footerOnly = (hasTmuxFooter || this._lastSampleHadTmuxFooter)
+      && content === this._lastSampleContent && signals === this._lastSampleSignals;
+    this._lastSampleContent = content;
+    this._lastSampleSignals = signals;
+    this._lastSampleHadTmuxFooter = hasTmuxFooter;
+    // A tmux clock ticks even at an untouched shell prompt. It is not a new
+    // command or a reason to reset the activity timeout. Keep rendering those
+    // bytes normally, but do not feed them into the lifecycle classifier.
+    if (footerOnly) return;
+    this._lastActivity = Date.now();
     if (PROF.profiling) PROF.mark('act.getRecentText', tRead, screen.length, this.sessionId);
     const screenMoved = this.noteMeaningfulScreenMovement(viewport);
     const tRe = PROF.profiling ? PROF.nowNs() : 0n;
@@ -839,22 +854,38 @@ export abstract class BaseAdapter extends EventEmitter {
     return explanation;
   }
 
-  /** Start polling the cwd of a child process by PID */
-  protected startCwdPolling(pid: number): void {
-    this.stopCwdPolling();
-    this._cwdTimer = setInterval(() => this.pollCwd(pid), 5000);
+  /**
+   * Track the cwd of a child process by PID. The PTY owner only changes
+   * directory while running a command, so re-read it after a command is
+   * submitted and when the session settles idle rather than on a timer — on
+   * macOS every read spawns lsof, which adds up across many open sessions.
+   */
+  protected startCwdTracking(pid: number): void {
+    this.stopCwdTracking();
+    this._cwdPid = pid;
   }
 
-  protected stopCwdPolling(): void {
+  protected stopCwdTracking(): void {
     if (this._cwdTimer) {
-      clearInterval(this._cwdTimer);
+      clearTimeout(this._cwdTimer);
       this._cwdTimer = null;
     }
+    this._cwdPid = null;
+  }
+
+  private scheduleCwdRefresh(): void {
+    const pid = this._cwdPid;
+    if (pid === null || this._cwdTimer) return;
+    this._cwdTimer = setTimeout(() => {
+      this._cwdTimer = null;
+      void this.pollCwd(pid);
+    }, CWD_REFRESH_DELAY_MS);
+    (this._cwdTimer as { unref?: () => void }).unref?.();
   }
 
   private async pollCwd(pid: number): Promise<void> {
     // The PTY owner is the local shell, so its process cwd is authoritative
-    // only while the session is local. Keep polling after local OSC updates:
+    // only while the session is local. Keep reading it after local OSC updates:
     // it is the fallback for shells whose prompt integration disappears after
     // an interactive child exits. For SSH, remote OSC/title metadata remains
     // authoritative and the local shell cwd must not overwrite it.
@@ -867,7 +898,7 @@ export abstract class BaseAdapter extends EventEmitter {
       if (process.platform === 'linux') {
         resolvedCwd = await readlink(`/proc/${pid}/cwd`);
       } else if (process.platform === 'darwin') {
-        const { stdout } = await execFileAsync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 3000 });
+        const { stdout } = await execFileAsync('/usr/sbin/lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 3000 });
         const match = stdout.match(/\nn(.*)/);
         if (!match) return;
         resolvedCwd = match[1];
@@ -910,6 +941,7 @@ export abstract class BaseAdapter extends EventEmitter {
     }
 
     this.stopUserInputTracking();
+    this.scheduleCwdRefresh();
     this._commandExecuting = true;
     this._commandSawVisibleWork = false;
     this._lastActivity = Date.now();
@@ -925,7 +957,7 @@ export abstract class BaseAdapter extends EventEmitter {
     this.stopCommandTracking();
     this.stopUserInputTracking();
     this.stopScreenMovementTimer();
-    this.stopCwdPolling();
+    this.stopCwdTracking();
     this.stopDetectTrailingTimer();
   }
 
@@ -1166,7 +1198,7 @@ function hasVisibleText(screenText: string): boolean {
 }
 
 function normalizeScreenForMovement(screenText: string): string {
-  return screenText
+  return stripTmuxStatusLine(screenText)
     .split('\n')
     .map((line) => line.trimEnd())
     .join('\n');
