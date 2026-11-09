@@ -83,7 +83,7 @@ const WAITING_INPUT_PATTERNS = [
   /\(y\/n\)[^\S\n]*$/im,
   /\(yes\/no\)[^\S\n]*$/im,
 ];
-const WAITING_PROMPT_TOOL_NAMES = new Set(['claude', 'codex', 'gemini']);
+const WAITING_PROMPT_TOOL_NAMES = new Set(['claude', 'codex', 'gemini', 'omp']);
 
 // Busy state lines rendered by current agent CLIs. These are sampled from the
 // headless screen, so matching them is more reliable than relying only on
@@ -177,7 +177,7 @@ function passiveInputTokenLength(data: string): number {
   return 0;
 }
 
-function stripPassiveTerminalInput(data: string): string {
+export function stripPassiveTerminalInput(data: string): string {
   let rest = data;
   let meaningful = '';
   while (rest.length > 0) {
@@ -279,6 +279,7 @@ export abstract class BaseAdapter extends EventEmitter {
   /** Pending trailing sample for chunks that arrived inside the throttle window. */
   private _detectTrailingTimer: ReturnType<typeof setTimeout> | null = null;
   private _oscTitle = '';
+  private _detectionOscTail = '';
   private _oscProgress = '';
   private readonly _detectionMode: DetectionMode;
   private _detectionStabilizer: DetectionStabilizer;
@@ -577,9 +578,17 @@ export abstract class BaseAdapter extends EventEmitter {
     // redraws are not a new work cycle; explicit busy evidence still wins
     // below (including title spinners in active detection mode).
     const codexIdlePrompt = this.info.name === 'codex' && idleVisible && !busyVisible;
-    const movementBusy = screenMoved && !codexIdlePrompt && this.shouldTreatScreenMovementAsBusy(screen);
+    const ompIdleTitle = this.info.name === 'omp' && this._detectionMode === 'active'
+      && detection.matchedRuleId === 'title-ready' && detection.visibleIdle;
+    const movementBusy = screenMoved && !codexIdlePrompt && !ompIdleTitle && this.shouldTreatScreenMovementAsBusy(screen);
     const explicitWork = busyVisible || (this._detectionMode === 'active' && detection.visibleWorking);
     if (this._commandExecuting && explicitWork) this._commandSawVisibleWork = true;
+    // OMP keeps repainting footer telemetry after a turn. Its explicit title
+    // transition ends the submitted command without waiting for output silence.
+    if (ompIdleTitle && this._commandSawVisibleWork) {
+      this.stopCommandTracking();
+      this.stopUserInputTracking();
+    }
     // A submitted task finishes when Codex returns from its working UI to
     // the composer. Waiting for output silence never works with an animated
     // composer. Require a working frame first so the old prompt immediately
@@ -743,13 +752,16 @@ export abstract class BaseAdapter extends EventEmitter {
 
   /** Capture OSC values used by state rules independently from cwd parsing. */
   private captureDetectionSignals(chunk: string): void {
+    // PTY chunks can split an OSC title at any byte, including its terminator.
+    const candidate = this._detectionOscTail + chunk;
+    this._detectionOscTail = candidate.slice(-1024);
     let match: RegExpExecArray | null;
     OSC_TITLE_RE.lastIndex = 0;
-    while ((match = OSC_TITLE_RE.exec(chunk)) !== null) {
+    while ((match = OSC_TITLE_RE.exec(candidate)) !== null) {
       this._oscTitle = match[1].trim().slice(0, 512);
     }
     OSC_PROGRESS_RE.lastIndex = 0;
-    while ((match = OSC_PROGRESS_RE.exec(chunk)) !== null) {
+    while ((match = OSC_PROGRESS_RE.exec(candidate)) !== null) {
       this._oscProgress = match[1].trim().slice(0, 512);
     }
   }

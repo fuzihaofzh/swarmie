@@ -2,6 +2,7 @@ import type { BaseAdapter, AdapterOptions } from './base.js';
 import { ClaudeAdapter } from './claude.js';
 import { CodexAdapter } from './codex.js';
 import { GeminiAdapter } from './gemini.js';
+import { OmpAdapter } from './omp.js';
 import { GenericAdapter } from './generic.js';
 
 type AdapterConstructor = new (options: AdapterOptions) => BaseAdapter;
@@ -18,7 +19,7 @@ export function getAdapterNames(): string[] {
 
 /**
  * Create an adapter by name.
- * If name matches a registered adapter (claude/codex/gemini), use it.
+ * If name matches a registered adapter, use it.
  * Otherwise treat the name as a command and use GenericAdapter.
  */
 export function createAdapter(name: string, options: AdapterOptions): BaseAdapter {
@@ -34,3 +35,4 @@ export function createAdapter(name: string, options: AdapterOptions): BaseAdapte
 registerAdapter('claude', ClaudeAdapter);
 registerAdapter('codex', CodexAdapter);
 registerAdapter('gemini', GeminiAdapter);
+registerAdapter('omp', OmpAdapter);

@@ -39,14 +39,14 @@ export interface ParsedArgs {
   toolArgs: string[];
 }
 
-const KNOWN_TOOLS = ['claude', 'codex', 'gemini'];
+const KNOWN_TOOLS = ['claude', 'codex', 'gemini', 'omp'];
 
 export function createProgram(): Command {
   const program = new Command();
 
   program
     .name('swarmie')
-    .description('AI CLI tool aggregator — unified dashboard for Claude Code, Codex, Gemini CLI')
+    .description('AI CLI tool aggregator — unified dashboard for Claude Code, Codex, Gemini CLI, Oh My Pi')
     .version(version)
     .argument('[tool]', `command to launch (built-in: ${KNOWN_TOOLS.join(', ')}, or any command)`)
     .option('--port <number>', 'Web dashboard port', '3200')

@@ -20,6 +20,14 @@ describe('idle agent retention', () => {
     expect(isLongIdle({ id: 'a', status: 'idle', statusChangedAt: now - IDLE_RETENTION_MS }, now)).toBe(true);
   });
 
+  it('uses the retained idle clock instead of the latest passive status change', () => {
+    const session = { id: 'redrawn', status: 'idle', statusChangedAt: now, idleSince: now - IDLE_RETENTION_MS };
+    expect(isLongIdle(session, now)).toBe(true);
+    expect(idleTimeFromHistory(session)).toBe(session.idleSince);
+    expect(isLongIdle({ ...session, status: 'done', seen: false }, now)).toBe(false);
+    expect(isLongIdle({ ...session, idleSince: now }, now)).toBe(false);
+  });
+
   it('persists the fallback across reconnects without using session age', () => {
     const session = { id: 'old-server', status: 'idle', startTime: 1, stateChangeSeq: 3 };
     expect(rememberAgentStatus(session, now).statusChangedAt).toBe(now);

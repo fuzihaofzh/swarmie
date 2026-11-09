@@ -100,6 +100,8 @@ export interface StatusChangeData {
   /** Monotonic sequence for user-visible lifecycle transitions. */
   stateChangeSeq?: number;
   statusChangedAt?: number;
+  /** Idle retention clock, unaffected by passive activity. Null during a user task. */
+  idleSince?: number | null;
   seen?: boolean;
 }
 

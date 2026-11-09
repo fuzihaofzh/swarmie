@@ -3,6 +3,7 @@ import { networkInterfaces } from 'node:os';
 import { Session } from '../src/session/session.js';
 import { SessionManager } from '../src/session/manager.js';
 import { RemoteAdapter } from '../src/adapters/remote.js';
+import { IDLE_RETENTION_MS, isLongIdle } from '../src/web/agentIdle.js';
 import type { NormalizedEvent } from '../src/adapters/types.js';
 import {
   getSystemDisplayHostname,
@@ -25,6 +26,113 @@ function createMockAdapter(sessionId: string, tool = 'claude') {
 }
 
 describe('Session', () => {
+  it('publishes Done when typing made the adapter busy before Enter', () => {
+    const adapter = createMockAdapter('typed-task');
+    const session = new Session('typed-task', 'typed task', adapter);
+    const transition = (to: 'idle' | 'running') => adapter.pushEvent({
+      type: 'status:change', sessionId: session.id, timestamp: Date.now(), data: { from: adapter.status, to },
+    });
+    try {
+      session.start();
+      transition('idle');
+      session.write('f');
+      expect(session.status).toBe('running');
+      session.write('ix bug\r');
+      transition('idle');
+      expect(session.summary).toMatchObject({ status: 'done', seen: false });
+      session.markSeen();
+      // The submit marker must have been consumed by the actual task, not
+      // saved for a later background redraw that would create a phantom Done.
+      transition('running');
+      transition('idle');
+      expect(session.summary).toMatchObject({ status: 'idle', seen: true });
+    } finally { session.kill(); }
+  });
+
+  it('does not renew idle retention when passive output briefly looks busy', () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter('idle-redraw');
+    const session = new Session('idle-redraw', 'idle redraw', adapter);
+    const transition = (to: 'idle' | 'running') => adapter.pushEvent({
+      type: 'status:change', sessionId: session.id, timestamp: Date.now(), data: { from: adapter.status, to },
+    });
+    try {
+      session.start();
+      transition('idle');
+      const idleSince = session.summary.idleSince;
+      for (let i = 0; i < 7; i++) {
+        vi.advanceTimersByTime(10 * 60 * 1000);
+        transition('running');
+        transition('idle');
+      }
+      expect(session.summary.idleSince).toBe(idleSince);
+      expect(session.summary.statusChangedAt).toBe(Date.now());
+      expect(isLongIdle(session.summary, Date.now())).toBe(true);
+
+      session.write('new task\r');
+      transition('idle');
+      expect(session.status).toBe('done');
+      expect(isLongIdle(session.summary, Date.now())).toBe(false);
+      session.markSeen();
+      expect(session.summary.idleSince).toBe(Date.now());
+      expect(isLongIdle(session.summary, Date.now() + IDLE_RETENTION_MS - 1)).toBe(false);
+      expect(isLongIdle(session.summary, Date.now() + IDLE_RETENTION_MS)).toBe(true);
+    } finally { session.kill(); vi.useRealTimers(); }
+  });
+
+  it('preserves unread Done across redraws and automatic compaction', () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter('done-maintenance');
+    const session = new Session('done-maintenance', 'done maintenance', adapter);
+    const transition = (to: 'idle' | 'running') => adapter.pushEvent({
+      type: 'status:change', sessionId: session.id, timestamp: Date.now(), data: { from: adapter.status, to },
+    });
+    try {
+      session.start();
+      transition('idle');
+      session.write('task\r');
+      transition('idle');
+      // Focus/blur and mouse reports from the terminal are not result reads.
+      session.write('\x1b[O');
+      session.write('\x1b[I\x1b[<35;12;6M');
+      expect(session.summary).toMatchObject({ status: 'done', seen: false });
+      transition('running');
+      transition('idle');
+      expect(session.summary).toMatchObject({ status: 'done', seen: false });
+      session.setAutoCompactMinutes(1);
+      session.setSettings({ autoCompact: true });
+      vi.advanceTimersByTime(60_600);
+      adapter.pushEvent({ type: 'user:input', sessionId: session.id, timestamp: Date.now(), data: { text: '' } });
+      transition('idle');
+      expect(session.summary).toMatchObject({ status: 'done', seen: false });
+      session.markSeen();
+      expect(session.status).toBe('idle');
+    } finally { session.kill(); vi.useRealTimers(); }
+  });
+
+  it('does not turn automatic compaction and its extra Enters into a user task', () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter('maintenance-idle-clock');
+    const session = new Session('maintenance-idle-clock', 'maintenance', adapter);
+    const idle = () => adapter.pushEvent({
+      type: 'status:change', sessionId: session.id, timestamp: Date.now(), data: { from: adapter.status, to: 'idle' },
+    });
+    try {
+      session.start();
+      idle();
+      const idleSince = session.summary.idleSince;
+      session.setAutoCompactMinutes(1);
+      session.setSettings({ autoCompact: true });
+      vi.advanceTimersByTime(60_600);
+      idle();
+      expect(session.summary).toMatchObject({ status: 'idle', seen: true, idleSince });
+      session.write('f');
+      session.write('ix task\r');
+      idle();
+      expect(session.summary).toMatchObject({ status: 'done', seen: false });
+    } finally { session.kill(); vi.useRealTimers(); }
+  });
+
   it('keeps unread Done indefinitely and starts the idle clock only when seen', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-24T00:00:00Z'));

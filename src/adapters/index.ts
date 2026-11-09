@@ -4,6 +4,7 @@ export type { AdapterOptions } from './base.js';
 export { ClaudeAdapter } from './claude.js';
 export { CodexAdapter } from './codex.js';
 export { GeminiAdapter } from './gemini.js';
+export { OmpAdapter } from './omp.js';
 export { GenericAdapter } from './generic.js';
 export { RemoteAdapter } from './remote.js';
 export { registerAdapter, getAdapterNames, createAdapter } from './registry.js';

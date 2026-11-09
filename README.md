@@ -4,7 +4,7 @@
 
 ### An LLM-agent-oriented Terminal
 
-Manage Claude Code, Codex, Gemini CLI — or any terminal program — across multiple machines from a single browser tab.
+Manage Claude Code, Codex, Gemini CLI, Oh My Pi — or any terminal program — across multiple machines from a single browser tab.
 Browser · Desktop App · Mobile · Multi-server
 
 [![npm](https://img.shields.io/npm/v/swarmie)](https://www.npmjs.com/package/swarmie)
@@ -23,7 +23,7 @@ Terminal-based AI agents are powerful, but managing many of them across machines
 - **Aggregate multiple machines** — Connect remote servers to a single dashboard. No SSH juggling.
 - **One-click auto-approve** — Toggle the switch on any tab to auto-accept agent prompts. Let your agents run hands-free.
 - **Agent status at a glance** — See which agents are running, thinking, or waiting for input — right in the tab icon.
-- **Works with everything** — Claude Code, Codex, Gemini CLI, Aider, or plain `bash`. If it runs in a terminal, it works.
+- **Works with everything** — Claude Code, Codex, Gemini CLI, Oh My Pi, Aider, or plain `bash`. If it runs in a terminal, it works.
 - **Zero config** — `npm install -g swarmie && swarmie`. That's it.
 
 ## Install
@@ -83,7 +83,13 @@ swarmie --host 0.0.0.0 --password mysecret
 | [Claude Code](https://github.com/anthropics/claude-code) | Auto-detected |
 | [OpenAI Codex CLI](https://github.com/openai/codex) | Auto-detected |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Auto-detected |
+| [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) | Auto-detected |
 | Any CLI program | Works |
+
+Launch OMP with `swarmie omp`, or pass OMP options after `--`, for example
+`swarmie omp -- --help`. You can also select
+**OMP (Oh My Pi)** in Settings → New Agent Tool. The `omp` executable must be
+installed on the server running the session.
 
 ## CLI Options
 

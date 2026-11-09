@@ -4,7 +4,7 @@ import type { AdapterInfo, RawOutputData, SessionStartData, SessionEndData } fro
 
 /**
  * Base for tools that just need a PTY plus raw-output forwarding and the
- * shared activity/OSC handling (Codex, Gemini). Subclasses only declare their
+ * shared activity/OSC handling (Codex, Gemini, OMP). Subclasses only declare their
  * AdapterInfo; `info.command` is the binary that gets spawned.
  */
 export abstract class SimplePtyAdapter extends BaseAdapter {

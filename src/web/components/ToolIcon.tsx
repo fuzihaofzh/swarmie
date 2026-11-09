@@ -27,6 +27,15 @@ function GeminiIcon({ s = defaultSize }: { s?: number } = {}) {
   );
 }
 
+// Oh My Pi — pi mark, matching its terminal title.
+function OmpIcon({ s = defaultSize }: { s?: number } = {}) {
+  return (
+    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 7h16M8 7v7c0 3-1 4-2 5M16 7v10c0 2 2 2 3 1" />
+    </svg>
+  );
+}
+
 // Bell icon for waiting_input
 function BellIcon({ s = defaultSize }: { s?: number } = {}) {
   return (
@@ -50,6 +59,7 @@ const TOOL_ICONS: Record<string, () => JSX.Element> = {
   claude: ClaudeIcon,
   codex: CodexIcon,
   gemini: GeminiIcon,
+  omp: OmpIcon,
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -100,6 +110,7 @@ function IconSized({ tool, size }: { tool: string; size: number }) {
     case 'claude': return <ClaudeIcon s={size} />;
     case 'codex': return <CodexIcon s={size} />;
     case 'gemini': return <GeminiIcon s={size} />;
+    case 'omp': return <OmpIcon s={size} />;
     default: return <TerminalIcon s={size} />;
   }
 }

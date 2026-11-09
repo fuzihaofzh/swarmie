@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { type BaseAdapter, waitingPromptFingerprint } from '../adapters/base.js';
+import { type BaseAdapter, stripPassiveTerminalInput, waitingPromptFingerprint } from '../adapters/base.js';
 import type {
   NormalizedEvent,
   MetadataData,
@@ -245,8 +245,11 @@ export class Session extends EventEmitter {
   /** Set after a real post-start work cycle and consumed by its next idle. */
   private _workCyclePending = false;
   private _workCycleShouldPublishDone = true;
-  private _suppressNextWorkCycleDone = false;
-  private _nextWorkCycleIsUserWork = false;
+  private _submittingMaintenance = false;
+  private _maintenanceWorkCycle = false;
+  private _hasUnreadResult = false;
+  /** Last real entry into idle; passive redraws and maintenance do not renew it. */
+  private _idleSince: number | null = null;
   private _acknowledgingDone = false;
   private _stateChangeSeq = 0;
   private _statusChangedAt = Date.now();
@@ -277,6 +280,7 @@ export class Session extends EventEmitter {
       seen: this._seen,
       stateChangeSeq: this._stateChangeSeq,
       statusChangedAt: this._statusChangedAt,
+      idleSince: this._idleSince,
       startTime: this.adapter.startTime,
       endTime: this._endTime,
       cwd: this._cwd,
@@ -296,6 +300,7 @@ export class Session extends EventEmitter {
       seen: this._seen,
       stateChangeSeq: this._stateChangeSeq,
       statusChangedAt: this._statusChangedAt,
+      idleSince: this._idleSince,
       startTime: this.adapter.startTime,
       endTime: this._endTime,
       displayName: this.adapter.info.displayName,
@@ -335,7 +340,10 @@ export class Session extends EventEmitter {
   }
 
   write(data: string): void {
-    this.markSeen();
+    if (stripPassiveTerminalInput(data)) {
+      this._maintenanceWorkCycle = false;
+      this.markSeen();
+    }
     this.adapter.write(data);
   }
 
@@ -344,6 +352,10 @@ export class Session extends EventEmitter {
    * this acknowledgement, then folds back to the adapter's ordinary idle.
    */
   markSeen(): void {
+    if (this._hasUnreadResult) {
+      this._hasUnreadResult = false;
+      this._idleSince = Date.now();
+    }
     if (this._seen && this._publishedStatus !== 'done') return;
     this._seen = true;
     this._acknowledgingDone = this._publishedStatus === 'done';
@@ -635,13 +647,10 @@ export class Session extends EventEmitter {
         // completed user task. Later transitions into busy open a work cycle.
         if (!isAutoCompactBusyStatus(previous) && previous !== 'starting' && !this._workCyclePending) {
           this._workCyclePending = true;
-          this._workCycleShouldPublishDone = this._nextWorkCycleIsUserWork
-            && !this._suppressNextWorkCycleDone;
-          this._nextWorkCycleIsUserWork = false;
-          this._suppressNextWorkCycleDone = false;
+          this._workCycleShouldPublishDone = false;
         }
       } else if (raw.to === 'idle' && this._workCyclePending) {
-        next = this._workCycleShouldPublishDone ? 'done' : 'idle';
+        next = this._workCycleShouldPublishDone || this._hasUnreadResult ? 'done' : 'idle';
         this._workCyclePending = false;
         if (next === 'done') this._seen = false;
       } else if (raw.to === 'idle' && previous === 'done' && !this._acknowledgingDone) {
@@ -658,6 +667,9 @@ export class Session extends EventEmitter {
         }
       }
       this._publishedStatus = next;
+      if (raw.to === 'idle') this._maintenanceWorkCycle = false;
+      if (next === 'done') this._hasUnreadResult = true;
+      if (next === 'idle' && this._idleSince === null) this._idleSince = Date.now();
       event = {
         ...event,
         data: {
@@ -666,6 +678,7 @@ export class Session extends EventEmitter {
           to: next,
           stateChangeSeq: this._stateChangeSeq,
           statusChangedAt: this._statusChangedAt,
+          idleSince: this._idleSince,
           seen: this._seen,
         },
       };
@@ -728,7 +741,14 @@ export class Session extends EventEmitter {
         break;
       }
       case 'user:input': {
-        this._nextWorkCycleIsUserWork = true;
+        // A remote adapter echoes the submission over IPC after write returns.
+        if (this._submittingMaintenance || this._maintenanceWorkCycle) break;
+        // Typing already marks the adapter busy, so Enter need not produce
+        // another status transition. Promote the current cycle immediately.
+        this._workCyclePending = true;
+        this._workCycleShouldPublishDone = true;
+        this._hasUnreadResult = false;
+        this._idleSince = null;
         this._seen = true;
         break;
       }
@@ -1009,8 +1029,7 @@ export class Session extends EventEmitter {
 
     // Context maintenance is not a user task completion and should not create
     // an unread `done` notification when its command returns to idle.
-    this._suppressNextWorkCycleDone = true;
-    this.submitSlashCommand(AUTO_COMPACT_COMMAND);
+    this.submitCommand(AUTO_COMPACT_COMMAND, true);
     this._autoCompactBlockedUntilBusy = true;
     this._autoCompactWaitingForRunToIdle = isAutoCompactBusyStatus(this.adapter.status);
   }
@@ -1072,22 +1091,30 @@ export class Session extends EventEmitter {
     this.clearRepeatClearTimer();
   }
 
-  private submitSlashCommand(command: string): void {
-    this.submitCommand(command);
-  }
-
-  private submitCommand(command: string): void {
+  private submitCommand(command: string, maintenance = false): void {
     const normalized = command.replace(/[\r\n]+$/, '');
-    this.write(`${normalized}\n`);
-    this.scheduleSubmitWrite('\x0D\x0A', 200);
-    this.scheduleSubmitWrite('\r', 500);
+    this.writeSubmittedCommandData(`${normalized}\n`, maintenance);
+    this.scheduleSubmitWrite('\x0D\x0A', 200, maintenance);
+    this.scheduleSubmitWrite('\r', 500, maintenance);
   }
 
-  private scheduleSubmitWrite(data: string, delayMs: number): void {
+  private writeSubmittedCommandData(data: string, maintenance: boolean): void {
+    this._submittingMaintenance = maintenance;
+    if (maintenance) this._maintenanceWorkCycle = true;
+    try {
+      // Automatic compaction must not acknowledge an unread task result.
+      if (maintenance) this.adapter.write(data);
+      else this.write(data);
+    } finally {
+      this._submittingMaintenance = false;
+    }
+  }
+
+  private scheduleSubmitWrite(data: string, delayMs: number, maintenance: boolean): void {
     const timer = setTimeout(() => {
       this._submitTimers.delete(timer);
       if (['completed', 'error'].includes(this.adapter.status)) return;
-      this.write(data);
+      this.writeSubmittedCommandData(data, maintenance);
     }, delayMs);
     this._submitTimers.add(timer);
   }

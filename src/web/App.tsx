@@ -722,6 +722,7 @@ function AutomationSettings() {
           <option value="claude">Claude</option>
           <option value="codex">Codex</option>
           <option value="gemini">Gemini</option>
+          <option value="omp">OMP (Oh My Pi)</option>
           <option value="shell">Shell (server default)</option>
           <option value="pwsh">PowerShell 7</option>
           <option value="powershell">Windows PowerShell 5.1</option>

@@ -54,4 +54,26 @@ describe('session store active tab persistence', () => {
 
     expect(refreshedModule.useSessionStore.getState().activeSessionId).toBe('session-2');
   });
+
+  it('retains the idle clock through live events, history and reconnects', async () => {
+    const { useSessionStore } = await import('../src/web/hooks/useSessions.js');
+    const { isLongIdle, IDLE_RETENTION_MS } = await import('../src/web/agentIdle.js');
+    const now = Date.now();
+    const idleSince = now - IDLE_RETENTION_MS;
+    const summary = { ...sessionSummary('idle-clock'), statusChangedAt: now, idleSince };
+    useSessionStore.getState().setServerSessions('', [summary]);
+    expect(isLongIdle(useSessionStore.getState().sessions[0], now)).toBe(true);
+    const event = (to: string, since: number | null) => ({
+      type: 'status:change', sessionId: summary.id, timestamp: now,
+      data: { from: 'running', to, statusChangedAt: now, idleSince: since },
+    });
+    useSessionStore.getState().addEvent(event('running', null));
+    expect(useSessionStore.getState().sessions[0].idleSince).toBeNull();
+    useSessionStore.getState().addEvent(event('idle', idleSince));
+    expect(isLongIdle(useSessionStore.getState().sessions[0], now)).toBe(true);
+    useSessionStore.getState().addEventBatch(summary.id, [event('idle', now)]);
+    expect(isLongIdle(useSessionStore.getState().sessions[0], now)).toBe(false);
+    useSessionStore.getState().setServerSessions('', [{ ...summary, idleSince: now }]);
+    expect(useSessionStore.getState().sessions[0].idleSince).toBe(now);
+  });
 });

@@ -11,6 +11,7 @@ export interface SessionInfo {
   /** Monotonic user-visible lifecycle sequence. */
   stateChangeSeq: number;
   statusChangedAt: number;
+  idleSince?: number | null;
   startTime: number;
   endTime?: number;
   cwd: string;
@@ -36,6 +37,7 @@ export interface SessionSummary {
   seen: boolean;
   stateChangeSeq: number;
   statusChangedAt: number;
+  idleSince?: number | null;
   startTime: number;
   endTime?: number;
   displayName: string;

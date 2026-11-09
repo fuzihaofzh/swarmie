@@ -5,6 +5,7 @@ interface AgentStatus {
   id: string;
   status: string;
   statusChangedAt?: number;
+  idleSince?: number | null;
   stateChangeSeq?: number;
 }
 type Stamp = { status: string; since: number; seq?: number };
@@ -24,6 +25,7 @@ export function idleTimeFromHistory(session: AgentStatus & {
   recentEvents?: { type: string; timestamp: number; data: Record<string, unknown> }[];
 }): number | undefined {
   if (session.status !== 'idle') return;
+  if (validTime(session.idleSince)) return session.idleSince;
   if (validTime(session.statusChangedAt)) return session.statusChangedAt;
   for (const event of [...(session.recentEvents ?? [])].reverse()) {
     if (event.type !== 'status:change') continue;
@@ -61,6 +63,7 @@ export function rememberAgentStatus<T extends AgentStatus>(session: T, now = Dat
 
 export function isLongIdle(session: AgentStatus, now: number): boolean {
   // Done is an unread notification, not an idle timeout candidate.
-  return session.status === 'idle' && validTime(session.statusChangedAt)
-    && now - session.statusChangedAt >= IDLE_RETENTION_MS;
+  const since = session.idleSince ?? session.statusChangedAt;
+  return session.status === 'idle' && validTime(since)
+    && now - since >= IDLE_RETENTION_MS;
 }

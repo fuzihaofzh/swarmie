@@ -13,6 +13,7 @@ export interface SessionSummary {
   seen?: boolean;
   stateChangeSeq?: number;
   statusChangedAt?: number;
+  idleSince?: number | null;
   startTime: number;
   endTime?: number;
   displayName: string;
@@ -338,7 +339,7 @@ export const useSessionStore = create<SessionState>((set) => ({
 
       let sessions = state.sessions;
       if (event.type === 'status:change') {
-        const statusData = event.data as { to: string; seen?: boolean; stateChangeSeq?: number; statusChangedAt?: number };
+        const statusData = event.data as { to: string; seen?: boolean; stateChangeSeq?: number; statusChangedAt?: number; idleSince?: number | null };
         const newStatus = statusData.to;
         sessions = sessions.map((s) =>
           s.id === event.sessionId
@@ -346,6 +347,7 @@ export const useSessionStore = create<SessionState>((set) => ({
                 ...s,
                 status: newStatus,
                 statusChangedAt: statusData.statusChangedAt ?? (s.status === newStatus ? s.statusChangedAt : event.timestamp),
+                ...(statusData.idleSince !== undefined ? { idleSince: statusData.idleSince } : {}),
                 ...(statusData.seen !== undefined ? { seen: statusData.seen } : {}),
                 ...(statusData.stateChangeSeq !== undefined
                   ? { stateChangeSeq: statusData.stateChangeSeq }
@@ -403,7 +405,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       let sessions = state.sessions;
       const statusEvt = newEvents.findLast((e) => e.type === 'status:change');
       if (statusEvt) {
-        const statusData = statusEvt.data as { to: string; seen?: boolean; stateChangeSeq?: number; statusChangedAt?: number };
+        const statusData = statusEvt.data as { to: string; seen?: boolean; stateChangeSeq?: number; statusChangedAt?: number; idleSince?: number | null };
         const newStatus = statusData.to;
         sessions = sessions.map((s) =>
           s.id === sessionId
@@ -411,6 +413,7 @@ export const useSessionStore = create<SessionState>((set) => ({
                 ...s,
                 status: newStatus,
                 statusChangedAt: statusData.statusChangedAt ?? (s.status === newStatus ? s.statusChangedAt : statusEvt.timestamp),
+                ...(statusData.idleSince !== undefined ? { idleSince: statusData.idleSince } : {}),
                 ...(statusData.seen !== undefined ? { seen: statusData.seen } : {}),
                 ...(statusData.stateChangeSeq !== undefined
                   ? { stateChangeSeq: statusData.stateChangeSeq }

@@ -12,6 +12,7 @@ import type {
 import { ESC_CHAR, BEL_CHAR, OSC_ANY_RE, CSI_RE, ESC_OTHER_RE, CONTROL_CHARS_RE } from './ansi.js';
 import * as PROF from '../server/profile.js';
 import { findWindowsShell, isPowerShell, powerShellArgs, powerShellPromptMarker, shellBasename } from '../cli/shell.js';
+import { OMP_TITLE_PATTERN } from '../detection/manifests/omp.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -30,6 +31,8 @@ const TOOL_SIGNATURES: { pattern: RegExp; tool: string; displayName: string }[] 
   { pattern: /Claude\s*Code\s*v\d/i, tool: 'claude', displayName: 'Claude Code' },
   { pattern: /OpenAI Codex\s*\(v/i, tool: 'codex', displayName: 'Codex' },
   { pattern: /Gemini CLI/i, tool: 'gemini', displayName: 'Gemini' },
+  // Current OMP uses a block wordmark; older releases print a versioned name.
+  { pattern: /(?:\b(?:oh[ -]my[ -]pi|omp)\s+v\d+\.\d+|▄▀▀▄\s+█▀▄▀▄\s+█▀▀▄)/i, tool: 'omp', displayName: 'Oh My Pi' },
 ];
 
 const OSC_PAYLOAD_RE = new RegExp(
@@ -62,6 +65,7 @@ export class GenericAdapter extends BaseAdapter {
   private _detectedTool: string | null = null;
   /** Rolling buffer of stripped text scanned for a tool's startup banner. */
   private _detectBuf = '';
+  private _detectRawTail = '';
   /** Small cross-chunk tails for shell-return markers (PTY reads may split at
    *  any byte, including in the middle of an OSC sequence or exit line). */
   private _shellReturnRawTail = '';
@@ -158,6 +162,7 @@ export class GenericAdapter extends BaseAdapter {
     if (!this._detectedTool && (data.includes('\r') || data.includes('\n'))) {
       this._detectActive = true;
       this._detectBuf = '';
+      this._detectRawTail = '';
     }
   }
 
@@ -264,6 +269,7 @@ export class GenericAdapter extends BaseAdapter {
     // onto an old banner repainted from terminal history.
     this._detectActive = false;
     this._detectBuf = '';
+    this._detectRawTail = '';
     this._shellReturnRawTail = '';
     this._shellReturnTextTail = '';
     this.setStatus('idle');
@@ -347,6 +353,14 @@ export class GenericAdapter extends BaseAdapter {
 
     // Extract OSC payload text (titles etc.)
     let m: RegExpExecArray | null;
+    const rawCandidate = this._detectRawTail + chunk;
+    this._detectRawTail = rawCandidate.slice(-1024);
+    // Match OMP's state title only inside OSC 0/2, never transcript prose.
+    const ompTitle = /\x1b\][02];([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+    let hasOmpTitle = false;
+    while ((m = ompTitle.exec(rawCandidate)) !== null) {
+      if (OMP_TITLE_PATTERN.test(m[1])) hasOmpTitle = true;
+    }
     OSC_PAYLOAD_RE.lastIndex = 0;
     while ((m = OSC_PAYLOAD_RE.exec(chunk)) !== null) {
       allText.push(m[1]);
@@ -369,7 +383,7 @@ export class GenericAdapter extends BaseAdapter {
     }
 
     for (const sig of TOOL_SIGNATURES) {
-      if (sig.pattern.test(this._detectBuf)) {
+      if ((sig.tool === 'omp' && hasOmpTitle) || sig.pattern.test(this._detectBuf)) {
         if (this._detectedTool !== sig.tool) {
           this._detectedTool = sig.tool;
           this.startShellReturnProbe();
